@@ -48,8 +48,14 @@ jobs:
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
           $executable = ".\dist\Remaining-Margin-Float-v$version.exe"
           $checksum = "$executable.sha256"
+
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'SilentlyContinue'
           gh release view $env:GITHUB_REF_NAME *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $releaseExists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = $previousErrorActionPreference
+
+          if ($releaseExists) {
             gh release upload $env:GITHUB_REF_NAME $executable $checksum --clobber
           }
           else {
