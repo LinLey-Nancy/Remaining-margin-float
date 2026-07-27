@@ -136,6 +136,8 @@ internal static class Launcher
             startInfo.CreateNoWindow = true;
             startInfo.WindowStyle = ProcessWindowStyle.Hidden;
             startInfo.WorkingDirectory = Path.GetDirectoryName(scriptPath);
+            startInfo.EnvironmentVariables["REMAINING_MARGIN_FLOAT_LAUNCHER"] =
+                Assembly.GetExecutingAssembly().Location;
 
             Process process = Process.Start(startInfo);
             if (process == null)

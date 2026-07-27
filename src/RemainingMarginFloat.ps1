@@ -4,6 +4,8 @@
     [switch]$CheckDeepSeekUsage,
     [switch]$CheckCodexRateLimitSelection,
     [switch]$CheckPlacement,
+    [switch]$CheckEdgeDocking,
+    [switch]$CheckStartup,
     [switch]$CheckTransitions,
     [switch]$CaptureVisuals,
     [string]$CaptureDirectory = '',
@@ -21,6 +23,8 @@ $isDiagnosticRun = (
     $CheckDeepSeekUsage -or
     $CheckCodexRateLimitSelection -or
     $CheckPlacement -or
+    $CheckEdgeDocking -or
+    $CheckStartup -or
     $CheckTransitions -or
     $CaptureVisuals -or
     $Demo
@@ -48,6 +52,7 @@ if (-not $isDiagnosticRun) {
 }
 
 Add-Type -AssemblyName System.Security
+Add-Type -AssemblyName System.Net.Http
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -183,10 +188,15 @@ public static class DeepSeekLogScanner
 
 $script:CompactWidth = 96.0
 $script:CompactHeight = 88.0
+$script:EdgeVisibleWidth = 14.0
+$script:EdgeSnapDistance = 20.0
+$script:EdgeRevealDurationMs = 190
+$script:EdgeHideDurationMs = 150
 $script:ExpandedWidth = 370.0
 $script:ExpandedHeight = 500.0
 $script:RefreshIntervalSeconds = 60
 $script:SessionCache = @{}
+$script:SessionMetadataCache = @{}
 $script:LastSnapshot = $null
 $script:CompactAnchorLeft = $null
 $script:CompactAnchorTop = $null
@@ -194,10 +204,14 @@ $script:TrayNotifyIcon = $null
 $script:TrayAppIcon = $null
 $script:TrayMenu = $null
 $script:TrayTopmostItem = $null
+$script:TrayEdgeDockItem = $null
+$script:TrayStartupItems = @{}
 $script:IsClosing = $false
 $script:ActiveProvider = 'Codex'
 $script:DeepSeekUsageCache = @{}
 $script:DeepSeekLatestUsageCache = @{}
+$script:CodexHttpClient = $null
+$script:CodexOfficialUsageCache = $null
 $script:DeepSeekHttpClient = $null
 $script:DeepSeekRequest = $null
 $script:DeepSeekRequestTask = $null
@@ -208,9 +222,18 @@ $script:TrayCodexSourceItem = $null
 $script:TrayDeepSeekSourceItem = $null
 $script:DeepSeekSettingsMenuItem = $null
 $script:TrayDeepSeekSettingsItem = $null
+$script:EdgeDockMenuItem = $null
+$script:EdgeDockEnabled = $true
+$script:EdgeDockSide = $null
+$script:IsEdgeRevealed = $false
+$script:StartupMode = 'Off'
+$script:StartupMenuItems = @{}
 $script:IsPointerOverSurface = $false
+$script:EdgeHideTimer = $null
+$script:EdgeRevealTimer = $null
 $script:CurrentHoverBorderColor = '#C4D0C6'
 $script:CurrentSurfaceBorderColor = '#E1E3DE'
+$script:IsRestoringSettings = $false
 
 function Get-FittedPlacement {
     param(
@@ -230,6 +253,54 @@ function Get-FittedPlacement {
         Left = [Math]::Max($WorkLeft, $targetLeft)
         Top = [Math]::Max($WorkTop, $targetTop)
     }
+}
+
+function Get-EdgeDockSideForPosition {
+    param(
+        [double]$Left,
+        [double]$Width,
+        [double]$WorkLeft,
+        [double]$WorkRight,
+        [double]$SnapDistance
+    )
+
+    $right = $Left + $Width
+    $leftDistance = [Math]::Abs($Left - $WorkLeft)
+    $rightDistance = [Math]::Abs($right - $WorkRight)
+    $touchesLeft = (
+        $Left -le ($WorkLeft + $SnapDistance) -and
+        $right -gt $WorkLeft
+    )
+    $touchesRight = (
+        $right -ge ($WorkRight - $SnapDistance) -and
+        $Left -lt $WorkRight
+    )
+    if ($touchesLeft -and (-not $touchesRight -or $leftDistance -le $rightDistance)) {
+        return 'Left'
+    }
+    if ($touchesRight) {
+        return 'Right'
+    }
+    return $null
+}
+
+function Get-EdgeDockPlacement {
+    param(
+        [ValidateSet('Left', 'Right')]
+        [string]$Side,
+        [bool]$Revealed,
+        [double]$WindowWidth,
+        [double]$VisibleWidth,
+        [double]$WorkLeft,
+        [double]$WorkRight
+    )
+
+    if ($Side -eq 'Left') {
+        if ($Revealed) { return $WorkLeft }
+        return $WorkLeft - $WindowWidth + $VisibleWidth
+    }
+    if ($Revealed) { return $WorkRight - $WindowWidth }
+    return $WorkRight - $VisibleWidth
 }
 
 function ConvertFrom-JwtPayload {
@@ -277,6 +348,140 @@ function Get-SafeAccountInfo {
     }
 
     return [pscustomobject]$result
+}
+
+function ConvertTo-CodexOfficialUsage {
+    param(
+        $Payload,
+        [DateTimeOffset]$SampledAt = [DateTimeOffset]::Now
+    )
+
+    if (-not $Payload) { return $null }
+    $rateLimit = Get-ObjectPropertyValue -Object $Payload -Name 'rate_limit'
+    $primary = Get-ObjectPropertyValue -Object $rateLimit -Name 'primary_window'
+    if (-not $primary) { return $null }
+
+    $usedValue = Get-ObjectPropertyValue -Object $primary -Name 'used_percent'
+    $windowSecondsValue = Get-ObjectPropertyValue `
+        -Object $primary `
+        -Name 'limit_window_seconds'
+    $resetValue = Get-ObjectPropertyValue -Object $primary -Name 'reset_at'
+    if (
+        $null -eq $usedValue -or
+        $null -eq $windowSecondsValue -or [double]$windowSecondsValue -le 0 -or
+        $null -eq $resetValue -or [long]$resetValue -le 0
+    ) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        UsedPercent = [Math]::Max(0, [Math]::Min(100, [double]$usedValue))
+        WindowMinutes = [int][Math]::Round([double]$windowSecondsValue / 60)
+        ResetsAt = [long]$resetValue
+        PlanType = [string](Get-ObjectPropertyValue `
+            -Object $Payload `
+            -Name 'plan_type' `
+            -Default '')
+        SampledAt = $SampledAt
+        IsCached = $false
+    }
+}
+
+function Get-CodexHttpClient {
+    if (-not $script:CodexHttpClient) {
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(6)
+        $script:CodexHttpClient = $client
+    }
+    return $script:CodexHttpClient
+}
+
+function Get-CodexOfficialUsage {
+    $now = [DateTimeOffset]::Now
+    if (
+        $script:CodexOfficialUsageCache -and
+        ($now - $script:CodexOfficialUsageCache.SampledAt).TotalSeconds -lt 15
+    ) {
+        return $script:CodexOfficialUsageCache
+    }
+
+    try {
+        $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
+        if (-not (Test-Path -LiteralPath $authPath)) { throw 'Codex auth file not found.' }
+        $auth = Get-Content -LiteralPath $authPath -Raw | ConvertFrom-Json
+        $tokens = Get-ObjectPropertyValue -Object $auth -Name 'tokens'
+        $accessToken = [string](Get-ObjectPropertyValue `
+            -Object $tokens `
+            -Name 'access_token' `
+            -Default '')
+        $accountId = [string](Get-ObjectPropertyValue `
+            -Object $tokens `
+            -Name 'account_id' `
+            -Default '')
+        if (
+            [string]::IsNullOrWhiteSpace($accessToken) -or
+            [string]::IsNullOrWhiteSpace($accountId)
+        ) {
+            throw 'Codex account credentials are incomplete.'
+        }
+
+        $request = New-Object System.Net.Http.HttpRequestMessage(
+            [System.Net.Http.HttpMethod]::Get,
+            'https://chatgpt.com/backend-api/wham/usage'
+        )
+        try {
+            $request.Headers.Authorization =
+                New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
+                    'Bearer',
+                    $accessToken
+                )
+            [void]$request.Headers.TryAddWithoutValidation('ChatGPT-Account-Id', $accountId)
+            [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
+            [void]$request.Headers.TryAddWithoutValidation(
+                'User-Agent',
+                'remaining-margin-float/1.2'
+            )
+            [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
+
+            $response = (Get-CodexHttpClient).SendAsync($request).GetAwaiter().GetResult()
+            try {
+                if (-not $response.IsSuccessStatusCode) {
+                    throw ('Codex usage request failed with HTTP {0}.' -f
+                        [int]$response.StatusCode)
+                }
+                $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                $payload = $content | ConvertFrom-Json
+            }
+            finally {
+                $response.Dispose()
+            }
+        }
+        finally {
+            $request.Dispose()
+        }
+
+        $usage = ConvertTo-CodexOfficialUsage -Payload $payload -SampledAt $now
+        if (-not $usage) { throw 'Codex usage response did not contain a primary window.' }
+        $script:CodexOfficialUsageCache = $usage
+        return $usage
+    }
+    catch {
+        if (
+            $script:CodexOfficialUsageCache -and
+            ($now - $script:CodexOfficialUsageCache.SampledAt).TotalMinutes -lt 10
+        ) {
+            $cached = $script:CodexOfficialUsageCache
+            return [pscustomobject]@{
+                UsedPercent = $cached.UsedPercent
+                WindowMinutes = $cached.WindowMinutes
+                ResetsAt = $cached.ResetsAt
+                PlanType = $cached.PlanType
+                SampledAt = $cached.SampledAt
+                IsCached = $true
+            }
+        }
+        return $null
+    }
 }
 
 function Get-CodexRateLimitWindow {
@@ -329,20 +534,158 @@ function Get-CodexEventObservedAt {
     return $observedAt
 }
 
-function Select-CodexRateLimitSnapshot {
-    param([object[]]$Snapshots)
+function Add-CodexRateLimitSample {
+    param(
+        [hashtable]$Candidates,
+        $Payload,
+        [DateTimeOffset]$ObservedAt
+    )
 
-    return $Snapshots | Where-Object {
+    $window = Get-CodexRateLimitWindow -Payload $Payload
+    if (-not $window) { return }
+
+    # A real quota cycle keeps the same reset timestamp across successive
+    # events. Local workers can also emit synthetic 0% samples whose reset
+    # timestamp slides on every event; each of those forms a one-off cycle.
+    $key = '{0}:{1}' -f [long]$window.window_minutes, [long]$window.resets_at
+    if ($Candidates.ContainsKey($key)) {
+        $candidate = $Candidates[$key]
+        $candidate.Count++
+        if ($ObservedAt -lt $candidate.FirstObservedAt) {
+            $candidate.FirstObservedAt = $ObservedAt
+        }
+        if ($ObservedAt -gt $candidate.ObservedAt) {
+            $candidate.Payload = $Payload
+            $candidate.ObservedAt = $ObservedAt
+            $candidate.UsedPercent = [double]$window.used_percent
+        }
+        return
+    }
+
+    $Candidates[$key] = [pscustomobject]@{
+        Count = 1
+        FirstObservedAt = $ObservedAt
+        Payload = $Payload
+        ObservedAt = $ObservedAt
+        UsedPercent = [double]$window.used_percent
+    }
+}
+
+function Select-CodexStableRateLimitSample {
+    param(
+        [hashtable]$Candidates,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    # A reported non-zero cycle remains authoritative until its own reset
+    # timestamp. Synthetic local 0% samples can keep sliding their reset time
+    # forward and must not replace a cycle that Codex says is still active.
+    $nowEpoch = $Now.ToUnixTimeSeconds()
+    $activePositive = $Candidates.Values | Where-Object {
+        $window = Get-CodexRateLimitWindow -Payload $_.Payload
+        $_.UsedPercent -gt 0 -and
+        $window -and
+        [long]$window.resets_at -gt $nowEpoch
+    } | Sort-Object ObservedAt -Descending | Select-Object -First 1
+    if ($activePositive) { return $activePositive }
+
+    $latestObservedAt = $Candidates.Values |
+        Sort-Object ObservedAt -Descending |
+        Select-Object -First 1 -ExpandProperty ObservedAt
+    return $Candidates.Values | Where-Object {
+        $_.UsedPercent -gt 0 -or (
+            $_.Count -ge 2 -and
+            ($_.ObservedAt - $_.FirstObservedAt).TotalSeconds -ge 120
+        ) -or (
+            $_.ObservedAt -eq $latestObservedAt -and
+            ($Now - $_.ObservedAt).TotalSeconds -ge 120
+        )
+    } | Sort-Object ObservedAt -Descending | Select-Object -First 1
+}
+
+function Select-CodexRateLimitSnapshot {
+    param(
+        [object[]]$Snapshots,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $validSnapshots = @($Snapshots | Where-Object {
         $_ -and $_.RateLimitPayload -and (Get-CodexRateLimitWindow -Payload $_.RateLimitPayload)
+    })
+    $nowEpoch = $Now.ToUnixTimeSeconds()
+    $activePositive = $validSnapshots | Where-Object {
+        $window = Get-CodexRateLimitWindow -Payload $_.RateLimitPayload
+        [double]$window.used_percent -gt 0 -and
+        [long]$window.resets_at -gt $nowEpoch
     } | Sort-Object RateLimitObservedAt -Descending | Select-Object -First 1
+    if ($activePositive) { return $activePositive }
+
+    return $validSnapshots |
+        Sort-Object RateLimitObservedAt -Descending |
+        Select-Object -First 1
+}
+
+function Test-CodexRootSessionMetadata {
+    param($Payload)
+
+    if (-not $Payload) { return $true }
+    $sourceProperty = $Payload.PSObject.Properties['source']
+    if (-not $sourceProperty -or -not $sourceProperty.Value) { return $true }
+    return -not $sourceProperty.Value.PSObject.Properties['subagent']
+}
+
+function Test-CodexRootSessionFile {
+    param([System.IO.FileInfo]$File)
+
+    if ($script:SessionMetadataCache.ContainsKey($File.FullName)) {
+        return $script:SessionMetadataCache[$File.FullName]
+    }
+
+    $isRootSession = $true
+    try {
+        $stream = [System.IO.File]::Open(
+            $File.FullName,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite
+        )
+        try {
+            $reader = New-Object System.IO.StreamReader($stream)
+            try {
+                $firstLine = $reader.ReadLine()
+                if (-not [string]::IsNullOrWhiteSpace($firstLine)) {
+                    $metadata = $firstLine | ConvertFrom-Json
+                    if ($metadata.type -eq 'session_meta') {
+                        $isRootSession = Test-CodexRootSessionMetadata `
+                            -Payload $metadata.payload
+                    }
+                }
+            }
+            finally {
+                $reader.Dispose()
+            }
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    catch {
+        # Unknown/legacy files remain readable rather than being dropped.
+        $isRootSession = $true
+    }
+
+    $script:SessionMetadataCache[$File.FullName] = $isRootSession
+    return $isRootSession
 }
 
 function Read-SessionSnapshot {
     param([System.IO.FileInfo]$File)
 
     $cacheKey = '{0}:{1}' -f $File.LastWriteTimeUtc.Ticks, $File.Length
+    $previousSnapshot = $null
     if ($script:SessionCache.ContainsKey($File.FullName)) {
         $cached = $script:SessionCache[$File.FullName]
+        $previousSnapshot = $cached.Value
         if ($cached.Key -eq $cacheKey) { return $cached.Value }
     }
 
@@ -350,6 +693,16 @@ function Read-SessionSnapshot {
     $lastObservedAt = [DateTimeOffset]$File.LastWriteTime
     $lastRateLimitPayload = $null
     $lastRateLimitObservedAt = [DateTimeOffset]::MinValue
+    $rateLimitCandidates = @{}
+    if (
+        $previousSnapshot -and
+        $previousSnapshot.RateLimitPayload
+    ) {
+        Add-CodexRateLimitSample `
+            -Candidates $rateLimitCandidates `
+            -Payload $previousSnapshot.RateLimitPayload `
+            -ObservedAt $previousSnapshot.RateLimitObservedAt
+    }
     try {
         $stream = [System.IO.File]::Open(
             $File.FullName,
@@ -393,10 +746,10 @@ function Read-SessionSnapshot {
                     if ($event.type -eq 'event_msg' -and $event.payload.type -eq 'token_count') {
                         $lastPayload = $event.payload
                         $lastObservedAt = Get-CodexEventObservedAt -Event $event -Fallback $File.LastWriteTime
-                        if (Get-CodexRateLimitWindow -Payload $event.payload) {
-                            $lastRateLimitPayload = $event.payload
-                            $lastRateLimitObservedAt = $lastObservedAt
-                        }
+                        Add-CodexRateLimitSample `
+                            -Candidates $rateLimitCandidates `
+                            -Payload $event.payload `
+                            -ObservedAt $lastObservedAt
                     }
                 }
                 catch {
@@ -404,11 +757,22 @@ function Read-SessionSnapshot {
                 }
             }
 
+            $stableRateLimit = Select-CodexStableRateLimitSample `
+                -Candidates $rateLimitCandidates
             if (
-                ($null -eq $lastPayload -or $null -eq $lastRateLimitPayload) -and
+                -not $stableRateLimit -and
+                $previousSnapshot -and
+                $previousSnapshot.RateLimitPayload
+            ) {
+                $lastRateLimitPayload = $previousSnapshot.RateLimitPayload
+                $lastRateLimitObservedAt = $previousSnapshot.RateLimitObservedAt
+            }
+            if (
+                $null -eq $lastPayload -and
                 $startOffset -gt 0
             ) {
                 [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+                $rateLimitCandidates = @{}
                 $reader = New-Object System.IO.StreamReader($stream)
                 try {
                     while (($line = $reader.ReadLine()) -ne $null) {
@@ -420,10 +784,10 @@ function Read-SessionSnapshot {
                             if ($event.type -eq 'event_msg' -and $event.payload.type -eq 'token_count') {
                                 $lastPayload = $event.payload
                                 $lastObservedAt = Get-CodexEventObservedAt -Event $event -Fallback $File.LastWriteTime
-                                if (Get-CodexRateLimitWindow -Payload $event.payload) {
-                                    $lastRateLimitPayload = $event.payload
-                                    $lastRateLimitObservedAt = $lastObservedAt
-                                }
+                                Add-CodexRateLimitSample `
+                                    -Candidates $rateLimitCandidates `
+                                    -Payload $event.payload `
+                                    -ObservedAt $lastObservedAt
                             }
                         }
                         catch {
@@ -434,6 +798,13 @@ function Read-SessionSnapshot {
                 finally {
                     $reader.Dispose()
                 }
+            }
+
+            $stableRateLimit = Select-CodexStableRateLimitSample `
+                -Candidates $rateLimitCandidates
+            if ($stableRateLimit) {
+                $lastRateLimitPayload = $stableRateLimit.Payload
+                $lastRateLimitObservedAt = $stableRateLimit.ObservedAt
             }
         }
         finally {
@@ -1116,24 +1487,27 @@ function Get-CodexUsageSnapshot {
     }
 
     $account = Get-SafeAccountInfo
+    $officialUsage = Get-CodexOfficialUsage
     $sessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
     $files = @()
     if (Test-Path -LiteralPath $sessionsRoot) {
         $files = @(Get-ChildItem -LiteralPath $sessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending)
     }
+    $rootSessionFiles = @($files | Where-Object {
+        Test-CodexRootSessionFile -File $_
+    })
 
     # File modification time is not the observation time: a parallel task can
-    # keep appending unrelated events to an older session. Select quota and
-    # token snapshots by their token_count timestamps instead.
-    $recentSnapshots = @($files | Select-Object -First 48 | ForEach-Object {
+    # keep appending unrelated events to an older session. Select token
+    # snapshots by their token_count timestamps instead.
+    $recentSnapshots = @($rootSessionFiles | Select-Object -First 48 | ForEach-Object {
         Read-SessionSnapshot -File $_
     })
-    $latestRateLimitSnapshot = Select-CodexRateLimitSnapshot -Snapshots $recentSnapshots
     $latestSnapshot = $recentSnapshots | Where-Object { $_.Payload } |
         Sort-Object ObservedAt -Descending | Select-Object -First 1
 
-    if (-not $latestRateLimitSnapshot) {
+    if (-not $officialUsage) {
         return [pscustomobject]@{
             ProviderId = 'Codex'
             Available = $false
@@ -1141,7 +1515,7 @@ function Get-CodexUsageSnapshot {
             HasProgress = $true
             WindowLabel = 'Codex 余量'
             ResetDate = '暂无'
-            ResetCountdown = '启动一次 Codex 任务后更新'
+            ResetCountdown = '连接 Codex 后更新'
             ResetCount = '未提供'
             Plan = 'Codex'
             AccountName = $account.DisplayName
@@ -1159,38 +1533,28 @@ function Get-CodexUsageSnapshot {
             ContextPercent = 0
             SampledAt = Get-Date
             Status = '等待数据'
-            Source = '本地暂无用量快照'
+            Source = 'Codex 官方用量暂不可用'
         }
     }
 
-    if (-not $latestSnapshot) { $latestSnapshot = $latestRateLimitSnapshot }
-    $payload = $latestSnapshot.Payload
-    $rateLimitPayload = $latestRateLimitSnapshot.RateLimitPayload
-    $limits = Get-ObjectPropertyValue -Object $rateLimitPayload -Name 'rate_limits'
-    $primary = Get-CodexRateLimitWindow -Payload $rateLimitPayload
+    $payload = if ($latestSnapshot) { $latestSnapshot.Payload } else { $null }
+    $usedPercent = [double]$officialUsage.UsedPercent
+    $windowMinutes = [int]$officialUsage.WindowMinutes
+    $resetTimestamp = [long]$officialUsage.ResetsAt
+    $planType = [string]$officialUsage.PlanType
+    $quotaSampledAt = $officialUsage.SampledAt.LocalDateTime
+    $source = if ($officialUsage.IsCached) {
+        'Codex 官方用量缓存 · 本地 Token 汇总'
+    } else {
+        'Codex 官方用量接口 · 本地 Token 汇总'
+    }
 
-    $usedPercent = [Math]::Max(
-        0,
-        [Math]::Min(
-            100,
-            [double](Get-ObjectPropertyValue -Object $primary -Name 'used_percent' -Default 0)
-        )
-    )
     $remainingPercent = [Math]::Round(100 - $usedPercent)
-    $windowMinutes = [int](Get-ObjectPropertyValue `
-        -Object $primary `
-        -Name 'window_minutes' `
-        -Default 0)
     $windowLabel = if ($windowMinutes -ge 10080) { '本周余量' }
         elseif ($windowMinutes -ge 1440) { '周期余量' }
         elseif ($windowMinutes -gt 0) { '{0} 小时余量' -f [Math]::Round($windowMinutes / 60) }
         else { 'Codex 余量' }
 
-    $resetTimestamp = $null
-    $resetTimestamp = [long](Get-ObjectPropertyValue `
-        -Object $primary `
-        -Name 'resets_at' `
-        -Default 0)
     $resetText = Get-ResetText -UnixSeconds $resetTimestamp
 
     $info = Get-ObjectPropertyValue -Object $payload -Name 'info'
@@ -1239,10 +1603,7 @@ function Get-CodexUsageSnapshot {
         ResetDate = $resetText.Date
         ResetCountdown = $resetText.Countdown
         ResetCount = '未提供'
-        Plan = Get-PlanLabel -PlanType ([string](Get-ObjectPropertyValue `
-            -Object $limits `
-            -Name 'plan_type' `
-            -Default ''))
+        Plan = Get-PlanLabel -PlanType $planType
         AccountName = $account.DisplayName
         AccountEmail = $account.Email
         TodayTokens = $todayTokens
@@ -1256,9 +1617,9 @@ function Get-CodexUsageSnapshot {
         CachedTokens = $cachedTokens
         CacheHitPercent = $cacheHit
         ContextPercent = $contextPercent
-        SampledAt = $latestRateLimitSnapshot.RateLimitObservedAt.LocalDateTime
+        SampledAt = $quotaSampledAt
         Status = $status
-        Source = 'Codex 本地会话快照'
+        Source = $source
     }
 }
 
@@ -1309,13 +1670,113 @@ if ($CheckCodexRateLimitSelection) {
             FileModifiedAt = [DateTimeOffset]'2030-01-01T00:11:00Z'
         }
     )
-    $selected = Select-CodexRateLimitSnapshot -Snapshots $selectionCandidates
+    $selected = Select-CodexRateLimitSnapshot `
+        -Snapshots $selectionCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
     $emptySelection = Select-CodexRateLimitSnapshot -Snapshots @(
         [pscustomobject]@{
             RateLimitPayload = $incompletePayload
             RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:01:00Z'
         }
     )
+    $replayedRateLimits = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $replayedRateLimits `
+        -Payload $freshPayload `
+        -ObservedAt ([DateTimeOffset]'2030-01-01T00:00:00Z')
+    foreach ($resetAt in (1894060920..1894061120 | Where-Object { ($_ % 10) -eq 0 })) {
+        $slidingResetPayload = [pscustomobject]@{
+            rate_limits = [pscustomobject]@{
+                primary = [pscustomobject]@{
+                    used_percent = 0.0
+                    window_minutes = 10080
+                    resets_at = $resetAt
+                }
+                plan_type = 'pro'
+            }
+        }
+        Add-CodexRateLimitSample `
+            -Candidates $replayedRateLimits `
+            -Payload $slidingResetPayload `
+            -ObservedAt ([DateTimeOffset]'2030-01-01T00:02:00Z')
+    }
+    $replayedSelection = Select-CodexStableRateLimitSample `
+        -Candidates $replayedRateLimits `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $crossFileSelection = Select-CodexRateLimitSnapshot `
+        -Snapshots @(
+            [pscustomobject]@{
+                RateLimitPayload = $freshPayload
+                RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:00:00Z'
+            },
+            [pscustomobject]@{
+                RateLimitPayload = $slidingResetPayload
+                RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:02:00Z'
+            }
+        ) `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $stableZeroRateLimits = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $stableZeroRateLimits `
+        -Payload $stalePayload `
+        -ObservedAt ([DateTimeOffset]'2029-12-31T23:45:00Z')
+    Add-CodexRateLimitSample `
+        -Candidates $stableZeroRateLimits `
+        -Payload $stalePayload `
+        -ObservedAt ([DateTimeOffset]'2029-12-31T23:50:00Z')
+    $stableZeroSelection = Select-CodexStableRateLimitSample `
+        -Candidates $stableZeroRateLimits
+    $singleZeroRateLimits = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $singleZeroRateLimits `
+        -Payload $stalePayload `
+        -ObservedAt ([DateTimeOffset]'2029-12-31T23:50:00Z')
+    $singleZeroSelection = Select-CodexStableRateLimitSample `
+        -Candidates $singleZeroRateLimits `
+        -Now ([DateTimeOffset]'2029-12-31T23:53:00Z')
+    $expiredPositiveCandidates = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $expiredPositiveCandidates `
+        -Payload $freshPayload `
+        -ObservedAt ([DateTimeOffset]'2030-01-01T00:00:00Z')
+    Add-CodexRateLimitSample `
+        -Candidates $expiredPositiveCandidates `
+        -Payload $slidingResetPayload `
+        -ObservedAt ([DateTimeOffset]'2030-01-01T01:55:00Z')
+    $expiredPositiveSelection = Select-CodexStableRateLimitSample `
+        -Candidates $expiredPositiveCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T02:00:00Z')
+    $rootSessionMetadata = [pscustomobject]@{ source = 'vscode' }
+    $subagentSessionMetadata = [pscustomobject]@{
+        source = [pscustomobject]@{
+            subagent = [pscustomobject]@{ parent_thread_id = 'parent-session' }
+        }
+    }
+    $officialPayload = [pscustomobject]@{
+        plan_type = 'prolite'
+        rate_limit = [pscustomobject]@{
+            primary_window = [pscustomobject]@{
+                used_percent = 40.0
+                limit_window_seconds = 604800
+                reset_at = 1894060800
+            }
+        }
+        additional_rate_limits = @(
+            [pscustomobject]@{
+                limit_name = 'GPT-5.3-Codex-Spark'
+                rate_limit = [pscustomobject]@{
+                    primary_window = [pscustomobject]@{
+                        used_percent = 0.0
+                        limit_window_seconds = 604800
+                        reset_at = 1894665600
+                    }
+                }
+            }
+        )
+    }
+    $officialUsage = ConvertTo-CodexOfficialUsage `
+        -Payload $officialPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T00:05:00Z')
     $selectedWindow = Get-CodexRateLimitWindow -Payload $selected.RateLimitPayload
     [pscustomobject]@{
         SelectedUsedPercent = [double]$selectedWindow.used_percent
@@ -1323,7 +1784,26 @@ if ($CheckCodexRateLimitSelection) {
         SelectedObservedAt = $selected.RateLimitObservedAt
         NewestFileWasStale = $selectionCandidates[0].FileModifiedAt -gt $selectionCandidates[1].FileModifiedAt
         IncompleteNewestWasIgnored = $selected.RateLimitPayload -eq $freshPayload
+        SlidingResetPlaceholdersIgnored = $replayedSelection.Payload -eq $freshPayload
+        ActivePositiveCycleProtectedAcrossFiles = (
+            $crossFileSelection.RateLimitPayload -eq $freshPayload
+        )
+        StableZeroSampleAccepted = $stableZeroSelection.Payload -eq $stalePayload
+        SingleZeroEventuallyAccepted = $singleZeroSelection.Payload -eq $stalePayload
+        ExpiredPositiveCanYieldToZero = (
+            $expiredPositiveSelection.Payload -eq $slidingResetPayload
+        )
+        RootSessionAccepted = Test-CodexRootSessionMetadata -Payload $rootSessionMetadata
+        SubagentSessionIgnored = -not (
+            Test-CodexRootSessionMetadata -Payload $subagentSessionMetadata
+        )
         EmptySelectionHandled = $null -eq $emptySelection
+        OfficialPrimaryUsageSelected = (
+            $officialUsage.UsedPercent -eq 40 -and
+            $officialUsage.WindowMinutes -eq 10080 -and
+            $officialUsage.PlanType -eq 'prolite'
+        )
+        AdditionalModelLimitIgnored = $officialUsage.UsedPercent -ne 0
     } | ConvertTo-Json
     exit 0
 }
@@ -1419,12 +1899,49 @@ if ($CheckPlacement) {
     exit 0
 }
 
+if ($CheckEdgeDocking) {
+    [pscustomobject]@{
+        LeftDetected = Get-EdgeDockSideForPosition `
+            -Left 8 `
+            -Width $script:CompactWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920 `
+            -SnapDistance $script:EdgeSnapDistance
+        RightDetected = Get-EdgeDockSideForPosition `
+            -Left (1920 - $script:CompactWidth - 9) `
+            -Width $script:CompactWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920 `
+            -SnapDistance $script:EdgeSnapDistance
+        CenterDetected = Get-EdgeDockSideForPosition `
+            -Left 900 `
+            -Width $script:CompactWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920 `
+            -SnapDistance $script:EdgeSnapDistance
+        LeftHidden = Get-EdgeDockPlacement `
+            -Side Left `
+            -Revealed $false `
+            -WindowWidth $script:CompactWidth `
+            -VisibleWidth $script:EdgeVisibleWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920
+        RightHidden = Get-EdgeDockPlacement `
+            -Side Right `
+            -Revealed $false `
+            -WindowWidth $script:CompactWidth `
+            -VisibleWidth $script:EdgeVisibleWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920
+    } | ConvertTo-Json
+    exit 0
+}
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Net.Http
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -1443,6 +1960,7 @@ public static class RemainingMarginNativeWindow
 }
 '@
 $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimation
+$script:HighContrast = [System.Windows.SystemParameters]::HighContrast
 
 [xml]$xaml = @'
 <Window
@@ -1689,7 +2207,10 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1" Background="{StaticResource Divider}" Margin="16,0"/>
+                <Border x:Name="CompactDivider"
+                        Grid.Row="1"
+                        Background="{StaticResource Divider}"
+                        Margin="16,0"/>
 
                 <Grid x:Name="DetailsPanel"
                       Grid.Row="2"
@@ -1905,6 +2426,42 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                 </Grid>
             </Grid>
         </Border>
+
+        <Grid x:Name="UltraCompactPanel"
+              Panel.ZIndex="3"
+              Width="14"
+              Background="#01FFFFFF"
+              HorizontalAlignment="Right"
+              VerticalAlignment="Stretch"
+              SnapsToDevicePixels="False"
+              UseLayoutRounding="False"
+              IsHitTestVisible="False"
+              Opacity="0">
+            <Border x:Name="UltraProgressTrack"
+                    Width="4"
+                    Margin="0,8"
+                    VerticalAlignment="Stretch"
+                    Background="#A6D9DCD7"
+                    BorderBrush="Transparent"
+                    BorderThickness="0"
+                    CornerRadius="2"
+                    ClipToBounds="True"
+                    SnapsToDevicePixels="False"
+                    UseLayoutRounding="False"
+                    ToolTip="剩余 --">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition x:Name="UltraEmptyProgressRow" Height="100*"/>
+                        <RowDefinition x:Name="UltraRemainingProgressRow" Height="0*"/>
+                    </Grid.RowDefinitions>
+                    <Border x:Name="UltraProgressFill"
+                            Grid.Row="1"
+                            Margin="0"
+                            CornerRadius="2"
+                            Background="{DynamicResource Sage}"/>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </Window>
 '@
@@ -2002,6 +2559,9 @@ if (-not $Demo) {
 
 $names = @(
     'WindowRoot', 'HoverHalo', 'Surface', 'SurfaceShadow', 'CompactHit',
+    'CompactDivider',
+    'UltraCompactPanel', 'UltraProgressTrack', 'UltraProgressFill',
+    'UltraEmptyProgressRow', 'UltraRemainingProgressRow',
     'CompactPrefix', 'RemainingValue', 'CompactSuffix', 'WindowLabel',
     'CompactProgressRow', 'ExpandedWindowLabel', 'ResetSummaryPanel',
     'ProgressTrack', 'RemainingProgressColumn',
@@ -2018,19 +2578,55 @@ foreach ($name in $names) {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
 }
 
+function Apply-SystemAccessibilityTheme {
+    if (-not $script:HighContrast) { return }
+
+    $colorMap = @{
+        TextPrimary = [Windows.SystemColors]::WindowTextColor
+        TextSecondary = [Windows.SystemColors]::WindowTextColor
+        TextMuted = [Windows.SystemColors]::GrayTextColor
+        Surface = [Windows.SystemColors]::WindowColor
+        SurfaceSubtle = [Windows.SystemColors]::WindowColor
+        Border = [Windows.SystemColors]::ActiveBorderColor
+        Divider = [Windows.SystemColors]::ActiveBorderColor
+        Sage = [Windows.SystemColors]::HighlightColor
+        SageSoft = [Windows.SystemColors]::WindowColor
+        StatusStrong = [Windows.SystemColors]::WindowTextColor
+        StatusBorder = [Windows.SystemColors]::ActiveBorderColor
+        Champagne = [Windows.SystemColors]::HighlightColor
+    }
+    foreach ($resourceName in $colorMap.Keys) {
+        $brush = $window.Resources[$resourceName]
+        if ($brush -is [Windows.Media.SolidColorBrush]) {
+            $brush.Color = $colorMap[$resourceName]
+        }
+    }
+    $Surface.Background = [Windows.SystemColors]::WindowBrush
+    $Surface.BorderBrush = [Windows.SystemColors]::ActiveBorderBrush
+    $UltraProgressTrack.Background = [Windows.SystemColors]::WindowBrush
+    $UltraProgressTrack.BorderBrush = [Windows.SystemColors]::ActiveBorderBrush
+}
+
+Apply-SystemAccessibilityTheme
+
 function New-DoubleAnimation {
     param(
         [double]$To,
         [int]$Milliseconds = 220,
-        [switch]$EaseOut
+        [switch]$EaseOut,
+        [switch]$EaseIn
     )
     $animation = New-Object Windows.Media.Animation.DoubleAnimation
     $animation.To = $To
     $effectiveMilliseconds = if ($script:ReducedMotion) { 1 } else { $Milliseconds }
     $animation.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($effectiveMilliseconds))
-    if ($EaseOut) {
+    if ($EaseOut -or $EaseIn) {
         $easing = New-Object Windows.Media.Animation.CubicEase
-        $easing.EasingMode = [Windows.Media.Animation.EasingMode]::EaseOut
+        $easing.EasingMode = if ($EaseIn) {
+            [Windows.Media.Animation.EasingMode]::EaseIn
+        } else {
+            [Windows.Media.Animation.EasingMode]::EaseOut
+        }
         $animation.EasingFunction = $easing
     }
     return $animation
@@ -2070,11 +2666,482 @@ function Get-SettingsPath {
     return Join-Path (Get-AppDataDirectory) 'settings.json'
 }
 
+$script:StartupTaskName = 'Remaining Margin Float'
+$script:StartupRegistryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$script:StartupRegistryName = 'RemainingMarginFloat'
+
+function Get-StartupShortcutPath {
+    $startupDirectory = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::Startup
+    )
+    return Join-Path $startupDirectory 'Remaining Margin Float.lnk'
+}
+
+function Get-StartupLaunchSpec {
+    param([switch]$PrepareLauncher)
+
+    $launcherPath = [Environment]::GetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_LAUNCHER',
+        [EnvironmentVariableTarget]::Process
+    )
+    if (
+        -not [string]::IsNullOrWhiteSpace($launcherPath) -and
+        (Test-Path -LiteralPath $launcherPath -PathType Leaf)
+    ) {
+        $managedLauncher = Join-Path (Get-AppDataDirectory) 'RemainingMarginFloat.exe'
+        if ($PrepareLauncher) {
+            $sourceFullPath = [IO.Path]::GetFullPath($launcherPath)
+            $managedFullPath = [IO.Path]::GetFullPath($managedLauncher)
+            if (-not [string]::Equals(
+                $sourceFullPath,
+                $managedFullPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                $updatePath = $managedFullPath + '.updating'
+                try {
+                    Copy-Item -LiteralPath $sourceFullPath -Destination $updatePath -Force
+                    Move-Item -LiteralPath $updatePath -Destination $managedFullPath -Force
+                }
+                finally {
+                    if (Test-Path -LiteralPath $updatePath -PathType Leaf) {
+                        Remove-Item -LiteralPath $updatePath -Force
+                    }
+                }
+            }
+        }
+        return [pscustomobject]@{
+            FilePath = $managedLauncher
+            Arguments = ''
+            WorkingDirectory = Split-Path -Parent $managedLauncher
+            Source = 'PackagedExe'
+        }
+    }
+
+    $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $scriptPath = [IO.Path]::GetFullPath($PSCommandPath)
+    return [pscustomobject]@{
+        FilePath = $powershellPath
+        Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "{0}"' -f (
+            $scriptPath.Replace('"', '\"')
+        )
+        WorkingDirectory = Split-Path -Parent $scriptPath
+        Source = 'PowerShell'
+    }
+}
+
+function ConvertTo-StartupCommandLine {
+    param($LaunchSpec)
+
+    $commandLine = '"{0}"' -f ([string]$LaunchSpec.FilePath).Replace('"', '\"')
+    if (-not [string]::IsNullOrWhiteSpace([string]$LaunchSpec.Arguments)) {
+        $commandLine += ' ' + [string]$LaunchSpec.Arguments
+    }
+    return $commandLine
+}
+
+function Test-StartupNotFoundError {
+    param([Exception]$Exception)
+
+    return $Exception.HResult -in @(
+        -2147024894, # 0x80070002: file not found
+        -2147024893, # 0x80070003: path not found
+        -2147216625  # 0x8004130F: scheduled task not found
+    )
+}
+
+function Test-StartupPathEqual {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+    try {
+        $leftFullPath = [IO.Path]::GetFullPath($Left.Trim('"'))
+        $rightFullPath = [IO.Path]::GetFullPath($Right.Trim('"'))
+        return [string]::Equals(
+            $leftFullPath,
+            $rightFullPath,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Release-ComReference {
+    param($Value)
+
+    if ($null -ne $Value -and [Runtime.InteropServices.Marshal]::IsComObject($Value)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Value)
+    }
+}
+
+function Test-StartupScheduledTask {
+    param(
+        $LaunchSpec,
+        [switch]$PresenceOnly
+    )
+
+    $service = $null
+    $root = $null
+    $task = $null
+    $action = $null
+    try {
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $root = $service.GetFolder('\')
+        $task = $root.GetTask($script:StartupTaskName)
+        if ($PresenceOnly) { return $true }
+        if (-not $LaunchSpec -or -not $task.Enabled -or $task.Definition.Actions.Count -lt 1) {
+            return $false
+        }
+        $action = $task.Definition.Actions.Item(1)
+        return (
+            (Test-StartupPathEqual -Left $action.Path -Right $LaunchSpec.FilePath) -and
+            ([string]$action.Arguments).Trim() -eq ([string]$LaunchSpec.Arguments).Trim() -and
+            (Test-Path -LiteralPath $LaunchSpec.FilePath -PathType Leaf)
+        )
+    }
+    catch {
+        if (Test-StartupNotFoundError -Exception $_.Exception) { return $false }
+        throw
+    }
+    finally {
+        Release-ComReference $action
+        Release-ComReference $task
+        Release-ComReference $root
+        Release-ComReference $service
+    }
+}
+
+function Test-StartupRegistry {
+    param(
+        $LaunchSpec,
+        [switch]$PresenceOnly
+    )
+
+    $runKey = Get-ItemProperty `
+        -LiteralPath $script:StartupRegistryPath `
+        -Name $script:StartupRegistryName `
+        -ErrorAction SilentlyContinue
+    if (-not $runKey -or -not $runKey.PSObject.Properties[$script:StartupRegistryName]) {
+        return $false
+    }
+    if ($PresenceOnly) { return $true }
+    return (
+        $LaunchSpec -and
+        [string]::Equals(
+            [string]$runKey.PSObject.Properties[$script:StartupRegistryName].Value,
+            (ConvertTo-StartupCommandLine -LaunchSpec $LaunchSpec),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        (Test-Path -LiteralPath $LaunchSpec.FilePath -PathType Leaf)
+    )
+}
+
+function Test-StartupShortcut {
+    param(
+        $LaunchSpec,
+        [switch]$PresenceOnly
+    )
+
+    $shortcutPath = Get-StartupShortcutPath
+    if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+        return $false
+    }
+    if ($PresenceOnly) { return $true }
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject 'WScript.Shell'
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        return (
+            $LaunchSpec -and
+            (Test-StartupPathEqual -Left $shortcut.TargetPath -Right $LaunchSpec.FilePath) -and
+            ([string]$shortcut.Arguments).Trim() -eq ([string]$LaunchSpec.Arguments).Trim() -and
+            (Test-Path -LiteralPath $LaunchSpec.FilePath -PathType Leaf)
+        )
+    }
+    finally {
+        Release-ComReference $shortcut
+        Release-ComReference $shell
+    }
+}
+
+function Get-StartupMode {
+    $launchSpec = Get-StartupLaunchSpec
+    if (Test-StartupScheduledTask -LaunchSpec $launchSpec) { return 'Task' }
+    if (Test-StartupRegistry -LaunchSpec $launchSpec) { return 'Registry' }
+    if (Test-StartupShortcut -LaunchSpec $launchSpec) { return 'StartupFolder' }
+    return 'Off'
+}
+
+function Remove-StartupRegistrations {
+    param(
+        [ValidateSet('None', 'Task', 'Registry', 'StartupFolder')]
+        [string]$Except = 'None'
+    )
+
+    if ($Except -ne 'Task' -and (Test-StartupScheduledTask -PresenceOnly)) {
+        $service = $null
+        $root = $null
+        try {
+            $service = New-Object -ComObject 'Schedule.Service'
+            $service.Connect()
+            $root = $service.GetFolder('\')
+            $root.DeleteTask($script:StartupTaskName, 0)
+        }
+        finally {
+            Release-ComReference $root
+            Release-ComReference $service
+        }
+    }
+
+    if ($Except -ne 'Registry' -and (Test-StartupRegistry -PresenceOnly)) {
+        Remove-ItemProperty `
+            -LiteralPath $script:StartupRegistryPath `
+            -Name $script:StartupRegistryName `
+            -ErrorAction Stop
+    }
+
+    $shortcutPath = Get-StartupShortcutPath
+    if (
+        $Except -ne 'StartupFolder' -and
+        (Test-Path -LiteralPath $shortcutPath -PathType Leaf)
+    ) {
+        Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction Stop
+    }
+}
+
+function Register-StartupScheduledTask {
+    param($LaunchSpec)
+
+    $service = $null
+    $root = $null
+    $definition = $null
+    $trigger = $null
+    $action = $null
+    try {
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $root = $service.GetFolder('\')
+        $definition = $service.NewTask(0)
+        $definition.RegistrationInfo.Description = '登录 Windows 后启动 Remaining Margin Float'
+        $definition.Settings.Enabled = $true
+        $definition.Settings.StartWhenAvailable = $true
+        $definition.Settings.DisallowStartIfOnBatteries = $false
+        $definition.Settings.StopIfGoingOnBatteries = $false
+        $definition.Settings.ExecutionTimeLimit = 'PT0S'
+        $definition.Settings.MultipleInstances = 2
+
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $definition.Principal.UserId = $identity
+        $definition.Principal.LogonType = 3
+        $definition.Principal.RunLevel = 0
+
+        $trigger = $definition.Triggers.Create(9)
+        $trigger.Enabled = $true
+        $trigger.UserId = $identity
+        $action = $definition.Actions.Create(0)
+        $action.Path = $LaunchSpec.FilePath
+        $action.Arguments = $LaunchSpec.Arguments
+        $action.WorkingDirectory = $LaunchSpec.WorkingDirectory
+
+        [void]$root.RegisterTaskDefinition(
+            $script:StartupTaskName,
+            $definition,
+            6,
+            $identity,
+            $null,
+            3,
+            $null
+        )
+    }
+    finally {
+        Release-ComReference $action
+        Release-ComReference $trigger
+        Release-ComReference $definition
+        Release-ComReference $root
+        Release-ComReference $service
+    }
+}
+
+function Register-StartupRegistry {
+    param($LaunchSpec)
+
+    if (-not (Test-Path -LiteralPath $script:StartupRegistryPath)) {
+        [void](New-Item -Path $script:StartupRegistryPath -Force)
+    }
+    [void](New-ItemProperty `
+        -LiteralPath $script:StartupRegistryPath `
+        -Name $script:StartupRegistryName `
+        -Value (ConvertTo-StartupCommandLine -LaunchSpec $LaunchSpec) `
+        -PropertyType String `
+        -Force)
+}
+
+function Register-StartupShortcut {
+    param($LaunchSpec)
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject 'WScript.Shell'
+        $shortcut = $shell.CreateShortcut((Get-StartupShortcutPath))
+        $shortcut.TargetPath = $LaunchSpec.FilePath
+        $shortcut.Arguments = $LaunchSpec.Arguments
+        $shortcut.WorkingDirectory = $LaunchSpec.WorkingDirectory
+        $shortcut.Description = '启动 Remaining Margin Float'
+        $shortcut.Save()
+    }
+    finally {
+        Release-ComReference $shortcut
+        Release-ComReference $shell
+    }
+}
+
+function Get-StartupRegistrationPresence {
+    return [ordered]@{
+        Task = Test-StartupScheduledTask -PresenceOnly
+        Registry = Test-StartupRegistry -PresenceOnly
+        StartupFolder = Test-StartupShortcut -PresenceOnly
+    }
+}
+
+function Sync-PackagedStartupLauncher {
+    try {
+        $launcherPath = [Environment]::GetEnvironmentVariable(
+            'REMAINING_MARGIN_FLOAT_LAUNCHER',
+            [EnvironmentVariableTarget]::Process
+        )
+        if ([string]::IsNullOrWhiteSpace($launcherPath)) { return }
+
+        $presence = Get-StartupRegistrationPresence
+        if ($presence.Task -or $presence.Registry -or $presence.StartupFolder) {
+            [void](Get-StartupLaunchSpec -PrepareLauncher)
+        }
+    }
+    catch {
+        # Startup remains usable from its last known-good managed launcher.
+    }
+}
+
+function Assert-StartupMode {
+    param(
+        [ValidateSet('Off', 'Task', 'Registry', 'StartupFolder')]
+        [string]$Mode,
+        $LaunchSpec
+    )
+
+    $presence = Get-StartupRegistrationPresence
+    foreach ($candidate in @('Task', 'Registry', 'StartupFolder')) {
+        $shouldExist = ($Mode -eq $candidate)
+        if ([bool]$presence[$candidate] -ne $shouldExist) {
+            throw "开机启动设置未达到唯一模式：$Mode。"
+        }
+    }
+    if ($Mode -ne 'Off') {
+        $isValid = switch ($Mode) {
+            'Task' { Test-StartupScheduledTask -LaunchSpec $LaunchSpec }
+            'Registry' { Test-StartupRegistry -LaunchSpec $LaunchSpec }
+            'StartupFolder' { Test-StartupShortcut -LaunchSpec $LaunchSpec }
+        }
+        if (-not $isValid) {
+            throw "开机启动入口已创建，但目标或参数校验失败：$Mode。"
+        }
+    }
+}
+
+function Sync-StartupMenuState {
+    foreach ($mode in @('Off', 'Task', 'Registry', 'StartupFolder')) {
+        if ($script:StartupMenuItems.ContainsKey($mode)) {
+            $script:StartupMenuItems[$mode].IsChecked = ($script:StartupMode -eq $mode)
+        }
+        if ($script:TrayStartupItems.ContainsKey($mode)) {
+            $script:TrayStartupItems[$mode].Checked = ($script:StartupMode -eq $mode)
+        }
+    }
+}
+
+function Set-StartupMode {
+    param(
+        [ValidateSet('Off', 'Task', 'Registry', 'StartupFolder')]
+        [string]$Mode,
+        [switch]$Silent
+    )
+
+    $previousMode = Get-StartupMode
+    try {
+        $launchSpec = if ($Mode -eq 'Off') {
+            $null
+        } else {
+            Get-StartupLaunchSpec -PrepareLauncher
+        }
+        switch ($Mode) {
+            'Task' { Register-StartupScheduledTask -LaunchSpec $launchSpec }
+            'Registry' { Register-StartupRegistry -LaunchSpec $launchSpec }
+            'StartupFolder' { Register-StartupShortcut -LaunchSpec $launchSpec }
+        }
+        Remove-StartupRegistrations -Except $(if ($Mode -eq 'Off') { 'None' } else { $Mode })
+        Assert-StartupMode -Mode $Mode -LaunchSpec $launchSpec
+        $script:StartupMode = $Mode
+        Sync-StartupMenuState
+        return $true
+    }
+    catch {
+        $originalError = $_.Exception.Message
+        try {
+            if ($previousMode -eq 'Off') {
+                Remove-StartupRegistrations
+            }
+            else {
+                $rollbackSpec = Get-StartupLaunchSpec -PrepareLauncher
+                switch ($previousMode) {
+                    'Task' { Register-StartupScheduledTask -LaunchSpec $rollbackSpec }
+                    'Registry' { Register-StartupRegistry -LaunchSpec $rollbackSpec }
+                    'StartupFolder' { Register-StartupShortcut -LaunchSpec $rollbackSpec }
+                }
+                Remove-StartupRegistrations -Except $previousMode
+                Assert-StartupMode -Mode $previousMode -LaunchSpec $rollbackSpec
+            }
+        }
+        catch {
+            $originalError += "`n回滚旧设置也失败：$($_.Exception.Message)"
+        }
+        $script:StartupMode = Get-StartupMode
+        Sync-StartupMenuState
+        if (-not $Silent) {
+            [void][Windows.MessageBox]::Show(
+                "无法更新开机启动设置。`n`n$originalError",
+                'Remaining Margin Float',
+                [Windows.MessageBoxButton]::OK,
+                [Windows.MessageBoxImage]::Warning
+            )
+        }
+        return $false
+    }
+}
+
 function Save-Settings {
-    if ($isDiagnosticRun) { return }
+    if ($isDiagnosticRun -or $script:IsRestoringSettings) { return }
 
     try {
-        $saveLeft = if ($null -ne $script:CompactAnchorLeft) {
+        $saveLeft = if ($script:EdgeDockSide) {
+            $workArea = Get-WindowWorkArea
+            Get-EdgeDockPlacement `
+                -Side $script:EdgeDockSide `
+                -Revealed $true `
+                -WindowWidth $script:CompactWidth `
+                -VisibleWidth $script:EdgeVisibleWidth `
+                -WorkLeft $workArea.Left `
+                -WorkRight $workArea.Right
+        }
+        elseif ($null -ne $script:CompactAnchorLeft) {
             $script:CompactAnchorLeft
         } else {
             $window.Left
@@ -2090,6 +3157,8 @@ function Save-Settings {
             Expanded = $false
             Topmost = $window.Topmost
             Provider = $script:ActiveProvider
+            EdgeDockEnabled = $script:EdgeDockEnabled
+            EdgeDockSide = $script:EdgeDockSide
         } | ConvertTo-Json | Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
     }
     catch {
@@ -2116,6 +3185,16 @@ function Restore-Settings {
                 $window.Top = [double]$settings.Top
             }
             if ($null -ne $settings.Topmost) { $window.Topmost = [bool]$settings.Topmost }
+            if ($settings.PSObject.Properties['EdgeDockEnabled']) {
+                $script:EdgeDockEnabled = [bool]$settings.EdgeDockEnabled
+            }
+            if (
+                $script:EdgeDockEnabled -and
+                $settings.PSObject.Properties['EdgeDockSide'] -and
+                [string]$settings.EdgeDockSide -in @('Left', 'Right')
+            ) {
+                $script:EdgeDockSide = [string]$settings.EdgeDockSide
+            }
             if (
                 $settings.PSObject.Properties['Provider'] -and
                 [string]$settings.Provider -in @('Codex', 'DeepSeek')
@@ -2158,7 +3237,255 @@ function Get-WindowWorkArea {
     return [System.Windows.SystemParameters]::WorkArea
 }
 
+function Set-EdgeDockChrome {
+    param([bool]$Revealed)
+
+    if (-not $script:EdgeDockSide) { return }
+    # Keep the edge rail in a full-window overlay so its screen-relative
+    # spacing and hit target never change when the card chrome appears.
+    $WindowRoot.Margin = New-Object Windows.Thickness(0)
+    $UltraCompactPanel.Margin = New-Object Windows.Thickness(0)
+    if (-not $Revealed) {
+        $Surface.Margin = New-Object Windows.Thickness(0)
+        $HoverHalo.Margin = New-Object Windows.Thickness(0)
+    }
+    elseif ($script:EdgeDockSide -eq 'Left') {
+        $Surface.Margin = New-Object Windows.Thickness(0, 5, 5, 5)
+        $HoverHalo.Margin = New-Object Windows.Thickness(-1, 4, 4, 4)
+    }
+    else {
+        $Surface.Margin = New-Object Windows.Thickness(5, 5, 0, 5)
+        $HoverHalo.Margin = New-Object Windows.Thickness(4, 4, -1, 4)
+    }
+
+    # Docking must not reshape the card. Only the hidden-state chrome becomes
+    # transparent so the thermometer reads as a quiet edge affordance.
+    $Surface.CornerRadius = New-Object Windows.CornerRadius(16)
+    $HoverHalo.CornerRadius = New-Object Windows.CornerRadius(17)
+
+    $SurfaceShadow.BeginAnimation(
+        [Windows.Media.Effects.DropShadowEffect]::OpacityProperty,
+        $null
+    )
+    $HoverHalo.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    if (-not $Revealed) {
+        $Surface.Background = [Windows.Media.Brushes]::Transparent
+        $Surface.BorderBrush = [Windows.Media.Brushes]::Transparent
+        $SurfaceShadow.Opacity = 0
+        $HoverHalo.Opacity = 0
+    }
+    else {
+        $Surface.Background = if ($script:HighContrast) {
+            [Windows.SystemColors]::WindowBrush
+        } else {
+            $window.Resources['Surface']
+        }
+        $Surface.BorderBrush = if ($script:HighContrast) {
+            [Windows.SystemColors]::ActiveBorderBrush
+        } else {
+            New-Object Windows.Media.SolidColorBrush(
+                [Windows.Media.ColorConverter]::ConvertFromString($(if ($script:IsPointerOverSurface) {
+                    $script:CurrentHoverBorderColor
+                } else {
+                    $script:CurrentSurfaceBorderColor
+                }))
+            )
+        }
+        $SurfaceShadow.Opacity = if ($script:IsPointerOverSurface) { 0.11 } else { 0.07 }
+        $HoverHalo.Opacity = if ($script:IsPointerOverSurface) { 0.46 } else { 0 }
+    }
+}
+
+function Set-EdgeDockVisualState {
+    param(
+        [bool]$Revealed,
+        [switch]$Immediate
+    )
+
+    $compactTarget = if ($Revealed) { 1.0 } else { 0.0 }
+    $ultraTarget = if ($Revealed) { 0.0 } else { 1.0 }
+    $ultraFrom = $UltraCompactPanel.Opacity
+    $surfaceFrom = $Surface.Opacity
+    if ($Revealed -or $Immediate -or $script:ReducedMotion) {
+        Set-EdgeDockChrome -Revealed $Revealed
+    }
+
+    $CompactHit.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    $CompactDivider.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    $Surface.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    $UltraCompactPanel.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    $CompactHit.Opacity = $compactTarget
+    $CompactDivider.Opacity = $compactTarget
+    $Surface.Opacity = $compactTarget
+    $UltraCompactPanel.Opacity = $ultraTarget
+    $UltraCompactPanel.IsHitTestVisible = (-not $Revealed)
+
+    if (-not $Immediate -and -not $script:ReducedMotion) {
+        $surfaceDuration = if ($Revealed) { 160 } else { 105 }
+        $surfaceDelay = if ($Revealed) { 20 } else { 0 }
+        $surfaceAnimation = New-DoubleAnimation `
+            -To $compactTarget `
+            -Milliseconds $surfaceDuration `
+            -EaseOut:$Revealed `
+            -EaseIn:(-not $Revealed)
+        $surfaceAnimation.From = $surfaceFrom
+        $surfaceAnimation.BeginTime = [TimeSpan]::FromMilliseconds($surfaceDelay)
+        $surfaceAnimation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+        if (-not $Revealed) {
+            $surfaceAnimation.Add_Completed({
+                if ($script:EdgeDockSide -and -not $script:IsEdgeRevealed) {
+                    Set-EdgeDockChrome -Revealed $false
+                }
+            })
+        }
+        $Surface.BeginAnimation(
+            [Windows.UIElement]::OpacityProperty,
+            $surfaceAnimation
+        )
+
+        $ultraDuration = if ($Revealed) { 85 } else { 120 }
+        $ultraDelay = if ($Revealed) { 0 } else { 25 }
+        $ultraAnimation = New-DoubleAnimation `
+            -To $ultraTarget `
+            -Milliseconds $ultraDuration `
+            -EaseOut:$Revealed `
+            -EaseIn:(-not $Revealed)
+        $ultraAnimation.From = $ultraFrom
+        $ultraAnimation.BeginTime = [TimeSpan]::FromMilliseconds($ultraDelay)
+        $ultraAnimation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+        $UltraCompactPanel.BeginAnimation(
+            [Windows.UIElement]::OpacityProperty,
+            $ultraAnimation
+        )
+    }
+}
+
+function Set-EdgeDockReveal {
+    param(
+        [bool]$Revealed,
+        [switch]$Immediate
+    )
+
+    if (-not $script:EdgeDockSide -or $script:IsExpanded) { return }
+    if (-not $Immediate -and $script:IsEdgeRevealed -eq $Revealed) { return }
+
+    $script:IsEdgeRevealed = $Revealed
+
+    $workArea = Get-WindowWorkArea
+    $window.Top = [Math]::Max(
+        $workArea.Top,
+        [Math]::Min($window.Top, $workArea.Bottom - $script:CompactHeight)
+    )
+    $UltraCompactPanel.HorizontalAlignment = if ($script:EdgeDockSide -eq 'Left') {
+        [Windows.HorizontalAlignment]::Right
+    } else {
+        [Windows.HorizontalAlignment]::Left
+    }
+
+    $targetLeft = Get-EdgeDockPlacement `
+        -Side $script:EdgeDockSide `
+        -Revealed $Revealed `
+        -WindowWidth $script:CompactWidth `
+        -VisibleWidth $script:EdgeVisibleWidth `
+        -WorkLeft $workArea.Left `
+        -WorkRight $workArea.Right
+    $currentLeft = $window.Left
+    $window.BeginAnimation([Windows.Window]::LeftProperty, $null)
+    $window.Left = $targetLeft
+
+    if (-not $Immediate -and -not $script:ReducedMotion) {
+        $duration = if ($Revealed) {
+            $script:EdgeRevealDurationMs
+        } else {
+            $script:EdgeHideDurationMs
+        }
+        $leftAnimation = New-DoubleAnimation `
+            -To $targetLeft `
+            -Milliseconds $duration `
+            -EaseOut:$Revealed `
+            -EaseIn:(-not $Revealed)
+        $leftAnimation.From = $currentLeft
+        $leftAnimation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+        $window.BeginAnimation([Windows.Window]::LeftProperty, $leftAnimation)
+    }
+
+    Set-EdgeDockVisualState -Revealed $Revealed -Immediate:$Immediate
+    $CompactHit.ToolTip = if ($Revealed) {
+        '拖动移动 · 单击查看详情'
+    } else {
+        '悬停展开 · 拖动移动 · 单击查看详情'
+    }
+}
+
+function Clear-EdgeDock {
+    if (-not $script:EdgeDockSide) { return }
+    Set-EdgeDockReveal -Revealed $true -Immediate
+    $script:EdgeDockSide = $null
+    $script:IsEdgeRevealed = $false
+    $WindowRoot.Margin = New-Object Windows.Thickness(5)
+    $UltraCompactPanel.Margin = New-Object Windows.Thickness(0)
+    $Surface.Margin = New-Object Windows.Thickness(0)
+    $HoverHalo.Margin = New-Object Windows.Thickness(-1)
+    $Surface.CornerRadius = New-Object Windows.CornerRadius(16)
+    $HoverHalo.CornerRadius = New-Object Windows.CornerRadius(17)
+    $Surface.Background = if ($script:HighContrast) {
+        [Windows.SystemColors]::WindowBrush
+    } else {
+        $window.Resources['Surface']
+    }
+    Set-EdgeDockVisualState -Revealed $true -Immediate
+}
+
+function Try-DockWindowAfterMove {
+    if (-not $script:EdgeDockEnabled -or $script:IsExpanded) { return $false }
+
+    $workArea = Get-WindowWorkArea
+    $side = Get-EdgeDockSideForPosition `
+        -Left $window.Left `
+        -Width $script:CompactWidth `
+        -WorkLeft $workArea.Left `
+        -WorkRight $workArea.Right `
+        -SnapDistance $script:EdgeSnapDistance
+    if (-not $side) {
+        Clear-EdgeDock
+        return $false
+    }
+
+    $script:EdgeDockSide = $side
+    $script:IsEdgeRevealed = $true
+    Set-EdgeDockReveal -Revealed $false
+    Save-Settings
+    return $true
+}
+
+function Sync-EdgeDockMenuState {
+    if ($script:EdgeDockMenuItem) {
+        $script:EdgeDockMenuItem.IsChecked = $script:EdgeDockEnabled
+    }
+    if ($script:TrayEdgeDockItem) {
+        $script:TrayEdgeDockItem.Checked = $script:EdgeDockEnabled
+    }
+}
+
+function Set-EdgeDockEnabled {
+    param([bool]$Enabled)
+
+    $script:EdgeDockEnabled = $Enabled
+    if (-not $Enabled) {
+        Clear-EdgeDock
+    }
+    elseif (-not $script:IsExpanded) {
+        [void](Try-DockWindowAfterMove)
+    }
+    Sync-EdgeDockMenuState
+    Save-Settings
+}
+
 function Ensure-WindowVisible {
+    if ($script:EdgeDockSide -and -not $script:IsExpanded) {
+        Set-EdgeDockReveal -Revealed $script:IsEdgeRevealed -Immediate
+        return
+    }
     $workArea = Get-WindowWorkArea
     $fitted = Get-FittedPlacement `
         -AnchorLeft $window.Left `
@@ -2174,6 +3501,9 @@ function Ensure-WindowVisible {
 }
 
 function Show-ExistingWindow {
+    if ($script:EdgeDockSide -and -not $script:IsExpanded) {
+        Set-EdgeDockReveal -Revealed $true -Immediate
+    }
     Ensure-WindowVisible
     if ($window.WindowState -ne [Windows.WindowState]::Normal) {
         $window.WindowState = [Windows.WindowState]::Normal
@@ -2206,10 +3536,14 @@ function Get-ExpandedPlacement {
 function Set-ExpandedState {
     param(
         [bool]$Expanded,
-        [switch]$Immediate
+        [switch]$Immediate,
+        [switch]$DeferEdgeDock
     )
 
     if ($Expanded -and -not $script:IsExpanded) {
+        if ($script:EdgeDockSide -and -not $DeferEdgeDock) {
+            Set-EdgeDockReveal -Revealed $true -Immediate
+        }
         $script:CompactAnchorLeft = $window.Left
         $script:CompactAnchorTop = $window.Top
     }
@@ -2272,6 +3606,13 @@ function Set-ExpandedState {
             $script:CompactAnchorLeft = $null
             $script:CompactAnchorTop = $null
         }
+        if ($script:EdgeDockSide) {
+            $keepRevealed = (
+                $script:IsPointerOverSurface -or
+                ($Surface.ContextMenu -and $Surface.ContextMenu.IsOpen)
+            )
+            Set-EdgeDockReveal -Revealed $keepRevealed -Immediate:$Immediate
+        }
     }
 
     Save-Settings
@@ -2296,6 +3637,26 @@ function Request-InactiveDetailsCollapse {
         [Windows.Threading.DispatcherPriority]::ContextIdle,
         [Action]{ Collapse-DetailsIfInactive }
     ) | Out-Null
+}
+
+function Hide-EdgeDockIfPointerAway {
+    if (
+        $script:EdgeDockSide -and
+        -not $script:IsExpanded -and
+        -not $script:IsPointerOverSurface -and
+        -not ($Surface.ContextMenu -and $Surface.ContextMenu.IsOpen)
+    ) {
+        Set-EdgeDockReveal -Revealed $false
+    }
+}
+
+function Request-EdgeDockHide {
+    if (-not $script:EdgeHideTimer) {
+        Hide-EdgeDockIfPointerAway
+        return
+    }
+    $script:EdgeHideTimer.Stop()
+    $script:EdgeHideTimer.Start()
 }
 
 function Set-HoverState {
@@ -2341,6 +3702,16 @@ function Get-UsageStatusPalette {
         [double]$Percent,
         [bool]$Available
     )
+
+    if ($script:HighContrast) {
+        return [pscustomobject]@{
+            Accent = [Windows.SystemColors]::HighlightColor
+            Strong = [Windows.SystemColors]::WindowTextColor
+            Soft = [Windows.SystemColors]::WindowColor
+            Border = [Windows.SystemColors]::ActiveBorderColor
+            HoverBorder = [Windows.SystemColors]::HighlightColor.ToString()
+        }
+    }
 
     if (-not $Available) {
         return [pscustomobject]@{
@@ -2409,6 +3780,16 @@ function Set-UsageStatusPalette {
     ([Windows.Media.SolidColorBrush]$window.Resources['SageSoft']).Color = $palette.Soft
     ([Windows.Media.SolidColorBrush]$window.Resources['StatusBorder']).Color = $palette.Border
     $script:CurrentHoverBorderColor = $palette.HoverBorder
+    $thermometerBrush = New-Object Windows.Media.LinearGradientBrush
+    $thermometerBrush.StartPoint = New-Object Windows.Point(0, 1)
+    $thermometerBrush.EndPoint = New-Object Windows.Point(0, 0)
+    $thermometerBrush.GradientStops.Add(
+        (New-Object Windows.Media.GradientStop($palette.Strong, 0.0))
+    )
+    $thermometerBrush.GradientStops.Add(
+        (New-Object Windows.Media.GradientStop($palette.Accent, 1.0))
+    )
+    $UltraProgressFill.Background = $thermometerBrush
 
     if ($script:IsPointerOverSurface) {
         $Surface.BorderBrush = New-Object Windows.Media.SolidColorBrush(
@@ -2435,10 +3816,23 @@ function Set-Progress {
         $used,
         [Windows.GridUnitType]::Star
     )
+    $UltraEmptyProgressRow.Height = New-Object Windows.GridLength(
+        $used,
+        [Windows.GridUnitType]::Star
+    )
+    $UltraRemainingProgressRow.Height = New-Object Windows.GridLength(
+        $remaining,
+        [Windows.GridUnitType]::Star
+    )
     $ProgressTrack.ToolTip = if ($Available) {
         '剩余 {0:0}% · 已使用 {1:0}%' -f $remaining, $used
     } else {
         '设置预算基准后显示百分比进度'
+    }
+    $UltraProgressTrack.ToolTip = if ($Available) {
+        '剩余 {0:0}%' -f $remaining
+    } else {
+        '暂无可用百分比'
     }
     Set-UsageStatusPalette -Percent $remaining -Available $Available
 }
@@ -2904,14 +4298,80 @@ function Invoke-Refresh {
     }
 }
 
+if ($CheckStartup) {
+    Sync-PackagedStartupLauncher
+    $launchSpec = Get-StartupLaunchSpec
+    [pscustomobject]@{
+        Mode = Get-StartupMode
+        FilePath = $launchSpec.FilePath
+        Arguments = $launchSpec.Arguments
+        Source = $launchSpec.Source
+        CommandLine = ConvertTo-StartupCommandLine -LaunchSpec $launchSpec
+    } | ConvertTo-Json
+    $window.Close()
+    exit 0
+}
+
+$script:IsRestoringSettings = $true
 Restore-Settings
-Set-ExpandedState -Expanded $script:IsExpanded -Immediate
+Sync-PackagedStartupLauncher
+$script:StartupMode = Get-StartupMode
+Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
+$script:IsRestoringSettings = $false
 
 $script:RefreshRemaining = $script:RefreshIntervalSeconds
 $script:IsRefreshing = $false
 $script:InitialRefreshQueued = $false
 $script:MouseDownPoint = $null
 $script:Dragging = $false
+$script:DragOriginEdgeSide = $null
+$script:DragStartScreenPoint = $null
+$script:EdgeHideTimer = New-Object Windows.Threading.DispatcherTimer
+$script:EdgeHideTimer.Interval = [TimeSpan]::FromMilliseconds(140)
+$script:EdgeHideTimer.Add_Tick({
+    $script:EdgeHideTimer.Stop()
+    Hide-EdgeDockIfPointerAway
+})
+$script:EdgeRevealTimer = New-Object Windows.Threading.DispatcherTimer
+$script:EdgeRevealTimer.Interval = [TimeSpan]::FromMilliseconds(70)
+$script:EdgeRevealTimer.Add_Tick({
+    $script:EdgeRevealTimer.Stop()
+    if (
+        $window.IsMouseOver -and
+        $script:EdgeDockSide -and
+        -not $script:IsExpanded -and
+        -not $script:IsEdgeRevealed
+    ) {
+        Set-HoverState -Hovering $true
+        Set-EdgeDockReveal -Revealed $true
+    }
+})
+
+function Complete-WindowDrag {
+    param(
+        [string]$OriginEdgeSide,
+        $StartScreenPoint
+    )
+
+    $endScreenPoint = [System.Windows.Forms.Cursor]::Position
+    $draggedInward = if (-not $OriginEdgeSide -or -not $StartScreenPoint) {
+        $false
+    }
+    elseif ($OriginEdgeSide -eq 'Left') {
+        ($endScreenPoint.X - $StartScreenPoint.X) -ge 4
+    }
+    else {
+        ($StartScreenPoint.X - $endScreenPoint.X) -ge 4
+    }
+
+    if ($draggedInward) {
+        Save-Settings
+        return
+    }
+    if (-not (Try-DockWindowAfterMove)) {
+        Save-Settings
+    }
+}
 
 if (-not $CheckTransitions) {
     $window.Add_Loaded({
@@ -2929,12 +4389,54 @@ if (-not $CheckTransitions) {
     })
 }
 
-$window.Add_MouseEnter({ Set-HoverState -Hovering $true })
-$window.Add_MouseLeave({ Set-HoverState -Hovering $false })
+$window.Add_MouseEnter({
+    $script:EdgeHideTimer.Stop()
+    $script:IsPointerOverSurface = $true
+    if (
+        $script:EdgeDockSide -and
+        -not $script:IsExpanded -and
+        -not $script:IsEdgeRevealed
+    ) {
+        $script:EdgeRevealTimer.Stop()
+        $script:EdgeRevealTimer.Start()
+    }
+    else {
+        Set-HoverState -Hovering $true
+    }
+})
+$window.Add_MouseLeave({
+    $script:EdgeRevealTimer.Stop()
+    Set-HoverState -Hovering $false
+    Request-EdgeDockHide
+})
+
+$UltraCompactPanel.Add_PreviewMouseLeftButtonDown({
+    param($sender, $eventArgs)
+    if (-not $script:EdgeDockSide -or $script:IsExpanded) { return }
+
+    $originEdgeSide = $script:EdgeDockSide
+    $startScreenPoint = [System.Windows.Forms.Cursor]::Position
+    $script:EdgeRevealTimer.Stop()
+    $script:EdgeHideTimer.Stop()
+    $script:Dragging = $true
+    Clear-EdgeDock
+    try {
+        $window.DragMove()
+    }
+    catch {}
+    Complete-WindowDrag `
+        -OriginEdgeSide $originEdgeSide `
+        -StartScreenPoint $startScreenPoint
+    $script:Dragging = $false
+    $script:MouseDownPoint = $null
+    $eventArgs.Handled = $true
+})
 
 $CompactHit.Add_PreviewMouseLeftButtonDown({
     param($sender, $eventArgs)
     $script:MouseDownPoint = $eventArgs.GetPosition($window)
+    $script:DragOriginEdgeSide = $script:EdgeDockSide
+    $script:DragStartScreenPoint = [System.Windows.Forms.Cursor]::Position
     $script:Dragging = $false
     $CompactHit.CaptureMouse() | Out-Null
 })
@@ -2947,9 +4449,14 @@ $CompactHit.Add_PreviewMouseMove({
         if ($distance -gt 5) {
             $script:Dragging = $true
             $CompactHit.ReleaseMouseCapture()
+            Clear-EdgeDock
             try { $window.DragMove() } catch {}
-            Save-Settings
+            Complete-WindowDrag `
+                -OriginEdgeSide $script:DragOriginEdgeSide `
+                -StartScreenPoint $script:DragStartScreenPoint
             $script:MouseDownPoint = $null
+            $script:DragOriginEdgeSide = $null
+            $script:DragStartScreenPoint = $null
         }
     }
 })
@@ -2960,6 +4467,8 @@ $CompactHit.Add_PreviewMouseLeftButtonUp({
         Set-ExpandedState -Expanded (-not $script:IsExpanded)
     }
     $script:MouseDownPoint = $null
+    $script:DragOriginEdgeSide = $null
+    $script:DragStartScreenPoint = $null
     $script:Dragging = $false
 })
 
@@ -3032,9 +4541,45 @@ $topmostMenu.Add_Click({
     }
     Save-Settings
 })
+$script:EdgeDockMenuItem = New-Object Windows.Controls.MenuItem
+$script:EdgeDockMenuItem.Header = '贴边隐藏'
+$script:EdgeDockMenuItem.IsCheckable = $true
+$script:EdgeDockMenuItem.IsChecked = $script:EdgeDockEnabled
+$script:EdgeDockMenuItem.ToolTip = '拖到屏幕左侧或右侧后，自动收为温度计进度条'
+$script:EdgeDockMenuItem.Add_Click({
+    Set-EdgeDockEnabled -Enabled $script:EdgeDockMenuItem.IsChecked
+})
+$startupMenu = New-Object Windows.Controls.MenuItem
+$startupMenu.Header = '设置开机启动'
+$startupClickHandler = {
+    param($sender, $eventArgs)
+    [void](Set-StartupMode -Mode ([string]$sender.Tag))
+}
+foreach ($startupOption in @(
+    [pscustomobject]@{ Mode = 'Off'; Header = '关闭' },
+    [pscustomobject]@{ Mode = 'Task'; Header = '计划任务（推荐）' },
+    [pscustomobject]@{ Mode = 'Registry'; Header = '注册表（兼容）' },
+    [pscustomobject]@{ Mode = 'StartupFolder'; Header = '启动文件夹（备用）' }
+)) {
+    $startupItem = New-Object Windows.Controls.MenuItem
+    $startupItem.Header = $startupOption.Header
+    $startupItem.Tag = $startupOption.Mode
+    $startupItem.IsCheckable = $true
+    $startupItem.Add_Click($startupClickHandler)
+    $script:StartupMenuItems[$startupOption.Mode] = $startupItem
+    [void]$startupMenu.Items.Add($startupItem)
+}
+$startupServiceItem = New-Object Windows.Controls.MenuItem
+$startupServiceItem.Header = 'Windows 服务（不适用于桌面窗口）'
+$startupServiceItem.IsEnabled = $false
+$startupServiceItem.ToolTip = '服务运行在隔离会话中，无法显示悬浮窗'
+[void]$startupMenu.Items.Add((New-Object Windows.Controls.Separator))
+[void]$startupMenu.Items.Add($startupServiceItem)
+Sync-StartupMenuState
 $resetPositionMenu = New-Object Windows.Controls.MenuItem
 $resetPositionMenu.Header = '重置位置'
 $resetPositionMenu.Add_Click({
+    Clear-EdgeDock
     $workArea = Get-WindowWorkArea
     $resetLeft = $workArea.Right - $script:CompactWidth - 24
     $resetTop = $workArea.Bottom - $script:CompactHeight - 28
@@ -3059,11 +4604,16 @@ $exitMenu.Add_Click({ Save-Settings; $window.Close() })
 [void]$contextMenu.Items.Add($sourceMenu)
 [void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
 [void]$contextMenu.Items.Add($topmostMenu)
+[void]$contextMenu.Items.Add($script:EdgeDockMenuItem)
+[void]$contextMenu.Items.Add($startupMenu)
 [void]$contextMenu.Items.Add($resetPositionMenu)
 [void]$contextMenu.Items.Add($separator)
 [void]$contextMenu.Items.Add($exitMenu)
 $Surface.ContextMenu = $contextMenu
-$contextMenu.Add_Closed({ Request-InactiveDetailsCollapse })
+$contextMenu.Add_Closed({
+    Request-InactiveDetailsCollapse
+    Request-EdgeDockHide
+})
 
 $window.Add_Deactivated({
     # Wait until popup/focus routing has settled. This distinguishes a real
@@ -3117,6 +4667,23 @@ if ($CaptureVisuals) {
         Save-VisualPng -Element $window -Path $capturePath
         $captureFiles[$state.Name] = $capturePath
     }
+
+    $script:EdgeDockSide = 'Left'
+    $window.Top = 24
+    Set-Progress -Percent 82
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $edgeLeftPath = Join-Path $captureRoot 'edge-thermometer-left.png'
+    Save-VisualPng -Element $window -Path $edgeLeftPath
+    $captureFiles['edge-thermometer-left'] = $edgeLeftPath
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $edgeRightPath = Join-Path $captureRoot 'edge-thermometer-right.png'
+    Save-VisualPng -Element $window -Path $edgeRightPath
+    $captureFiles['edge-thermometer-right'] = $edgeRightPath
+    Clear-EdgeDock
+    $window.Left = 24
 
     $balancePreviewSnapshot = Get-DeepSeekDemoSnapshot
     $balancePreviewSnapshot.HasProgress = $false
@@ -3282,6 +4849,59 @@ if ($CheckTransitions) {
     $inactiveLeft = $window.Left
     $inactiveTop = $window.Top
 
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    $window.UpdateLayout()
+    $hiddenTrackX = $UltraProgressTrack.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $WindowRoot
+    ).X
+    $hiddenRailHitTest = $UltraCompactPanel.IsHitTestVisible
+    $hiddenRailAlpha = ([Windows.Media.SolidColorBrush]$UltraCompactPanel.Background).Color.A
+    $edgeTrackInset = $UltraProgressTrack.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $UltraCompactPanel
+    ).X
+    $edgeTrackTrailingInset = (
+        $UltraCompactPanel.ActualWidth -
+        $edgeTrackInset -
+        $UltraProgressTrack.ActualWidth
+    )
+    Set-EdgeDockReveal -Revealed $true -Immediate
+    $window.UpdateLayout()
+    $revealedTrackX = $UltraProgressTrack.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $WindowRoot
+    ).X
+    $edgeSpacingStable = [Math]::Abs($hiddenTrackX - $revealedTrackX) -lt 0.01
+    if (
+        -not $hiddenRailHitTest -or
+        $hiddenRailAlpha -ne 1 -or
+        [Math]::Abs($edgeTrackInset - $edgeTrackTrailingInset) -ge 0.01 -or
+        -not $edgeSpacingStable
+    ) {
+        throw (
+            'Edge rail unstable: hit={0}, alpha={1}, insets={2}/{3}, spacing={4}.' -f
+            $hiddenRailHitTest,
+            $hiddenRailAlpha,
+            $edgeTrackInset,
+            $edgeTrackTrailingInset,
+            $edgeSpacingStable
+        )
+    }
+    Set-EdgeDockReveal -Revealed $false
+    Wait-ForUi -Milliseconds ($script:EdgeHideDurationMs + 60)
+    $hiddenSurfaceAlpha = ([Windows.Media.SolidColorBrush]$Surface.Background).Color.A
+    if ($hiddenSurfaceAlpha -ne 0) {
+        throw 'Compact surface remained visible after the edge-hide animation.'
+    }
+    Show-ExistingWindow
+    $activationRevealedEdgeDock = $script:IsEdgeRevealed
+    if (-not $activationRevealedEdgeDock) {
+        throw 'Existing-instance activation did not reveal the edge-docked window.'
+    }
+    Clear-EdgeDock
+
     $result = [pscustomobject]@{
         ExpandedWidth = $expandedWidth
         ExpandedHeight = $expandedHeight
@@ -3323,6 +4943,13 @@ if ($CheckTransitions) {
         InactiveVisibility = $inactiveVisibility
         InactiveLeft = $inactiveLeft
         InactiveTop = $inactiveTop
+        ActivationRevealedEdgeDock = $activationRevealedEdgeDock
+        EdgeRailHitTest = $hiddenRailHitTest
+        EdgeRailAlpha = $hiddenRailAlpha
+        EdgeTrackInset = $edgeTrackInset
+        EdgeTrackTrailingInset = $edgeTrackTrailingInset
+        EdgeSpacingStable = $edgeSpacingStable
+        HiddenSurfaceAlpha = $hiddenSurfaceAlpha
         Width = $window.Width
         Height = $window.Height
         DetailsVisibility = [string]$DetailsPanel.Visibility
@@ -3389,6 +5016,41 @@ $script:TrayTopmostItem.Add_Click({
     $topmostMenu.IsChecked = $window.Topmost
     Save-Settings
 })
+$script:TrayEdgeDockItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayEdgeDockItem.Text = '贴边隐藏'
+$script:TrayEdgeDockItem.CheckOnClick = $true
+$script:TrayEdgeDockItem.Checked = $script:EdgeDockEnabled
+$script:TrayEdgeDockItem.ToolTipText = '拖到屏幕左侧或右侧后，自动收为温度计进度条'
+$script:TrayEdgeDockItem.Add_Click({
+    Set-EdgeDockEnabled -Enabled $script:TrayEdgeDockItem.Checked
+})
+$trayStartupItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayStartupItem.Text = '设置开机启动'
+$trayStartupClickHandler = {
+    param($sender, $eventArgs)
+    [void](Set-StartupMode -Mode ([string]$sender.Tag))
+}
+foreach ($startupOption in @(
+    [pscustomobject]@{ Mode = 'Off'; Header = '关闭' },
+    [pscustomobject]@{ Mode = 'Task'; Header = '计划任务（推荐）' },
+    [pscustomobject]@{ Mode = 'Registry'; Header = '注册表（兼容）' },
+    [pscustomobject]@{ Mode = 'StartupFolder'; Header = '启动文件夹（备用）' }
+)) {
+    $trayStartupOption = New-Object System.Windows.Forms.ToolStripMenuItem
+    $trayStartupOption.Text = $startupOption.Header
+    $trayStartupOption.Tag = $startupOption.Mode
+    $trayStartupOption.Add_Click($trayStartupClickHandler)
+    $script:TrayStartupItems[$startupOption.Mode] = $trayStartupOption
+    [void]$trayStartupItem.DropDownItems.Add($trayStartupOption)
+}
+$trayStartupServiceItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayStartupServiceItem.Text = 'Windows 服务（不适用于桌面窗口）'
+$trayStartupServiceItem.Enabled = $false
+$trayStartupServiceItem.ToolTipText = '服务运行在隔离会话中，无法显示悬浮窗'
+[void]$trayStartupItem.DropDownItems.Add(
+    (New-Object System.Windows.Forms.ToolStripSeparator)
+)
+[void]$trayStartupItem.DropDownItems.Add($trayStartupServiceItem)
 $traySeparator = New-Object System.Windows.Forms.ToolStripSeparator
 $trayExitItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayExitItem.Text = '退出'
@@ -3401,6 +5063,8 @@ $trayExitItem.Add_Click({
 [void]$script:TrayMenu.Items.Add($traySourceItem)
 [void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
+[void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)
+[void]$script:TrayMenu.Items.Add($trayStartupItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)
 
@@ -3417,6 +5081,8 @@ $script:TrayNotifyIcon.Add_MouseClick({
 })
 $script:TrayNotifyIcon.Visible = $true
 Sync-ProviderMenuState
+Sync-EdgeDockMenuState
+Sync-StartupMenuState
 
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
@@ -3443,12 +5109,19 @@ $activationTimer.Start()
 
 $window.Add_Closing({
     $script:IsClosing = $true
+    if ($script:EdgeRevealTimer) { $script:EdgeRevealTimer.Stop() }
+    if ($script:EdgeHideTimer) { $script:EdgeHideTimer.Stop() }
     $timer.Stop()
     $activationTimer.Stop()
     if ($script:DeepSeekHttpClient) {
         $script:DeepSeekHttpClient.CancelPendingRequests()
         $script:DeepSeekHttpClient.Dispose()
         $script:DeepSeekHttpClient = $null
+    }
+    if ($script:CodexHttpClient) {
+        $script:CodexHttpClient.CancelPendingRequests()
+        $script:CodexHttpClient.Dispose()
+        $script:CodexHttpClient = $null
     }
     if ($script:DeepSeekRequest) {
         $script:DeepSeekRequest.Dispose()

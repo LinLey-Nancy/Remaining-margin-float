@@ -26,6 +26,25 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version."
           }
 
+      - name: Run application diagnostics
+        shell: powershell
+        run: |
+          $checks = @(
+            'CheckCodexRateLimitSelection',
+            'CheckDeepSeekData',
+            'CheckPlacement',
+            'CheckEdgeDocking',
+            'CheckStartup',
+            'CheckTransitions'
+          )
+          foreach ($check in $checks) {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
+              -File .\src\RemainingMarginFloat.ps1 "-$check"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Diagnostic failed: $check"
+            }
+          }
+
       - name: Build release executable
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1

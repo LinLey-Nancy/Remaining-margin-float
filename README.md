@@ -2,12 +2,14 @@
 
 一个轻量、浅色、可拖动的 Windows Codex / DeepSeek 余量悬浮窗。紧凑状态只显示当前数据源最重要的数字，点击后展开账户、余额或额度、Token 统计和数据采样时间。
 
-项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式只读取本机会话快照；DeepSeek 模式只向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
+项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式从 Codex 官方账户用量接口读取周期额度，并从本机会话汇总 Token；DeepSeek 模式向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
 
 ## 功能
 
 - Codex 与 DeepSeek 双数据源，可从悬浮窗或通知区域菜单切换
 - 96×88 紧凑悬浮窗：Codex 显示周期余量，DeepSeek 显示余额或预算百分比
+- 可选贴边隐藏：拖到屏幕左侧或右侧后自动吸附，只保留 14px 竖向温度计进度条
+- 贴边后悬停会以滑动动画展示紧凑布局，移开后自动滑回超紧凑布局
 - 余量状态使用低饱和连续色阶：从充足时的灰绿，平滑过渡到中段的香槟褐和偏低时的陶土红
 - 双色进度条：鼠尾草绿表示剩余，暖米灰表示已使用
 - 详情进度条上方右对齐显示下次重置日期与倒计时
@@ -19,13 +21,15 @@
 - 单实例运行，重复启动会唤醒已有窗口
 - 不出现在 `Win+Tab` / `Alt+Tab`，通过任务栏通知区域图标访问
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
-- 本地解析 Codex 会话中的余量、重置时间和 Token 数据
-- 并行任务按 `token_count` 事件时间选择最新完整限额，避免旧任务覆盖本周余量
+- 托盘与悬浮窗右键菜单可同步开关贴边隐藏
+- 可选择计划任务、注册表或启动文件夹三种开机启动方式
+- 从 Codex 官方账户用量接口读取主周期余量和重置时间，本地会话仅用于 Token 汇总
+- 官方用量暂不可用时显示等待状态，不再用模型附加额度或旧会话快照推测账户主额度
 - 读取 DeepSeek 官方余额、赠金和充值余额
 - 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token
 - 按 DeepSeek V4 官方人民币价格估算本机本月累计花费
 - DeepSeek API Key 使用 Windows DPAPI 当前用户加密
-- 位置、置顶偏好和当前数据源自动保存在本机
+- 位置、贴边状态、置顶偏好和当前数据源自动保存在本机
 
 ## 系统要求
 
@@ -65,11 +69,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.1.0.exe
-Remaining-Margin-Float-v1.1.0.exe.sha256
+Remaining-Margin-Float-v1.2.0.exe
+Remaining-Margin-Float-v1.2.0.exe.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.1.0`）后，`Windows Release` 工作流会在 Windows Runner 上构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
+推送与 `VERSION` 一致的标签（例如 `v1.2.0`）后，`Windows Release` 工作流会在 Windows Runner 上构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
 
 当前 EXE 未进行商业代码签名。Windows SmartScreen 可能在首次下载时显示来源提示；正式广泛分发前建议配置受信任的代码签名证书。
 
@@ -89,12 +93,15 @@ Remaining-Margin-Float-v1.1.0.exe.sha256
 | 单击悬浮窗 | 展开或收起详情 |
 | 详情展开后点击桌面或其他应用 | 自动恢复紧凑悬浮窗 |
 | 按住左键拖动 | 移动紧凑悬浮窗 |
-| 鼠标右键 | 打开刷新、数据源、置顶和退出菜单；DeepSeek 为当前数据源时才显示其设置 |
+| 拖到屏幕左侧或右侧 | 开启“贴边隐藏”时自动吸附并收为竖向温度计 |
+| 悬停贴边温度计或其与屏幕边缘之间的区域 | 快速滑出紧凑布局；鼠标移开后自动收回 |
+| 按住贴边温度计向屏幕内拖动 | 移动 4px 即取消贴边，不会被普通吸附区重新拉回 |
+| 鼠标右键 | 打开刷新、数据源、贴边隐藏、开机启动、置顶和退出菜单；DeepSeek 为当前数据源时才显示其设置 |
 | `Esc` | 收起详情 |
 | `Ctrl+R` | 立即刷新 |
 | 详情右上角箭头 | 收起详情 |
 | 单击通知区域图标 | 唤醒窗口并打开详情 |
-| 右键通知区域图标 | 打开详情、切换数据源、置顶或退出；DeepSeek 模式下可配置 DeepSeek |
+| 右键通知区域图标 | 打开详情、切换数据源、设置贴边隐藏或开机启动、置顶或退出；DeepSeek 模式下可配置 DeepSeek |
 
 ## 数据与隐私
 
@@ -104,7 +111,7 @@ Remaining-Margin-Float-v1.1.0.exe.sha256
 - `%USERPROFILE%\.codex\auth.json`
 - `%USERPROFILE%\.claude\projects\**\*.jsonl`
 
-会话文件用于读取 Codex 已记录的 `rate_limits` 和 Token 统计。认证文件只在内存中解析 ID Token 的显示名称和邮箱声明；访问令牌、刷新令牌和原始认证文件不会写入日志或界面。
+会话文件只用于汇总 Codex Token，不再用于推测账户主额度。认证文件只在内存中读取账户标识、访问令牌以及 ID Token 的显示名称和邮箱声明；账户标识和访问令牌仅用于请求 `https://chatgpt.com/backend-api/wham/usage`，不会写入日志或界面，刷新令牌不会被应用使用。
 
 Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
@@ -118,7 +125,7 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 
 ### 显示“等待数据”
 
-先运行一次 Codex 任务，让 Codex 在本机会话目录中写入用量快照，然后点击“立即刷新”。
+确认 Codex 已登录并能连接 ChatGPT，然后点击“立即刷新”。Token 统计还需要至少运行过一次 Codex 任务。
 
 ### DeepSeek 显示“等待配置”
 
@@ -139,6 +146,18 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 ### 展开窗口靠近屏幕边缘
 
 应用会在当前显示器的工作区域内调整详情位置。收起后，小窗会回到展开前的位置。
+
+### 如何设置开机启动
+
+在悬浮窗或通知区域图标的右键菜单中打开“设置开机启动”，可选择：
+
+- 计划任务（推荐）：当前用户登录后启动，支持延迟补启且不需要管理员权限
+- 注册表（兼容）：写入当前用户的 `Run` 项
+- 启动文件夹（备用）：创建当前用户的启动快捷方式
+
+应用会确保同一时间只保留一种启动方式。选择“关闭”会移除上述三种注册。
+
+Windows 服务运行在隔离的 Session 0 中，无法向当前用户桌面显示 WPF 悬浮窗，因此菜单会明确显示该方式不适用并保持禁用。
 
 ### Windows 阻止脚本执行
 
