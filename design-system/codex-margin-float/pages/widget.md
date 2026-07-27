@@ -37,6 +37,9 @@ system. The widget must remain dependency-free and must not download fonts.
   190 ms with the system reduced-motion preference respected
 - Before expansion, fit the 370×500 detail surface inside the active monitor work
   area. Preserve the compact anchor and restore it after collapse.
+- When the expanded window loses focus, collapse immediately to the compact
+  size and restore its anchor. Ignore transient focus loss while the widget
+  context menu is open.
 - Drag threshold: 5 px so a click does not accidentally move the widget
 - Missing Codex fields must say `未提供`; never synthesize quota data
 - Structural icons use WPF vector paths

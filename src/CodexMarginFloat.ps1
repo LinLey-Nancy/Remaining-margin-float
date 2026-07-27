@@ -24,6 +24,7 @@ $script:TrayNotifyIcon = $null
 $script:TrayAppIcon = $null
 $script:TrayMenu = $null
 $script:TrayTopmostItem = $null
+$script:IsClosing = $false
 
 function Get-FittedPlacement {
     param(
@@ -1103,6 +1104,27 @@ function Set-ExpandedState {
     Save-Settings
 }
 
+function Collapse-DetailsIfInactive {
+    param([switch]$Force)
+
+    if ($script:IsClosing -or -not $script:IsExpanded) { return }
+
+    # A WPF ContextMenu owns a separate popup window and can briefly deactivate
+    # its owner. Keep the detail surface open while that menu is being used.
+    $surfaceMenu = $Surface.ContextMenu
+    if ($surfaceMenu -and $surfaceMenu.IsOpen) { return }
+    if (-not $Force -and $window.IsActive) { return }
+
+    Set-ExpandedState -Expanded $false
+}
+
+function Request-InactiveDetailsCollapse {
+    $window.Dispatcher.BeginInvoke(
+        [Windows.Threading.DispatcherPriority]::ContextIdle,
+        [Action]{ Collapse-DetailsIfInactive }
+    ) | Out-Null
+}
+
 function Set-HoverState {
     param([bool]$Hovering)
 
@@ -1312,6 +1334,13 @@ $exitMenu.Add_Click({ Save-Settings; $window.Close() })
 [void]$contextMenu.Items.Add($separator)
 [void]$contextMenu.Items.Add($exitMenu)
 $Surface.ContextMenu = $contextMenu
+$contextMenu.Add_Closed({ Request-InactiveDetailsCollapse })
+
+$window.Add_Deactivated({
+    # Wait until popup/focus routing has settled. This distinguishes a real
+    # click-away from the transient deactivation caused by the context menu.
+    Request-InactiveDetailsCollapse
+})
 
 if ($CheckTransitions) {
     function Wait-ForUi {
@@ -1368,8 +1397,13 @@ if ($CheckTransitions) {
     $reopenedHeight = $window.ActualHeight
     $reopenedVisibility = [string]$DetailsPanel.Visibility
 
-    Set-ExpandedState -Expanded $false
-    Wait-ForUi -Milliseconds 250
+    Collapse-DetailsIfInactive -Force
+    Wait-ForUi -Milliseconds 100
+    $inactiveWidth = $window.ActualWidth
+    $inactiveHeight = $window.ActualHeight
+    $inactiveVisibility = [string]$DetailsPanel.Visibility
+    $inactiveLeft = $window.Left
+    $inactiveTop = $window.Top
 
     $result = [pscustomobject]@{
         ExpandedWidth = $expandedWidth
@@ -1387,6 +1421,11 @@ if ($CheckTransitions) {
         ReopenedWidth = $reopenedWidth
         ReopenedHeight = $reopenedHeight
         ReopenedVisibility = $reopenedVisibility
+        InactiveWidth = $inactiveWidth
+        InactiveHeight = $inactiveHeight
+        InactiveVisibility = $inactiveVisibility
+        InactiveLeft = $inactiveLeft
+        InactiveTop = $inactiveTop
         Width = $window.Width
         Height = $window.Height
         DetailsVisibility = [string]$DetailsPanel.Visibility
@@ -1509,6 +1548,7 @@ $activationTimer.Add_Tick({
 $activationTimer.Start()
 
 $window.Add_Closing({
+    $script:IsClosing = $true
     $timer.Stop()
     $activationTimer.Stop()
     Save-Settings

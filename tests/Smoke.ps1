@@ -86,6 +86,12 @@ if ($transition.ExpandedWidth -ne 370 -or $transition.ExpandedHeight -ne 500 -or
 if ($transition.ReopenedWidth -ne 370 -or $transition.ReopenedHeight -ne 500 -or $transition.ReopenedVisibility -ne 'Visible') {
     throw "Reopening during collapse left a partial window: $transitionJson"
 }
+if ($transition.InactiveWidth -ne 108 -or $transition.InactiveHeight -ne 100 -or $transition.InactiveVisibility -ne 'Collapsed') {
+    throw "Losing focus did not restore the compact state: $transitionJson"
+}
+if ($transition.InactiveLeft -ne $transition.AnchorLeft -or $transition.InactiveTop -ne $transition.AnchorTop) {
+    throw "Losing focus did not restore the compact anchor: $transitionJson"
+}
 if ($transition.Width -ne 108 -or $transition.Height -ne 100) {
     throw "Rapid collapse did not restore compact dimensions: $transitionJson"
 }
