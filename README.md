@@ -21,6 +21,8 @@
 - Codex 与 DeepSeek 双数据源，可从悬浮窗或通知区域菜单切换
 - 108×100 紧凑悬浮窗：Codex 显示周期余量，DeepSeek 显示余额或预算百分比
 - 双色进度条：鼠尾草绿表示剩余，暖米灰表示已使用
+- 详情进度条上方右对齐显示下次重置日期与倒计时
+- Codex 详情使用已用额度及今日汇总，不展示并行任务下易失真的“本轮”指标
 - 点击展开 370×500 详情，收起后恢复原始位置
 - 详情展开后点击桌面或切换到其他应用会自动收起
 - 展开时自动避让当前显示器边界
@@ -29,6 +31,7 @@
 - 不出现在 `Win+Tab` / `Alt+Tab`，通过任务栏通知区域图标访问
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
 - 本地解析 Codex 会话中的余量、重置时间和 Token 数据
+- 并行任务按 `token_count` 事件时间选择最新完整限额，避免旧任务覆盖本周余量
 - 读取 DeepSeek 官方余额、赠金和充值余额
 - 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token
 - 按 DeepSeek V4 官方人民币价格估算本机本月累计花费
@@ -46,8 +49,8 @@
 
 ## 快速开始
 
-1. 下载或克隆仓库。
-2. 双击 `Start-CodexMarginFloat.cmd`。
+1. 从 GitHub Release 下载 `Codex-Margin-Float-v*.exe`，或克隆源码。
+2. Release 用户直接运行 EXE；源码用户双击 `Start-CodexMarginFloat.cmd`。
 3. 点击悬浮窗查看详情，按住左键拖动位置。
 
 也可以从 PowerShell 启动：
@@ -58,12 +61,43 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 
 重复执行启动命令不会创建第二个窗口，而是将正在运行的窗口带到前台。
 
+`Start-CodexMarginFloat.cmd` 只负责创建独立、隐藏的 PowerShell 进程，随即自行退出；悬浮程序不依赖启动窗口存活，程序入口缺失时会显示明确提示。
+
+## 打包
+
+在项目根目录运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
+```
+
+脚本会先运行 Smoke Test，然后在 `dist` 中生成无控制台窗口、带版本信息和应用图标的便携 EXE，以及对应的 SHA-256 校验文件。主 PowerShell 脚本内嵌于 EXE，运行时释放到 `%LOCALAPPDATA%\CodexMarginFloat\app\<版本>`；无需安装第三方模块。若已经单独完成测试，可以添加 `-SkipTests`。
+
+发布文件示例：
+
+```text
+Codex-Margin-Float-v1.1.2.exe
+Codex-Margin-Float-v1.1.2.exe.sha256
+```
+
+推送与 `VERSION` 一致的标签（例如 `v1.1.2`）后，`Windows Release` 工作流会在 Windows Runner 上重新测试并构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
+
+当前 EXE 未进行商业代码签名。Windows SmartScreen 可能在首次下载时显示来源提示；正式广泛分发前建议配置受信任的代码签名证书。
+
 ## DeepSeek 配置
 
-1. 右键悬浮窗或通知区域图标，选择“DeepSeek 设置…”。
-2. 输入 DeepSeek API Key。
-3. 可选填写“预算基准”；设置后小窗显示当前余额相对该金额的百分比，留空则直接显示金额。
-4. 在“数据源”菜单选择 DeepSeek。
+1. 在悬浮窗或通知区域右键菜单的“数据源”中选择 DeepSeek。
+2. 首次切换会自动打开设置窗口；切换成功后，右键菜单才显示“DeepSeek 设置…”。
+3. 输入 DeepSeek API Key。
+4. 可选填写“预算基准”；设置后小窗显示当前余额相对该金额的百分比，留空则直接显示金额。
+
+<p align="center">
+  <img src="preview-deepseek-settings-unconfigured.png" width="430" alt="DeepSeek 首次配置">
+</p>
+
+<p align="center">
+  <img src="preview-deepseek-settings-configured.png" width="430" alt="DeepSeek 已配置状态">
+</p>
 
 也可以通过 `DEEPSEEK_API_KEY` 环境变量提供密钥；环境变量优先于本地加密配置。DeepSeek 模式不依赖 CC Switch。
 
@@ -74,12 +108,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 | 单击悬浮窗 | 展开或收起详情 |
 | 详情展开后点击桌面或其他应用 | 自动恢复紧凑悬浮窗 |
 | 按住左键拖动 | 移动紧凑悬浮窗 |
-| 鼠标右键 | 打开刷新、数据源、DeepSeek 设置、置顶和退出菜单 |
+| 鼠标右键 | 打开刷新、数据源、置顶和退出菜单；DeepSeek 为当前数据源时才显示其设置 |
 | `Esc` | 收起详情 |
 | `Ctrl+R` | 立即刷新 |
 | 详情右上角箭头 | 收起详情 |
 | 单击通知区域图标 | 唤醒窗口并打开详情 |
-| 右键通知区域图标 | 打开详情、切换数据源、配置 DeepSeek、置顶或退出 |
+| 右键通知区域图标 | 打开详情、切换数据源、置顶或退出；DeepSeek 模式下可配置 DeepSeek |
 
 ## 数据与隐私
 
@@ -91,7 +125,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 
 会话文件用于读取 Codex 已记录的 `rate_limits` 和 Token 统计。认证文件只在内存中解析 ID Token 的显示名称和邮箱声明；访问令牌、刷新令牌和原始认证文件不会写入日志或界面。
 
-当前 Codex 本地快照没有提供“剩余可重置次数”，因此界面明确显示“未提供”，不会虚构数据。
+Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
 DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\CodexMarginFloat\deepseek.json`。应用不读取 CC Switch 密钥或数据库。
 
@@ -109,6 +143,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
 
 - PowerShell 语法
 - Codex / DeepSeek 数据结构与数值范围
+- 并行 Codex 会话的事件时间排序与不完整限额过滤
 - DeepSeek DPAPI 加解密与 Claude Code 日志统计
 - 剩余/已使用进度分段与 0–100 边界
 - `Win+Tab` / `Alt+Tab` 隐藏状态和 32×32 通知区域图标
@@ -133,7 +168,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
 
 ### DeepSeek 显示“等待配置”
 
-通过右键菜单打开“DeepSeek 设置…”并填写 API Key，或在启动程序前设置 `DEEPSEEK_API_KEY`。HTTP 401 表示密钥无效，需要重新配置。
+先在“数据源”中切换到 DeepSeek，再通过自动打开的设置窗口填写 API Key；之后右键菜单会持续显示“DeepSeek 设置…”。也可以在启动程序前设置 `DEEPSEEK_API_KEY`。HTTP 401 表示密钥无效，需要重新配置。
 
 ### DeepSeek 没有显示百分比
 
