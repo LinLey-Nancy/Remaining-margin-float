@@ -33,7 +33,10 @@ system. The widget must remain dependency-free and must not download fonts.
 - Provider semantics: Codex shows quota percentage; DeepSeek shows currency
   balance unless the user explicitly sets a budget baseline. Never present a
   wallet balance as an inferred subscription quota.
-- Detail hierarchy: account, four metric cards, token composition, freshness
+- Detail hierarchy: quota/reset annotation above progress, account, four stable
+  daily/account metric cards, token composition, freshness
+- Never promote a single Codex turn as an account-level metric; parallel tasks
+  make “last turn” ambiguous. Prefer quota and same-day local aggregates.
 - Hover: restrained sage halo plus a small elevation change; no scaling or jitter
 - Base shadow: warm gray, 14 px blur, 2 px depth, 10% opacity
 - Expansion: width and height switch atomically; detail content fades in over
@@ -47,6 +50,7 @@ system. The widget must remain dependency-free and must not download fonts.
 - Missing Codex fields must say `未提供`; never synthesize quota data
 - DeepSeek configuration uses a labeled native dialog, inline validation, and
   a clear cancel route. API keys must never be displayed in full.
+- Reveal DeepSeek settings only while DeepSeek is the active provider.
 - DeepSeek monthly spend must be labeled as a local estimate; never present
   locally reconstructed token cost as the authoritative account bill.
 - Structural icons use WPF vector paths

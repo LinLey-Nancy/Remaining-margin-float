@@ -2,6 +2,7 @@
     [switch]$CheckData,
     [switch]$CheckDeepSeekData,
     [switch]$CheckDeepSeekUsage,
+    [switch]$CheckCodexRateLimitSelection,
     [switch]$CheckPlacement,
     [switch]$CheckTransitions,
     [switch]$Demo,
@@ -9,11 +10,44 @@
     [string]$DemoProvider = 'codex',
     [ValidateSet('', 'compact', 'expanded')]
     [string]$RenderPreview = '',
+    [ValidateSet('', 'unconfigured', 'configured')]
+    [string]$RenderDeepSeekSettingsPreview = '',
     [string]$PreviewPath = ''
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+$isDiagnosticRun = (
+    $CheckData -or
+    $CheckDeepSeekData -or
+    $CheckDeepSeekUsage -or
+    $CheckCodexRateLimitSelection -or
+    $CheckPlacement -or
+    $CheckTransitions -or
+    [bool]$RenderDeepSeekSettingsPreview -or
+    [bool]$RenderPreview
+)
+if (-not $isDiagnosticRun) {
+    $script:ActivationEvent = New-Object System.Threading.EventWaitHandle(
+        $false,
+        [System.Threading.EventResetMode]::AutoReset,
+        'Local\CodexMarginFloat.Activate'
+    )
+    $createdNew = $false
+    $script:AppMutex = New-Object System.Threading.Mutex(
+        $true,
+        'Local\CodexMarginFloat.Singleton',
+        [ref]$createdNew
+    )
+    if (-not $createdNew) {
+        [void]$script:ActivationEvent.Set()
+        $script:ActivationEvent.Dispose()
+        $script:AppMutex.Dispose()
+        exit 0
+    }
+}
+
 Add-Type -AssemblyName System.Security
 Add-Type -TypeDefinition @'
 using System;
@@ -173,6 +207,8 @@ $script:CodexSourceMenuItem = $null
 $script:DeepSeekSourceMenuItem = $null
 $script:TrayCodexSourceItem = $null
 $script:TrayDeepSeekSourceItem = $null
+$script:DeepSeekSettingsMenuItem = $null
+$script:TrayDeepSeekSettingsItem = $null
 
 function Get-FittedPlacement {
     param(
@@ -241,6 +277,64 @@ function Get-SafeAccountInfo {
     return [pscustomobject]$result
 }
 
+function Get-CodexRateLimitWindow {
+    param($Payload)
+
+    if (-not $Payload) { return $null }
+    $rateLimitsProperty = $Payload.PSObject.Properties['rate_limits']
+    if (-not $rateLimitsProperty -or -not $rateLimitsProperty.Value) { return $null }
+
+    foreach ($name in @('primary', 'secondary')) {
+        $windowProperty = $rateLimitsProperty.Value.PSObject.Properties[$name]
+        if (-not $windowProperty -or -not $windowProperty.Value) { continue }
+
+        $usedProperty = $windowProperty.Value.PSObject.Properties['used_percent']
+        $minutesProperty = $windowProperty.Value.PSObject.Properties['window_minutes']
+        $resetProperty = $windowProperty.Value.PSObject.Properties['resets_at']
+        if (
+            -not $usedProperty -or $null -eq $usedProperty.Value -or
+            -not $minutesProperty -or [double]$minutesProperty.Value -le 0 -or
+            -not $resetProperty -or [long]$resetProperty.Value -le 0
+        ) {
+            continue
+        }
+        return $windowProperty.Value
+    }
+    return $null
+}
+
+function Get-CodexEventObservedAt {
+    param(
+        $Event,
+        [datetime]$Fallback
+    )
+
+    $observedAt = [DateTimeOffset]$Fallback
+    $timestampProperty = $Event.PSObject.Properties['timestamp']
+    if ($timestampProperty -and $timestampProperty.Value) {
+        $parsed = [DateTimeOffset]::MinValue
+        if (
+            [DateTimeOffset]::TryParse(
+                [string]$timestampProperty.Value,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$parsed
+            )
+        ) {
+            $observedAt = $parsed
+        }
+    }
+    return $observedAt
+}
+
+function Select-CodexRateLimitSnapshot {
+    param([object[]]$Snapshots)
+
+    return $Snapshots | Where-Object {
+        $_ -and $_.RateLimitPayload -and (Get-CodexRateLimitWindow -Payload $_.RateLimitPayload)
+    } | Sort-Object RateLimitObservedAt -Descending | Select-Object -First 1
+}
+
 function Read-SessionSnapshot {
     param([System.IO.FileInfo]$File)
 
@@ -251,6 +345,9 @@ function Read-SessionSnapshot {
     }
 
     $lastPayload = $null
+    $lastObservedAt = [DateTimeOffset]$File.LastWriteTime
+    $lastRateLimitPayload = $null
+    $lastRateLimitObservedAt = [DateTimeOffset]::MinValue
     try {
         $stream = [System.IO.File]::Open(
             $File.FullName,
@@ -293,6 +390,11 @@ function Read-SessionSnapshot {
                     $event = $line | ConvertFrom-Json
                     if ($event.type -eq 'event_msg' -and $event.payload.type -eq 'token_count') {
                         $lastPayload = $event.payload
+                        $lastObservedAt = Get-CodexEventObservedAt -Event $event -Fallback $File.LastWriteTime
+                        if (Get-CodexRateLimitWindow -Payload $event.payload) {
+                            $lastRateLimitPayload = $event.payload
+                            $lastRateLimitObservedAt = $lastObservedAt
+                        }
                     }
                 }
                 catch {
@@ -300,7 +402,10 @@ function Read-SessionSnapshot {
                 }
             }
 
-            if ($null -eq $lastPayload -and $startOffset -gt 0) {
+            if (
+                ($null -eq $lastPayload -or $null -eq $lastRateLimitPayload) -and
+                $startOffset -gt 0
+            ) {
                 [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
                 $reader = New-Object System.IO.StreamReader($stream)
                 try {
@@ -312,6 +417,11 @@ function Read-SessionSnapshot {
                             $event = $line | ConvertFrom-Json
                             if ($event.type -eq 'event_msg' -and $event.payload.type -eq 'token_count') {
                                 $lastPayload = $event.payload
+                                $lastObservedAt = Get-CodexEventObservedAt -Event $event -Fallback $File.LastWriteTime
+                                if (Get-CodexRateLimitWindow -Payload $event.payload) {
+                                    $lastRateLimitPayload = $event.payload
+                                    $lastRateLimitObservedAt = $lastObservedAt
+                                }
                             }
                         }
                         catch {
@@ -330,11 +440,15 @@ function Read-SessionSnapshot {
     }
     catch {
         $lastPayload = $null
+        $lastRateLimitPayload = $null
     }
 
     $value = [pscustomobject]@{
         File = $File
         Payload = $lastPayload
+        ObservedAt = $lastObservedAt
+        RateLimitPayload = $lastRateLimitPayload
+        RateLimitObservedAt = $lastRateLimitObservedAt
     }
     $script:SessionCache[$File.FullName] = [pscustomobject]@{ Key = $cacheKey; Value = $value }
     return $value
@@ -962,6 +1076,10 @@ function Get-CodexUsageSnapshot {
             AccountName = 'YJ'
             AccountEmail = 'you@example.com'
             TodayTokens = 128420
+            TodayInputTokens = 127530
+            TodayOutputTokens = 890
+            TodayCachedTokens = 118240
+            TodayCacheHitPercent = 92.7
             LastTurnTokens = 49238
             InputTokens = 48891
             OutputTokens = 347
@@ -982,16 +1100,17 @@ function Get-CodexUsageSnapshot {
             Sort-Object LastWriteTime -Descending)
     }
 
-    $latestSnapshot = $null
-    foreach ($file in ($files | Select-Object -First 24)) {
-        $candidate = Read-SessionSnapshot -File $file
-        if ($candidate.Payload -and $candidate.Payload.rate_limits) {
-            $latestSnapshot = $candidate
-            break
-        }
-    }
+    # File modification time is not the observation time: a parallel task can
+    # keep appending unrelated events to an older session. Select quota and
+    # token snapshots by their token_count timestamps instead.
+    $recentSnapshots = @($files | Select-Object -First 48 | ForEach-Object {
+        Read-SessionSnapshot -File $_
+    })
+    $latestRateLimitSnapshot = Select-CodexRateLimitSnapshot -Snapshots $recentSnapshots
+    $latestSnapshot = $recentSnapshots | Where-Object { $_.Payload } |
+        Sort-Object ObservedAt -Descending | Select-Object -First 1
 
-    if (-not $latestSnapshot) {
+    if (-not $latestRateLimitSnapshot) {
         return [pscustomobject]@{
             ProviderId = 'Codex'
             Available = $false
@@ -1005,6 +1124,10 @@ function Get-CodexUsageSnapshot {
             AccountName = $account.DisplayName
             AccountEmail = $account.Email
             TodayTokens = 0
+            TodayInputTokens = 0
+            TodayOutputTokens = 0
+            TodayCachedTokens = 0
+            TodayCacheHitPercent = 0
             LastTurnTokens = 0
             InputTokens = 0
             OutputTokens = 0
@@ -1017,32 +1140,43 @@ function Get-CodexUsageSnapshot {
         }
     }
 
+    if (-not $latestSnapshot) { $latestSnapshot = $latestRateLimitSnapshot }
     $payload = $latestSnapshot.Payload
-    $limits = $payload.rate_limits
-    $primary = $limits.primary
-    if (-not $primary -and $limits.secondary) { $primary = $limits.secondary }
+    $rateLimitPayload = $latestRateLimitSnapshot.RateLimitPayload
+    $limits = Get-ObjectPropertyValue -Object $rateLimitPayload -Name 'rate_limits'
+    $primary = Get-CodexRateLimitWindow -Payload $rateLimitPayload
 
-    $usedPercent = if ($primary -and $null -ne $primary.used_percent) {
-        [Math]::Max(0, [Math]::Min(100, [double]$primary.used_percent))
-    } else { 0 }
+    $usedPercent = [Math]::Max(
+        0,
+        [Math]::Min(
+            100,
+            [double](Get-ObjectPropertyValue -Object $primary -Name 'used_percent' -Default 0)
+        )
+    )
     $remainingPercent = [Math]::Round(100 - $usedPercent)
-    $windowMinutes = if ($primary -and $primary.window_minutes) { [int]$primary.window_minutes } else { 0 }
+    $windowMinutes = [int](Get-ObjectPropertyValue `
+        -Object $primary `
+        -Name 'window_minutes' `
+        -Default 0)
     $windowLabel = if ($windowMinutes -ge 10080) { '本周余量' }
         elseif ($windowMinutes -ge 1440) { '周期余量' }
         elseif ($windowMinutes -gt 0) { '{0} 小时余量' -f [Math]::Round($windowMinutes / 60) }
         else { 'Codex 余量' }
 
     $resetTimestamp = $null
-    if ($primary -and $primary.resets_at) { $resetTimestamp = [long]$primary.resets_at }
+    $resetTimestamp = [long](Get-ObjectPropertyValue `
+        -Object $primary `
+        -Name 'resets_at' `
+        -Default 0)
     $resetText = Get-ResetText -UnixSeconds $resetTimestamp
 
-    $info = $payload.info
-    $lastUsage = if ($info -and $info.last_token_usage) { $info.last_token_usage } else { $null }
-    $inputTokens = if ($lastUsage) { [double]$lastUsage.input_tokens } else { 0 }
-    $cachedTokens = if ($lastUsage) { [double]$lastUsage.cached_input_tokens } else { 0 }
-    $outputTokens = if ($lastUsage) { [double]$lastUsage.output_tokens } else { 0 }
-    $lastTurnTokens = if ($lastUsage) { [double]$lastUsage.total_tokens } else { 0 }
-    $contextWindow = if ($info -and $info.model_context_window) { [double]$info.model_context_window } else { 0 }
+    $info = Get-ObjectPropertyValue -Object $payload -Name 'info'
+    $lastUsage = Get-ObjectPropertyValue -Object $info -Name 'last_token_usage'
+    $inputTokens = [double](Get-ObjectPropertyValue -Object $lastUsage -Name 'input_tokens' -Default 0)
+    $cachedTokens = [double](Get-ObjectPropertyValue -Object $lastUsage -Name 'cached_input_tokens' -Default 0)
+    $outputTokens = [double](Get-ObjectPropertyValue -Object $lastUsage -Name 'output_tokens' -Default 0)
+    $lastTurnTokens = [double](Get-ObjectPropertyValue -Object $lastUsage -Name 'total_tokens' -Default 0)
+    $contextWindow = [double](Get-ObjectPropertyValue -Object $info -Name 'model_context_window' -Default 0)
     $cacheHit = if ($inputTokens -gt 0) { [Math]::Round(($cachedTokens / $inputTokens) * 100, 1) } else { 0 }
     $contextPercent = if ($contextWindow -gt 0) {
         [Math]::Round([Math]::Min(100, ($lastTurnTokens / $contextWindow) * 100), 1)
@@ -1050,12 +1184,23 @@ function Get-CodexUsageSnapshot {
 
     $today = (Get-Date).Date
     $todayTokens = 0.0
+    $todayInputTokens = 0.0
+    $todayOutputTokens = 0.0
+    $todayCachedTokens = 0.0
     foreach ($file in ($files | Where-Object { $_.LastWriteTime.Date -eq $today })) {
         $daySnapshot = Read-SessionSnapshot -File $file
-        if ($daySnapshot.Payload -and $daySnapshot.Payload.info -and $daySnapshot.Payload.info.total_token_usage) {
-            $todayTokens += [double]$daySnapshot.Payload.info.total_token_usage.total_tokens
+        $dayInfo = Get-ObjectPropertyValue -Object $daySnapshot.Payload -Name 'info'
+        $dayUsage = Get-ObjectPropertyValue -Object $dayInfo -Name 'total_token_usage'
+        if ($dayUsage) {
+            $todayTokens += [double](Get-ObjectPropertyValue -Object $dayUsage -Name 'total_tokens' -Default 0)
+            $todayInputTokens += [double](Get-ObjectPropertyValue -Object $dayUsage -Name 'input_tokens' -Default 0)
+            $todayOutputTokens += [double](Get-ObjectPropertyValue -Object $dayUsage -Name 'output_tokens' -Default 0)
+            $todayCachedTokens += [double](Get-ObjectPropertyValue -Object $dayUsage -Name 'cached_input_tokens' -Default 0)
         }
     }
+    $todayCacheHit = if ($todayInputTokens -gt 0) {
+        [Math]::Round(($todayCachedTokens / $todayInputTokens) * 100, 1)
+    } else { 0 }
 
     $status = if ($remainingPercent -ge 60) { '状态舒适' }
         elseif ($remainingPercent -ge 30) { '余量平稳' }
@@ -1071,20 +1216,93 @@ function Get-CodexUsageSnapshot {
         ResetDate = $resetText.Date
         ResetCountdown = $resetText.Countdown
         ResetCount = '未提供'
-        Plan = Get-PlanLabel -PlanType ([string]$limits.plan_type)
+        Plan = Get-PlanLabel -PlanType ([string](Get-ObjectPropertyValue `
+            -Object $limits `
+            -Name 'plan_type' `
+            -Default ''))
         AccountName = $account.DisplayName
         AccountEmail = $account.Email
         TodayTokens = $todayTokens
+        TodayInputTokens = $todayInputTokens
+        TodayOutputTokens = $todayOutputTokens
+        TodayCachedTokens = $todayCachedTokens
+        TodayCacheHitPercent = $todayCacheHit
         LastTurnTokens = $lastTurnTokens
         InputTokens = $inputTokens
         OutputTokens = $outputTokens
         CachedTokens = $cachedTokens
         CacheHitPercent = $cacheHit
         ContextPercent = $contextPercent
-        SampledAt = $latestSnapshot.File.LastWriteTime
+        SampledAt = $latestRateLimitSnapshot.RateLimitObservedAt.LocalDateTime
         Status = $status
         Source = 'Codex 本地会话快照'
     }
+}
+
+if ($CheckCodexRateLimitSelection) {
+    $stalePayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                used_percent = 0.0
+                window_minutes = 10080
+                resets_at = 1893456000
+            }
+            plan_type = 'pro'
+        }
+    }
+    $freshPayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                used_percent = 22.0
+                window_minutes = 10080
+                resets_at = 1893459600
+            }
+            plan_type = 'pro'
+        }
+    }
+    $incompletePayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                window_minutes = 10080
+                resets_at = 1893463200
+            }
+            plan_type = 'pro'
+        }
+    }
+    $selectionCandidates = @(
+        [pscustomobject]@{
+            RateLimitPayload = $stalePayload
+            RateLimitObservedAt = [DateTimeOffset]'2029-12-31T23:50:00Z'
+            FileModifiedAt = [DateTimeOffset]'2030-01-01T00:10:00Z'
+        },
+        [pscustomobject]@{
+            RateLimitPayload = $freshPayload
+            RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:00:00Z'
+            FileModifiedAt = [DateTimeOffset]'2030-01-01T00:05:00Z'
+        },
+        [pscustomobject]@{
+            RateLimitPayload = $incompletePayload
+            RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:01:00Z'
+            FileModifiedAt = [DateTimeOffset]'2030-01-01T00:11:00Z'
+        }
+    )
+    $selected = Select-CodexRateLimitSnapshot -Snapshots $selectionCandidates
+    $emptySelection = Select-CodexRateLimitSnapshot -Snapshots @(
+        [pscustomobject]@{
+            RateLimitPayload = $incompletePayload
+            RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:01:00Z'
+        }
+    )
+    $selectedWindow = Get-CodexRateLimitWindow -Payload $selected.RateLimitPayload
+    [pscustomobject]@{
+        SelectedUsedPercent = [double]$selectedWindow.used_percent
+        SelectedResetAt = [long]$selectedWindow.resets_at
+        SelectedObservedAt = $selected.RateLimitObservedAt
+        NewestFileWasStale = $selectionCandidates[0].FileModifiedAt -gt $selectionCandidates[1].FileModifiedAt
+        IncompleteNewestWasIgnored = $selected.RateLimitPayload -eq $freshPayload
+        EmptySelectionHandled = $null -eq $emptySelection
+    } | ConvertTo-Json
+    exit 0
 }
 
 if ($CheckDeepSeekData) {
@@ -1176,26 +1394,6 @@ if ($CheckPlacement) {
         Restored = $anchor
     } | ConvertTo-Json -Depth 3
     exit 0
-}
-
-if (-not $RenderPreview -and -not $CheckTransitions) {
-    $script:ActivationEvent = New-Object System.Threading.EventWaitHandle(
-        $false,
-        [System.Threading.EventResetMode]::AutoReset,
-        'Local\CodexMarginFloat.Activate'
-    )
-    $createdNew = $false
-    $script:AppMutex = New-Object System.Threading.Mutex(
-        $true,
-        'Local\CodexMarginFloat.Singleton',
-        [ref]$createdNew
-    )
-    if (-not $createdNew) {
-        [void]$script:ActivationEvent.Set()
-        $script:ActivationEvent.Dispose()
-        $script:AppMutex.Dispose()
-        exit 0
-    }
 }
 
 Add-Type -AssemblyName PresentationFramework
@@ -1298,6 +1496,21 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
             <Setter Property="CornerRadius" Value="13"/>
             <Setter Property="Padding" Value="12,10"/>
         </Style>
+
+        <Style x:Key="MetricTitleText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="9"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="MetricValueText" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,5,0,0"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
     </Window.Resources>
 
     <Grid x:Name="WindowRoot" Margin="10">
@@ -1348,7 +1561,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
-                            <RowDefinition Height="15"/>
+                            <RowDefinition x:Name="CompactProgressRow" Height="15"/>
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1387,9 +1600,44 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                        FontSize="9"/>
                         </StackPanel>
 
-                        <Grid Grid.Row="1" VerticalAlignment="Bottom">
+                        <Grid Grid.Row="1" VerticalAlignment="Stretch">
+                            <TextBlock x:Name="ExpandedWindowLabel"
+                                       HorizontalAlignment="Left"
+                                       VerticalAlignment="Top"
+                                       Visibility="Collapsed"
+                                       Text="Codex 余量"
+                                       Foreground="{StaticResource TextMuted}"
+                                       FontFamily="Microsoft YaHei UI"
+                                       FontSize="8"
+                                       FontWeight="SemiBold"/>
+                            <StackPanel x:Name="ResetSummaryPanel"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Visibility="Collapsed">
+                                <TextBlock Text="下次重置 "
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="8"/>
+                                <TextBlock x:Name="DetailsResetDate"
+                                           Text="--"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="8"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock Text=" · "
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="8"/>
+                                <TextBlock x:Name="DetailsResetCountdown"
+                                           Text="--"
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="8"/>
+                            </StackPanel>
                             <Border x:Name="ProgressTrack"
                                     Height="4"
+                                    VerticalAlignment="Bottom"
                                     CornerRadius="2"
                                     Background="#DDD6CB"
                                     ClipToBounds="True"
@@ -1485,33 +1733,33 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
 
                         <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock x:Name="MetricOneTitle" Text="下次重置" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
-                                <TextBlock x:Name="DetailsResetDate" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="17" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="DetailsResetCountdown" Text="--" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                <TextBlock x:Name="MetricOneTitle" Text="已用额度" Style="{StaticResource MetricTitleText}"/>
+                                <TextBlock x:Name="PrimaryMetricValue" Text="--" Style="{StaticResource MetricValueText}"/>
+                                <TextBlock x:Name="PrimaryMetricHint" Text="剩余 --" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
                         </Border>
 
                         <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="TodayTokens" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Style="{StaticResource MetricTitleText}"/>
+                                <TextBlock x:Name="TodayTokens" Text="--" Style="{StaticResource MetricValueText}"/>
                                 <TextBlock x:Name="MetricTwoHint" Text="本机任务累计" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
                         </Border>
 
                         <Border Grid.Row="2" Grid.Column="0" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock x:Name="MetricThreeTitle" Text="本轮 TOKEN" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="LastTurnTokens" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="ContextText" Text="上下文 --" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                <TextBlock x:Name="MetricThreeTitle" Text="今日输入" Style="{StaticResource MetricTitleText}"/>
+                                <TextBlock x:Name="LastTurnTokens" Text="--" Style="{StaticResource MetricValueText}"/>
+                                <TextBlock x:Name="ContextText" Text="所有本机任务" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
                         </Border>
 
                         <Border Grid.Row="2" Grid.Column="2" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock x:Name="MetricFourTitle" Text="缓存命中" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
-                                <TextBlock x:Name="CacheHit" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="CacheTokenText" Text="-- cached" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9"/>
+                                <TextBlock x:Name="MetricFourTitle" Text="今日输出" Style="{StaticResource MetricTitleText}"/>
+                                <TextBlock x:Name="CacheHit" Text="--" Style="{StaticResource MetricValueText}"/>
+                                <TextBlock x:Name="CacheTokenText" Text="所有本机任务" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
                         </Border>
                     </Grid>
@@ -1529,18 +1777,18 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock x:Name="BreakdownTitle" Text="本轮构成" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
+                                <TextBlock x:Name="BreakdownTitle" Text="今日缓存" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
                                 <TextBlock x:Name="TokenBreakdown"
                                            Margin="0,5,0,0"
-                                           Text="输入 --  ·  输出 --"
+                                           Text="-- cached  ·  命中 --"
                                            Foreground="{StaticResource TextPrimary}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="11"
                                            FontWeight="SemiBold"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-                                <TextBlock x:Name="SecondaryMetricTitle" Text="可重置次数" HorizontalAlignment="Right" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
-                                <TextBlock x:Name="ResetCount" Margin="0,5,0,0" Text="未提供" HorizontalAlignment="Right" Foreground="{StaticResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="11" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="SecondaryMetricTitle" Text="额度状态" HorizontalAlignment="Right" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
+                                <TextBlock x:Name="ResetCount" Margin="0,5,0,0" Text="等待数据" HorizontalAlignment="Right" Foreground="{StaticResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="11" FontWeight="SemiBold"/>
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -1675,10 +1923,12 @@ if (-not $Demo) {
 $names = @(
     'WindowRoot', 'HoverHalo', 'Surface', 'SurfaceShadow', 'CompactHit',
     'CompactPrefix', 'RemainingValue', 'CompactSuffix', 'WindowLabel',
+    'CompactProgressRow', 'ExpandedWindowLabel', 'ResetSummaryPanel',
     'ProgressTrack', 'RemainingProgressColumn',
     'UsedProgressColumn', 'DetailsPanel', 'AccountName',
     'PlanBadge', 'AccountEmail', 'CloseButton', 'DetailsResetDate',
-    'DetailsResetCountdown', 'MetricOneTitle', 'MetricTwoTitle', 'MetricTwoHint',
+    'DetailsResetCountdown', 'MetricOneTitle', 'PrimaryMetricValue',
+    'PrimaryMetricHint', 'MetricTwoTitle', 'MetricTwoHint',
     'TodayTokens', 'MetricThreeTitle', 'LastTurnTokens', 'ContextText',
     'MetricFourTitle', 'CacheHit', 'BreakdownTitle', 'SecondaryMetricTitle',
     'CacheTokenText', 'ResetCount', 'TokenBreakdown', 'SourceText', 'SampleTime',
@@ -1867,6 +2117,18 @@ function Set-ExpandedState {
         $window.Width = $targetWidth
         $window.Height = $targetHeight
         $DetailsPanel.Visibility = 'Visible'
+        $ResetSummaryPanel.Visibility = if (
+            $script:LastSnapshot -and
+            $script:LastSnapshot.ProviderId -eq 'Codex'
+        ) { 'Visible' } else { 'Collapsed' }
+        $ExpandedWindowLabel.Visibility = $ResetSummaryPanel.Visibility
+        $WindowLabel.Visibility = if ($ResetSummaryPanel.Visibility -eq 'Visible') {
+            'Collapsed'
+        } else { 'Visible' }
+        if ($ResetSummaryPanel.Visibility -eq 'Visible') {
+            $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 3)
+            $CompactProgressRow.Height = New-Object Windows.GridLength(21)
+        }
         if ($Immediate) {
             $DetailsPanel.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
             $DetailsPanel.Opacity = 1
@@ -1885,6 +2147,11 @@ function Set-ExpandedState {
         $DetailsPanel.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
         $DetailsPanel.Opacity = 0
         $DetailsPanel.Visibility = 'Collapsed'
+        $ResetSummaryPanel.Visibility = 'Collapsed'
+        $ExpandedWindowLabel.Visibility = 'Collapsed'
+        $WindowLabel.Visibility = 'Visible'
+        $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 9)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(15)
         $window.Width = $targetWidth
         $window.Height = $targetHeight
         if ($null -ne $script:CompactAnchorLeft) {
@@ -1974,20 +2241,29 @@ function Update-UsageView {
 
     $script:LastSnapshot = $Snapshot
     $WindowLabel.Text = $Snapshot.WindowLabel
+    $ExpandedWindowLabel.Text = $Snapshot.WindowLabel
     $DetailsResetDate.Text = $Snapshot.ResetDate
     $DetailsResetCountdown.Text = $Snapshot.ResetCountdown
     $AccountName.Text = $Snapshot.AccountName
     $PlanBadge.Text = $Snapshot.Plan
     $AccountEmail.Text = $Snapshot.AccountEmail
-    $TodayTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
-    $LastTurnTokens.Text = Format-CompactNumber $Snapshot.LastTurnTokens
-    $ContextText.Text = '上下文 {0:0.0}%' -f $Snapshot.ContextPercent
-    $CacheHit.Text = '{0:0.0}%' -f $Snapshot.CacheHitPercent
-    $CacheTokenText.Text = '{0} cached' -f (Format-CompactNumber $Snapshot.CachedTokens)
-    $ResetCount.Text = $Snapshot.ResetCount
-    $TokenBreakdown.Text = '输入 {0}  ·  输出 {1}' -f (Format-CompactNumber $Snapshot.InputTokens), (Format-CompactNumber $Snapshot.OutputTokens)
     $SourceText.Text = $Snapshot.Source
     $SampleTime.Text = '采样于 {0}' -f $Snapshot.SampledAt.ToString('M月d日 HH:mm:ss')
+    $ResetSummaryPanel.Visibility = if (
+        $script:IsExpanded -and $Snapshot.ProviderId -eq 'Codex'
+    ) { 'Visible' } else { 'Collapsed' }
+    $ExpandedWindowLabel.Visibility = $ResetSummaryPanel.Visibility
+    $WindowLabel.Visibility = if ($ResetSummaryPanel.Visibility -eq 'Visible') {
+        'Collapsed'
+    } else { 'Visible' }
+    if ($ResetSummaryPanel.Visibility -eq 'Visible') {
+        $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 3)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(21)
+    }
+    else {
+        $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 9)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(15)
+    }
 
     if ($Snapshot.ProviderId -eq 'DeepSeek') {
         if ($Snapshot.HasProgress) {
@@ -2007,18 +2283,22 @@ function Update-UsageView {
         }
 
         $MetricOneTitle.Text = '当前余额'
-        $MetricTwoTitle.Text = '今日 TOKEN'
-        $MetricTwoHint.Text = 'Claude Code 本机累计'
-        $MetricThreeTitle.Text = '本月累计花费'
-        $LastTurnTokens.Text = Format-CurrencyAmount `
+        $PrimaryMetricValue.Text = $Snapshot.ResetDate
+        $PrimaryMetricHint.Text = $Snapshot.ResetCountdown
+        $MetricTwoTitle.Text = '本月累计花费'
+        $TodayTokens.Text = Format-CurrencyAmount `
             -Amount $Snapshot.MonthlyEstimatedCostCny `
             -Currency 'CNY'
-        $ContextText.Text = '本机日志估算'
+        $MetricTwoHint.Text = '本机日志估算'
+        $MetricThreeTitle.Text = '今日 TOKEN'
+        $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
+        $ContextText.Text = 'Claude Code 本机累计'
         $MetricFourTitle.Text = '本月累计 TOKEN'
         $CacheHit.Text = Format-CompactNumber $Snapshot.MonthlyTokens
         $CacheTokenText.Text = '当月本机去重累计'
         $BreakdownTitle.Text = '余额构成'
         $SecondaryMetricTitle.Text = '预算基准'
+        $ResetCount.Text = $Snapshot.ResetCount
         $TokenBreakdown.Text = '赠金 {0}  ·  充值 {1}' -f `
             (Format-CurrencyAmount -Amount $Snapshot.GrantedBalance -Currency $Snapshot.Currency), `
             (Format-CurrencyAmount -Amount $Snapshot.ToppedUpBalance -Currency $Snapshot.Currency)
@@ -2028,14 +2308,24 @@ function Update-UsageView {
         $CompactPrefix.Text = ''
         $RemainingValue.Text = [string][int]$Snapshot.RemainingPercent
         $CompactSuffix.Text = '%'
-        $MetricOneTitle.Text = '下次重置'
+        $MetricOneTitle.Text = '已用额度'
+        $PrimaryMetricValue.Text = '{0:0}%' -f (100 - $Snapshot.RemainingPercent)
+        $PrimaryMetricHint.Text = '剩余 {0:0}%' -f $Snapshot.RemainingPercent
         $MetricTwoTitle.Text = '今日 TOKEN'
+        $TodayTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
         $MetricTwoHint.Text = '本机任务累计'
-        $MetricThreeTitle.Text = '本轮 TOKEN'
-        $ContextText.Text = '上下文 {0:0.0}%' -f $Snapshot.ContextPercent
-        $MetricFourTitle.Text = '缓存命中'
-        $BreakdownTitle.Text = '本轮构成'
-        $SecondaryMetricTitle.Text = '可重置次数'
+        $MetricThreeTitle.Text = '今日输入'
+        $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayInputTokens
+        $ContextText.Text = '所有本机任务'
+        $MetricFourTitle.Text = '今日输出'
+        $CacheHit.Text = Format-CompactNumber $Snapshot.TodayOutputTokens
+        $CacheTokenText.Text = '所有本机任务'
+        $BreakdownTitle.Text = '今日缓存'
+        $TokenBreakdown.Text = '{0} cached  ·  命中 {1:0.0}%' -f `
+            (Format-CompactNumber $Snapshot.TodayCachedTokens), `
+            $Snapshot.TodayCacheHitPercent
+        $SecondaryMetricTitle.Text = '额度状态'
+        $ResetCount.Text = $Snapshot.Status
         Set-Progress -Percent $Snapshot.RemainingPercent
     }
 
@@ -2066,7 +2356,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('CodexMarginFloat/1.1.1')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('CodexMarginFloat/1.1.2')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -2206,6 +2496,14 @@ function Sync-ProviderMenuState {
     if ($script:TrayDeepSeekSourceItem) {
         $script:TrayDeepSeekSourceItem.Checked = $script:ActiveProvider -eq 'DeepSeek'
     }
+    if ($script:DeepSeekSettingsMenuItem) {
+        $script:DeepSeekSettingsMenuItem.Visibility = if (
+            $script:ActiveProvider -eq 'DeepSeek'
+        ) { 'Visible' } else { 'Collapsed' }
+    }
+    if ($script:TrayDeepSeekSettingsItem) {
+        $script:TrayDeepSeekSettingsItem.Visible = $script:ActiveProvider -eq 'DeepSeek'
+    }
 }
 
 function Set-ActiveProvider {
@@ -2225,8 +2523,26 @@ function Set-ActiveProvider {
 }
 
 function Show-DeepSeekSettings {
-    $configuration = Get-DeepSeekConfiguration
-    $credential = Get-DeepSeekCredential
+    param(
+        [ValidateSet('', 'unconfigured', 'configured')]
+        [string]$PreviewMode = '',
+        [string]$OutputPath = ''
+    )
+
+    if ($PreviewMode) {
+        $configuration = [pscustomobject]@{
+            Budget = if ($PreviewMode -eq 'configured') { 120.0 } else { 0.0 }
+        }
+        $credential = [pscustomobject]@{
+            ApiKey = if ($PreviewMode -eq 'configured') { 'preview-key-not-real' } else { '' }
+            Hint = if ($PreviewMode -eq 'configured') { '7K9D' } else { '' }
+            Source = if ($PreviewMode -eq 'configured') { '本机加密配置' } else { '未配置' }
+        }
+    }
+    else {
+        $configuration = Get-DeepSeekConfiguration
+        $credential = Get-DeepSeekCredential
+    }
     [xml]$dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -2238,7 +2554,8 @@ function Show-DeepSeekSettings {
         ShowInTaskbar="False"
         Background="#FCFBF8"
         FontFamily="Microsoft YaHei UI">
-    <Grid Margin="24">
+    <Grid x:Name="SettingsRoot" Background="#FCFBF8">
+      <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="22"/>
@@ -2277,12 +2594,16 @@ function Show-DeepSeekSettings {
                     Content="保存" IsDefault="True" Background="#E9F0EA"
                     BorderBrush="#BFCDBF" Foreground="#344A3B"/>
         </Grid>
+      </Grid>
     </Grid>
 </Window>
 '@
     $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
     $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
-    $dialog.Owner = $window
+    if (-not $PreviewMode) {
+        $dialog.Owner = $window
+    }
+    $settingsRoot = $dialog.FindName('SettingsRoot')
     $apiKeyBox = $dialog.FindName('ApiKeyBox')
     $keyHelp = $dialog.FindName('KeyHelp')
     $removeKeyBox = $dialog.FindName('RemoveKeyBox')
@@ -2361,6 +2682,40 @@ function Show-DeepSeekSettings {
         }
     })
 
+    if ($PreviewMode) {
+        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+            throw '生成 DeepSeek 设置预览时需要提供 PreviewPath。'
+        }
+        $previewWidth = 430
+        $previewHeight = 350
+        $previewSize = New-Object Windows.Size($previewWidth, $previewHeight)
+        $settingsRoot.Measure($previewSize)
+        $settingsRoot.Arrange((New-Object Windows.Rect(0, 0, $previewWidth, $previewHeight)))
+        $settingsRoot.UpdateLayout()
+        $renderBitmap = New-Object Windows.Media.Imaging.RenderTargetBitmap(
+            $previewWidth,
+            $previewHeight,
+            96,
+            96,
+            [Windows.Media.PixelFormats]::Pbgra32
+        )
+        $renderBitmap.Render($settingsRoot)
+        $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder
+        $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($renderBitmap))
+        $fileStream = [System.IO.File]::Open(
+            $OutputPath,
+            [System.IO.FileMode]::Create
+        )
+        try {
+            $encoder.Save($fileStream)
+        }
+        finally {
+            $fileStream.Dispose()
+        }
+        Write-Output ([System.IO.Path]::GetFullPath($OutputPath))
+        return $true
+    }
+
     $saved = $dialog.ShowDialog()
     if ($saved) {
         $script:LastDeepSeekSnapshot = $null
@@ -2368,6 +2723,13 @@ function Show-DeepSeekSettings {
         return $true
     }
     return $false
+}
+
+if ($RenderDeepSeekSettingsPreview) {
+    [void](Show-DeepSeekSettings `
+        -PreviewMode $RenderDeepSeekSettingsPreview `
+        -OutputPath $PreviewPath)
+    exit 0
 }
 
 function Invoke-Refresh {
@@ -2491,20 +2853,22 @@ $script:DeepSeekSourceMenuItem = New-Object Windows.Controls.MenuItem
 $script:DeepSeekSourceMenuItem.Header = 'DeepSeek'
 $script:DeepSeekSourceMenuItem.IsCheckable = $true
 $script:DeepSeekSourceMenuItem.Add_Click({
+    Set-ActiveProvider -Provider 'DeepSeek'
     $credential = Get-DeepSeekCredential
     if ($credential.ApiKey) {
-        Set-ActiveProvider -Provider 'DeepSeek' -Refresh
+        Invoke-Refresh
     }
     else {
-        [void](Show-DeepSeekSettings)
+        $saved = Show-DeepSeekSettings
+        if (-not $saved) { Invoke-Refresh }
         Sync-ProviderMenuState
     }
 })
 [void]$sourceMenu.Items.Add($script:CodexSourceMenuItem)
 [void]$sourceMenu.Items.Add($script:DeepSeekSourceMenuItem)
-$deepSeekSettingsMenu = New-Object Windows.Controls.MenuItem
-$deepSeekSettingsMenu.Header = 'DeepSeek 设置…'
-$deepSeekSettingsMenu.Add_Click({ [void](Show-DeepSeekSettings) })
+$script:DeepSeekSettingsMenuItem = New-Object Windows.Controls.MenuItem
+$script:DeepSeekSettingsMenuItem.Header = 'DeepSeek 设置…'
+$script:DeepSeekSettingsMenuItem.Add_Click({ [void](Show-DeepSeekSettings) })
 $topmostMenu = New-Object Windows.Controls.MenuItem
 $topmostMenu.Header = '始终置顶'
 $topmostMenu.IsCheckable = $true
@@ -2541,7 +2905,7 @@ $exitMenu.Header = '退出'
 $exitMenu.Add_Click({ Save-Settings; $window.Close() })
 [void]$contextMenu.Items.Add($refreshMenu)
 [void]$contextMenu.Items.Add($sourceMenu)
-[void]$contextMenu.Items.Add($deepSeekSettingsMenu)
+[void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
 [void]$contextMenu.Items.Add($topmostMenu)
 [void]$contextMenu.Items.Add($resetPositionMenu)
 [void]$contextMenu.Items.Add($separator)
@@ -2590,14 +2954,21 @@ if ($CheckTransitions) {
     Set-Progress -Percent -20
     $lowerClampedRemaining = $RemainingProgressColumn.Width.Value
     $lowerClampedUsed = $UsedProgressColumn.Width.Value
+    $script:ActiveProvider = 'Codex'
+    Sync-ProviderMenuState
+    $codexSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $script:ActiveProvider = 'DeepSeek'
+    Sync-ProviderMenuState
+    $deepSeekSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
     $deepSeekCheckSnapshot = Get-DeepSeekDemoSnapshot
     Update-UsageView -Snapshot $deepSeekCheckSnapshot
     $deepSeekCompactValue = $RemainingValue.Text
     $deepSeekCompactSuffix = $CompactSuffix.Text
     $deepSeekLabel = $WindowLabel.Text
-    $deepSeekBalanceText = $DetailsResetDate.Text
+    $deepSeekBalanceText = $PrimaryMetricValue.Text
     $deepSeekMetricTitle = $MetricOneTitle.Text
-    $deepSeekMonthlyCostValue = $LastTurnTokens.Text
+    $deepSeekMonthlyCostValue = $TodayTokens.Text
+    $deepSeekTodayTokenValue = $LastTurnTokens.Text
     $deepSeekMonthlyTokenValue = $CacheHit.Text
     $deepSeekProgressRemaining = $RemainingProgressColumn.Width.Value
     $deepSeekProgressUsed = $UsedProgressColumn.Width.Value
@@ -2608,6 +2979,24 @@ if ($CheckTransitions) {
     $deepSeekBalanceCompactSuffix = $CompactSuffix.Text
     $deepSeekNoBudgetProgressRemaining = $RemainingProgressColumn.Width.Value
     $deepSeekNoBudgetProgressUsed = $UsedProgressColumn.Width.Value
+    $metricValueFontFamilies = @(
+        $PrimaryMetricValue.FontFamily.Source
+        $TodayTokens.FontFamily.Source
+        $LastTurnTokens.FontFamily.Source
+        $CacheHit.FontFamily.Source
+    )
+    $metricValueFontSizes = @(
+        $PrimaryMetricValue.FontSize
+        $TodayTokens.FontSize
+        $LastTurnTokens.FontSize
+        $CacheHit.FontSize
+    )
+    $metricValueFontWeights = @(
+        $PrimaryMetricValue.FontWeight.ToString()
+        $TodayTokens.FontWeight.ToString()
+        $LastTurnTokens.FontWeight.ToString()
+        $CacheHit.FontWeight.ToString()
+    )
     Set-Progress -Percent 82
     Set-ExpandedState -Expanded $false -Immediate
     $anchorLeft = $window.Left
@@ -2647,12 +3036,15 @@ if ($CheckTransitions) {
         UpperClampedUsed = $upperClampedUsed
         LowerClampedRemaining = $lowerClampedRemaining
         LowerClampedUsed = $lowerClampedUsed
+        CodexSettingsVisibility = $codexSettingsVisibility
+        DeepSeekSettingsVisibility = $deepSeekSettingsVisibility
         DeepSeekCompactValue = $deepSeekCompactValue
         DeepSeekCompactSuffix = $deepSeekCompactSuffix
         DeepSeekLabel = $deepSeekLabel
         DeepSeekBalanceText = $deepSeekBalanceText
         DeepSeekMetricTitle = $deepSeekMetricTitle
         DeepSeekMonthlyCostValue = $deepSeekMonthlyCostValue
+        DeepSeekTodayTokenValue = $deepSeekTodayTokenValue
         DeepSeekMonthlyTokenValue = $deepSeekMonthlyTokenValue
         DeepSeekProgressRemaining = $deepSeekProgressRemaining
         DeepSeekProgressUsed = $deepSeekProgressUsed
@@ -2660,6 +3052,9 @@ if ($CheckTransitions) {
         DeepSeekBalanceCompactSuffix = $deepSeekBalanceCompactSuffix
         DeepSeekNoBudgetProgressRemaining = $deepSeekNoBudgetProgressRemaining
         DeepSeekNoBudgetProgressUsed = $deepSeekNoBudgetProgressUsed
+        MetricValueFontFamilies = $metricValueFontFamilies
+        MetricValueFontSizes = $metricValueFontSizes
+        MetricValueFontWeights = $metricValueFontWeights
         RemainingProgressStar = $RemainingProgressColumn.Width.Value
         UsedProgressStar = $UsedProgressColumn.Width.Value
         ReopenedWidth = $reopenedWidth
@@ -2746,21 +3141,23 @@ $script:TrayCodexSourceItem.Add_Click({
 $script:TrayDeepSeekSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayDeepSeekSourceItem.Text = 'DeepSeek'
 $script:TrayDeepSeekSourceItem.Add_Click({
+    Set-ActiveProvider -Provider 'DeepSeek'
     $credential = Get-DeepSeekCredential
     if ($credential.ApiKey) {
-        Set-ActiveProvider -Provider 'DeepSeek' -Refresh
+        Invoke-Refresh
     }
     else {
         Show-ExistingWindow
-        [void](Show-DeepSeekSettings)
+        $saved = Show-DeepSeekSettings
+        if (-not $saved) { Invoke-Refresh }
         Sync-ProviderMenuState
     }
 })
 [void]$traySourceItem.DropDownItems.Add($script:TrayCodexSourceItem)
 [void]$traySourceItem.DropDownItems.Add($script:TrayDeepSeekSourceItem)
-$trayDeepSeekSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$trayDeepSeekSettingsItem.Text = 'DeepSeek 设置…'
-$trayDeepSeekSettingsItem.Add_Click({
+$script:TrayDeepSeekSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayDeepSeekSettingsItem.Text = 'DeepSeek 设置…'
+$script:TrayDeepSeekSettingsItem.Add_Click({
     Show-ExistingWindow
     [void](Show-DeepSeekSettings)
 })
@@ -2783,7 +3180,7 @@ $trayExitItem.Add_Click({
 [void]$script:TrayMenu.Items.Add($trayOpenItem)
 [void]$script:TrayMenu.Items.Add($trayRefreshItem)
 [void]$script:TrayMenu.Items.Add($traySourceItem)
-[void]$script:TrayMenu.Items.Add($trayDeepSeekSettingsItem)
+[void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)

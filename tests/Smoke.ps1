@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $appScript = Join-Path $projectRoot 'src\CodexMarginFloat.ps1'
+$buildScript = Join-Path $projectRoot 'Build-Package.ps1'
+$commandLauncher = Join-Path $projectRoot 'Start-CodexMarginFloat.cmd'
 
 $tokens = $null
 $errors = $null
@@ -13,6 +15,26 @@ $errors = $null
 )
 if ($errors.Count -gt 0) {
     throw "PowerShell parse check failed: $($errors[0].Message)"
+}
+
+$buildTokens = $null
+$buildErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    $buildScript,
+    [ref]$buildTokens,
+    [ref]$buildErrors
+)
+if ($buildErrors.Count -gt 0) {
+    throw "Build script parse check failed: $($buildErrors[0].Message)"
+}
+
+$launcherCode = Get-Content -LiteralPath $commandLauncher -Raw -Encoding utf8
+if (
+    $launcherCode -notmatch 'Start-Process' -or
+    $launcherCode -notmatch "-WindowStyle', 'Hidden'" -or
+    $launcherCode -match 'start\s+""\s+powershell\.exe'
+) {
+    throw 'CMD launcher must detach the application into an independent hidden PowerShell process.'
 }
 
 $json = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appScript -CheckData | Out-String
@@ -29,6 +51,10 @@ $required = @(
     'ResetCount',
     'Plan',
     'TodayTokens',
+    'TodayInputTokens',
+    'TodayOutputTokens',
+    'TodayCachedTokens',
+    'TodayCacheHitPercent',
     'LastTurnTokens',
     'SampledAt',
     'Source'
@@ -42,8 +68,37 @@ foreach ($property in $required) {
 if ($snapshot.RemainingPercent -lt 0 -or $snapshot.RemainingPercent -gt 100) {
     throw "RemainingPercent is outside 0..100: $($snapshot.RemainingPercent)"
 }
-if ($snapshot.TodayTokens -lt 0 -or $snapshot.LastTurnTokens -lt 0) {
+if (
+    $snapshot.TodayTokens -lt 0 -or
+    $snapshot.TodayInputTokens -lt 0 -or
+    $snapshot.TodayOutputTokens -lt 0 -or
+    $snapshot.TodayCachedTokens -lt 0 -or
+    $snapshot.TodayCacheHitPercent -lt 0 -or
+    $snapshot.TodayCacheHitPercent -gt 100 -or
+    $snapshot.LastTurnTokens -lt 0
+) {
     throw 'Token counts must not be negative.'
+}
+
+$selectionJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $appScript -CheckCodexRateLimitSelection | Out-String
+if ($LASTEXITCODE -ne 0) {
+    throw 'Codex rate-limit selection check process failed.'
+}
+$selection = $selectionJson | ConvertFrom-Json
+if (
+    $selection.SelectedUsedPercent -ne 22 -or
+    $selection.SelectedResetAt -ne 1893459600 -or
+    -not $selection.NewestFileWasStale -or
+    -not $selection.IncompleteNewestWasIgnored -or
+    -not $selection.EmptySelectionHandled
+) {
+    throw "Codex rate-limit selection used stale or incomplete data: $selectionJson"
+}
+
+$sourceCode = Get-Content -LiteralPath $appScript -Raw -Encoding utf8
+if ($sourceCode -match '本轮') {
+    throw 'The detail view still contains parallel-task-unsafe 本轮 labels.'
 }
 
 $deepSeekJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appScript -CheckDeepSeekData | Out-String
@@ -123,6 +178,12 @@ if (
 ) {
     throw "Progress segments are not clamped to 0..100: $transitionJson"
 }
+if (
+    $transition.CodexSettingsVisibility -ne 'Collapsed' -or
+    $transition.DeepSeekSettingsVisibility -ne 'Visible'
+) {
+    throw "DeepSeek settings visibility did not follow the active provider: $transitionJson"
+}
 if ($transition.RemainingProgressStar -ne 82 -or $transition.UsedProgressStar -ne 18) {
     throw "Progress segments do not reflect remaining versus used quota: $transitionJson"
 }
@@ -136,6 +197,7 @@ if (
     $transition.DeepSeekNoBudgetProgressRemaining -ne 0 -or
     $transition.DeepSeekNoBudgetProgressUsed -ne 100 -or
     $transition.DeepSeekMonthlyCostValue -notmatch '2\.36$' -or
+    $transition.DeepSeekTodayTokenValue -ne '382.6K' -or
     $transition.DeepSeekMonthlyTokenValue -ne '2.8M'
 ) {
     throw "DeepSeek view mapping is incorrect: $transitionJson"
