@@ -20,6 +20,10 @@ $script:SessionCache = @{}
 $script:LastSnapshot = $null
 $script:CompactAnchorLeft = $null
 $script:CompactAnchorTop = $null
+$script:TrayNotifyIcon = $null
+$script:TrayAppIcon = $null
+$script:TrayMenu = $null
+$script:TrayTopmostItem = $null
 
 function Get-FittedPlacement {
     param(
@@ -423,6 +427,24 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class CodexMarginNativeWindow
+{
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyIcon(IntPtr hIcon);
+}
+'@
 $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimation
 
 [xml]$xaml = @'
@@ -781,6 +803,90 @@ if ($Demo) {
     $window.ShowInTaskbar = $true
 }
 
+function Get-WindowExtendedStyle {
+    $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
+    if ($helper.Handle -eq [IntPtr]::Zero) { return 0 }
+    return [CodexMarginNativeWindow]::GetWindowLong($helper.Handle, -20)
+}
+
+function Hide-WindowFromTaskSwitcher {
+    $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
+    if ($helper.Handle -eq [IntPtr]::Zero) { return $false }
+
+    $toolWindow = 0x00000080
+    $appWindow = 0x00040000
+    $style = [CodexMarginNativeWindow]::GetWindowLong($helper.Handle, -20)
+    $style = ($style -bor $toolWindow) -band (-bnot $appWindow)
+    [void][CodexMarginNativeWindow]::SetWindowLong($helper.Handle, -20, $style)
+    return (($style -band $toolWindow) -ne 0 -and ($style -band $appWindow) -eq 0)
+}
+
+function New-TrayAppIcon {
+    $bitmap = New-Object Drawing.Bitmap(
+        32,
+        32,
+        [Drawing.Imaging.PixelFormat]::Format32bppArgb
+    )
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    $sageBrush = New-Object Drawing.SolidBrush(
+        [Drawing.ColorTranslator]::FromHtml('#7E9584')
+    )
+    $ivoryBrush = New-Object Drawing.SolidBrush(
+        [Drawing.ColorTranslator]::FromHtml('#FCFBF8')
+    )
+    $champagnePen = New-Object Drawing.Pen(
+        [Drawing.ColorTranslator]::FromHtml('#BEA374'),
+        1.5
+    )
+    $font = New-Object Drawing.Font(
+        'Segoe UI',
+        17,
+        [Drawing.FontStyle]::Bold,
+        [Drawing.GraphicsUnit]::Pixel
+    )
+    $format = New-Object Drawing.StringFormat
+    $format.Alignment = [Drawing.StringAlignment]::Center
+    $format.LineAlignment = [Drawing.StringAlignment]::Center
+
+    try {
+        $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $graphics.TextRenderingHint = [Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+        $graphics.Clear([Drawing.Color]::Transparent)
+        $graphics.FillEllipse($sageBrush, 1, 1, 30, 30)
+        $graphics.DrawEllipse($champagnePen, 1.5, 1.5, 29, 29)
+        $graphics.DrawString(
+            'C',
+            $font,
+            $ivoryBrush,
+            (New-Object Drawing.RectangleF(0, 0, 32, 31)),
+            $format
+        )
+
+        $iconHandle = $bitmap.GetHicon()
+        try {
+            return ([Drawing.Icon]::FromHandle($iconHandle).Clone())
+        }
+        finally {
+            [void][CodexMarginNativeWindow]::DestroyIcon($iconHandle)
+        }
+    }
+    finally {
+        $format.Dispose()
+        $font.Dispose()
+        $champagnePen.Dispose()
+        $ivoryBrush.Dispose()
+        $sageBrush.Dispose()
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+if (-not $Demo) {
+    $window.Add_SourceInitialized({
+        [void](Hide-WindowFromTaskSwitcher)
+    })
+}
+
 $names = @(
     'WindowRoot', 'HoverHalo', 'Surface', 'SurfaceShadow', 'CompactHit',
     'RemainingValue', 'WindowLabel', 'ProgressTrack', 'RemainingProgressColumn',
@@ -1051,6 +1157,10 @@ function Update-UsageView {
     $SampleTime.Text = '采样于 {0}' -f $Snapshot.SampledAt.ToString('M月d日 HH:mm:ss')
     Set-Progress -Percent $Snapshot.RemainingPercent
 
+    if ($script:TrayNotifyIcon) {
+        $script:TrayNotifyIcon.Text = 'Codex 余量 {0}% · 单击打开详情' -f [int]$Snapshot.RemainingPercent
+    }
+
     $script:RefreshRemaining = $script:RefreshIntervalSeconds
 }
 
@@ -1168,6 +1278,9 @@ $topmostMenu.IsCheckable = $true
 $topmostMenu.IsChecked = $window.Topmost
 $topmostMenu.Add_Click({
     $window.Topmost = $topmostMenu.IsChecked
+    if ($script:TrayTopmostItem) {
+        $script:TrayTopmostItem.Checked = $window.Topmost
+    }
     Save-Settings
 })
 $resetPositionMenu = New-Object Windows.Controls.MenuItem
@@ -1220,6 +1333,15 @@ if ($CheckTransitions) {
     $window.Top = 980
     $window.Show()
     Wait-ForUi -Milliseconds 50
+    $extendedStyle = Get-WindowExtendedStyle
+    $taskViewHidden = (
+        ($extendedStyle -band 0x00000080) -ne 0 -and
+        ($extendedStyle -band 0x00040000) -eq 0
+    )
+    $testTrayIcon = New-TrayAppIcon
+    $trayIconWidth = $testTrayIcon.Width
+    $trayIconHeight = $testTrayIcon.Height
+    $testTrayIcon.Dispose()
     Set-Progress -Percent 140
     $upperClampedRemaining = $RemainingProgressColumn.Width.Value
     $upperClampedUsed = $UsedProgressColumn.Width.Value
@@ -1253,6 +1375,9 @@ if ($CheckTransitions) {
         ExpandedWidth = $expandedWidth
         ExpandedHeight = $expandedHeight
         ExpandedVisibility = $expandedVisibility
+        TaskViewHidden = $taskViewHidden
+        TrayIconWidth = $trayIconWidth
+        TrayIconHeight = $trayIconHeight
         UpperClampedRemaining = $upperClampedRemaining
         UpperClampedUsed = $upperClampedUsed
         LowerClampedRemaining = $lowerClampedRemaining
@@ -1314,6 +1439,55 @@ if ($RenderPreview) {
     exit 0
 }
 
+$script:TrayAppIcon = New-TrayAppIcon
+$script:TrayMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$trayOpenItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayOpenItem.Text = '打开详情'
+$trayOpenItem.Add_Click({
+    Show-ExistingWindow
+    Set-ExpandedState -Expanded $true
+})
+$trayRefreshItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayRefreshItem.Text = '立即刷新'
+$trayRefreshItem.Add_Click({
+    Show-ExistingWindow
+    Invoke-Refresh
+})
+$script:TrayTopmostItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayTopmostItem.Text = '始终置顶'
+$script:TrayTopmostItem.CheckOnClick = $true
+$script:TrayTopmostItem.Checked = $window.Topmost
+$script:TrayTopmostItem.Add_Click({
+    $window.Topmost = $script:TrayTopmostItem.Checked
+    $topmostMenu.IsChecked = $window.Topmost
+    Save-Settings
+})
+$traySeparator = New-Object System.Windows.Forms.ToolStripSeparator
+$trayExitItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayExitItem.Text = '退出'
+$trayExitItem.Add_Click({
+    Save-Settings
+    $window.Close()
+})
+[void]$script:TrayMenu.Items.Add($trayOpenItem)
+[void]$script:TrayMenu.Items.Add($trayRefreshItem)
+[void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
+[void]$script:TrayMenu.Items.Add($traySeparator)
+[void]$script:TrayMenu.Items.Add($trayExitItem)
+
+$script:TrayNotifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$script:TrayNotifyIcon.Icon = $script:TrayAppIcon
+$script:TrayNotifyIcon.Text = 'Codex Margin Float · 单击打开详情'
+$script:TrayNotifyIcon.ContextMenuStrip = $script:TrayMenu
+$script:TrayNotifyIcon.Add_MouseClick({
+    param($sender, $eventArgs)
+    if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        Show-ExistingWindow
+        Set-ExpandedState -Expanded $true
+    }
+})
+$script:TrayNotifyIcon.Visible = $true
+
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
 $timer.Add_Tick({
@@ -1338,6 +1512,19 @@ $window.Add_Closing({
     $timer.Stop()
     $activationTimer.Stop()
     Save-Settings
+    if ($script:TrayNotifyIcon) {
+        $script:TrayNotifyIcon.Visible = $false
+        $script:TrayNotifyIcon.Dispose()
+        $script:TrayNotifyIcon = $null
+    }
+    if ($script:TrayMenu) {
+        $script:TrayMenu.Dispose()
+        $script:TrayMenu = $null
+    }
+    if ($script:TrayAppIcon) {
+        $script:TrayAppIcon.Dispose()
+        $script:TrayAppIcon = $null
+    }
     if ($script:ActivationEvent) {
         $script:ActivationEvent.Dispose()
     }

@@ -18,6 +18,7 @@
 - 展开时自动避让当前显示器边界
 - 每 60 秒刷新，支持手动刷新
 - 单实例运行，重复启动会唤醒已有窗口
+- 不出现在 `Win+Tab` / `Alt+Tab`，通过任务栏通知区域图标访问
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
 - 本地解析 Codex 会话中的余量、重置时间和 Token 数据
 - 位置与置顶偏好自动保存在本机
@@ -54,6 +55,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 | `Esc` | 收起详情 |
 | `Ctrl+R` | 立即刷新 |
 | 详情右上角箭头 | 收起详情 |
+| 单击通知区域图标 | 唤醒窗口并打开详情 |
+| 右键通知区域图标 | 打开详情、刷新、置顶或退出 |
 
 ## 数据与隐私
 
@@ -77,6 +80,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
 - PowerShell 语法
 - 用量数据结构与数值范围
 - 剩余/已使用进度分段与 0–100 边界
+- `Win+Tab` / `Alt+Tab` 隐藏状态和 32×32 通知区域图标
 - 屏幕边界避让
 - 普通展开与收起
 - 收起过程中重新展开
@@ -98,6 +102,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
 ### 双击启动脚本后没有第二个窗口
 
 这是预期行为。项目采用单实例运行，第二次启动会唤醒已有窗口。
+
+### 在任务栏中找不到图标
+
+图标位于 Windows 任务栏右侧的通知区域，不是普通任务栏按钮。若未直接显示，请点击通知区域的 `^` 展开折叠图标。
 
 ### 展开窗口靠近屏幕边缘
 

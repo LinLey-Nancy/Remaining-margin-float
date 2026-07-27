@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构。
 
+## [1.0.1] - 2026-07-27
+
+### Added
+
+- Windows 任务栏通知区域图标和原生右键菜单
+- 通知区域左键打开详情，右键刷新、置顶和退出
+
+### Changed
+
+- 悬浮窗不再出现在 `Win+Tab` 或 `Alt+Tab` 任务切换器
+
 ## [1.0.0] - 2026-07-27
 
 ### Added

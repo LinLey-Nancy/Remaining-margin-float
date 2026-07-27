@@ -63,6 +63,12 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Transition check process failed.'
 }
 $transition = $transitionJson | ConvertFrom-Json
+if (-not $transition.TaskViewHidden) {
+    throw "The floating window is still eligible for Win+Tab/Alt+Tab: $transitionJson"
+}
+if ($transition.TrayIconWidth -ne 32 -or $transition.TrayIconHeight -ne 32) {
+    throw "The notification area icon was not generated at 32x32: $transitionJson"
+}
 if (
     $transition.UpperClampedRemaining -ne 100 -or
     $transition.UpperClampedUsed -ne 0 -or

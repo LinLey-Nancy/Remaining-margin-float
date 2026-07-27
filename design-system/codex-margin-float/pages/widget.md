@@ -40,6 +40,9 @@ system. The widget must remain dependency-free and must not download fonts.
 - Drag threshold: 5 px so a click does not accidentally move the widget
 - Missing Codex fields must say `未提供`; never synthesize quota data
 - Structural icons use WPF vector paths
+- Exclude the floating surface from Win+Tab / Alt+Tab; expose a native Windows
+  notification-area icon with labeled menu actions instead
+- Tray icon: 32 px sage circle, ivory `C`, restrained champagne outline; no emoji
 
 ## Explicit Overrides
 

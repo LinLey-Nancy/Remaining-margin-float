@@ -18,6 +18,8 @@ Start-CodexMarginFloat.cmd
 
 应用使用命名互斥锁 `Local\CodexMarginFloat.Singleton` 保证单实例运行。第二次启动通过 `Local\CodexMarginFloat.Activate` 自动重置信号唤醒已有窗口。
 
+普通窗口设置 `WS_EX_TOOLWINDOW` 并移除 `WS_EX_APPWINDOW`，因此不会出现在 `Win+Tab`、`Alt+Tab` 或普通任务栏按钮中。应用入口位于 Windows 任务栏通知区域。
+
 ## 命令行参数
 
 | 参数 | 类型 | 默认值 | 作用 |
@@ -49,6 +51,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 | 自动刷新间隔 | 60 秒 |
 | 拖动阈值 | 5 px |
 | 详情淡入 | 190 ms，系统关闭客户端动画时缩短为 1 ms |
+| 通知区域图标 | 运行时绘制的 32×32 “C” 图标 |
 
 窗口宽度和高度作为同一个状态原子切换，避免快速操作后落入 370×100 或 108×500 的部分尺寸。
 进度条使用两列星号宽度：鼠尾草绿表示剩余比例，暖米灰表示已使用比例。
@@ -93,6 +96,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 ```
 
 `Expanded` 当前固定保存为 `false`，因此应用始终以紧凑状态启动。保存的坐标在窗口句柄创建后根据对应显示器的工作区域校正。
+
+## 通知区域菜单
+
+| 操作 | 行为 |
+|---|---|
+| 左键单击图标 | 唤醒现有窗口并打开详情 |
+| 打开详情 | 唤醒现有窗口并展开 |
+| 立即刷新 | 唤醒窗口并读取本地快照 |
+| 始终置顶 | 与悬浮窗右键菜单同步 |
+| 退出 | 保存设置、移除图标并释放单实例资源 |
 
 ## 数据不可用行为
 

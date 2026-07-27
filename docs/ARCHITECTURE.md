@@ -45,6 +45,12 @@ Codex Margin Float 是一个单文件 PowerShell/WPF 桌面应用。它的目标
 
 这种实现不需要端口、管道或临时文件，也不会产生第二个可见窗口。
 
+## 任务切换器与通知区域
+
+`ShowInTaskbar=false` 只能隐藏普通任务栏按钮，不能保证透明无边框 WPF 窗口退出任务视图。窗口创建句柄后，应用追加 `WS_EX_TOOLWINDOW` 并移除 `WS_EX_APPWINDOW`，使悬浮窗不再出现在 `Win+Tab` 和 `Alt+Tab`。
+
+应用使用 `System.Windows.Forms.NotifyIcon` 提供通知区域入口。图标在内存中绘制为 32×32 的鼠尾草绿色 “C”，不需要额外图片文件。关闭窗口时会依次隐藏并释放 NotifyIcon、菜单和 Icon 对象，避免退出后留下失效图标。
+
 ## 窗口状态
 
 窗口只有两个合法尺寸：
