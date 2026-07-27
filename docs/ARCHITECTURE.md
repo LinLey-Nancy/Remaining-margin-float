@@ -1,27 +1,25 @@
 # 架构说明
 
-Codex Margin Float 是一个单文件 PowerShell/WPF 桌面应用。它的目标是用最少依赖展示本地 Codex 用量，同时保持窗口状态稳定、数据来源透明。
+Codex Margin Float 是一个单文件 PowerShell/WPF 桌面应用。它的目标是用最少依赖展示 Codex 与 DeepSeek 用量，同时保持窗口状态稳定、数据来源透明。
 
 ## 数据流
 
 ```text
-%USERPROFILE%\.codex\sessions\**\*.jsonl
-                       │
-                       ▼
-            Read-SessionSnapshot
-              512KB 尾读 + 缓存
-                       │
-                       ▼
-            Get-CodexUsageSnapshot ◀── auth.json 的显示声明
-                       │
-                       ▼
-               Update-UsageView
-                       │
-                       ▼
-           紧凑窗口 / 展开详情
+Codex JSONL ──> Get-CodexUsageSnapshot ─┐
+                                        ├──> Update-UsageView ──> 紧凑 / 详情
+DeepSeek API ─> ConvertTo-DeepSeekSnapshot
+Claude JSONL ─> Get-DeepSeekLocalUsage ─┘
 ```
 
-应用不调用 Codex 服务，也没有网络请求。它只显示 Codex 已经写入本机的快照。
+Codex Provider 不发起网络请求。DeepSeek Provider 使用固定官方地址异步查询余额；Claude Code JSONL 只用于本机 Token 统计。两个 Provider 输出同一视图模型，界面不直接依赖上游协议。
+
+## DeepSeek 刷新
+
+`HttpClient.SendAsync` 在 UI 线程外等待网络。现有一秒 Dispatcher Timer 只轮询任务完成状态，因此请求超时或网络缓慢不会阻塞拖动、展开和收起。请求超时为 8 秒；失败时保留上次成功快照并显示错误原因。
+
+切换回 Codex 时会取消未完成的 DeepSeek 请求，再更新 Provider 状态和界面，防止旧请求覆盖新数据源。
+
+Claude Code 日志在单文件解析和当日全局汇总两层按 `message.id` 去重，因为同一 DeepSeek 响应可能在一个或多个 JSONL 中重复出现。解析结果使用文件修改时间和长度缓存。
 
 ## 为什么使用 PowerShell 和 WPF
 
@@ -79,12 +77,14 @@ Codex 会话日志可能增长到几十 MB。每分钟完整读取所有文件�
 
 ## 安全边界
 
-- 不发起网络请求。
+- Codex 模式不发起网络请求；DeepSeek 模式只请求 `https://api.deepseek.com/user/balance`。
 - 不执行会话文件中的内容。
 - JSONL 只通过 `ConvertFrom-Json` 解析。
 - ID Token 只解码载荷以显示名称和邮箱，不用于身份验证。
 - 不显示、记录或持久化 access token、refresh token。
-- 设置文件只包含窗口坐标和置顶偏好。
+- DeepSeek API Key 使用 DPAPI `CurrentUser` 加密；界面只显示末四位。
+- 不读取 CC Switch 数据库、配置或密钥。
+- 通用设置文件只包含窗口坐标、置顶偏好和当前 Provider。
 
 本应用读取的是当前用户有权访问的本地 Codex 文件。它不是认证组件，不能用解码后的 JWT 声明作安全决策。
 

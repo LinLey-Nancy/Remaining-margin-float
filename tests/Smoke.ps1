@@ -46,6 +46,42 @@ if ($snapshot.TodayTokens -lt 0 -or $snapshot.LastTurnTokens -lt 0) {
     throw 'Token counts must not be negative.'
 }
 
+$deepSeekJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appScript -CheckDeepSeekData | Out-String
+if ($LASTEXITCODE -ne 0) {
+    throw 'DeepSeek data check process failed.'
+}
+$deepSeek = $deepSeekJson | ConvertFrom-Json
+if (
+    $deepSeek.ProviderId -ne 'DeepSeek' -or
+    -not $deepSeek.Available -or
+    $deepSeek.TotalBalance -ne 86.4 -or
+    $deepSeek.GrantedBalance -ne 10 -or
+    $deepSeek.ToppedUpBalance -ne 76.4 -or
+    $deepSeek.RemainingPercent -ne 72
+) {
+    throw "DeepSeek balance mapping is incorrect: $deepSeekJson"
+}
+if (-not $deepSeek.SecureStorageRoundTrip) {
+    throw 'DeepSeek API key DPAPI round-trip failed.'
+}
+if ($deepSeek.DedupedUsageTokens -ne 40 -or $deepSeek.DedupedUsageMessages -ne 1) {
+    throw "DeepSeek usage events were not deduplicated across files: $deepSeekJson"
+}
+
+$deepSeekUsageJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appScript -CheckDeepSeekUsage | Out-String
+if ($LASTEXITCODE -ne 0) {
+    throw 'DeepSeek local usage check process failed.'
+}
+$deepSeekUsage = $deepSeekUsageJson | ConvertFrom-Json
+if (
+    $deepSeekUsage.TodayTokens -lt 0 -or
+    $deepSeekUsage.LastTurnTokens -lt 0 -or
+    $deepSeekUsage.CacheHitPercent -lt 0 -or
+    $deepSeekUsage.CacheHitPercent -gt 100
+) {
+    throw "DeepSeek local usage values are invalid: $deepSeekUsageJson"
+}
+
 $placementJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appScript -CheckPlacement | Out-String
 if ($LASTEXITCODE -ne 0) {
     throw 'Placement check process failed.'
@@ -79,6 +115,18 @@ if (
 }
 if ($transition.RemainingProgressStar -ne 82 -or $transition.UsedProgressStar -ne 18) {
     throw "Progress segments do not reflect remaining versus used quota: $transitionJson"
+}
+if (
+    $transition.DeepSeekCompactValue -ne '72' -or
+    $transition.DeepSeekCompactSuffix -ne '%' -or
+    $transition.DeepSeekProgressRemaining -ne 72 -or
+    $transition.DeepSeekProgressUsed -ne 28 -or
+    $transition.DeepSeekBalanceCompactValue -ne '86.4' -or
+    $transition.DeepSeekBalanceCompactSuffix -ne '' -or
+    $transition.DeepSeekNoBudgetProgressRemaining -ne 0 -or
+    $transition.DeepSeekNoBudgetProgressUsed -ne 100
+) {
+    throw "DeepSeek view mapping is incorrect: $transitionJson"
 }
 if ($transition.ExpandedWidth -ne 370 -or $transition.ExpandedHeight -ne 500 -or $transition.ExpandedVisibility -ne 'Visible') {
     throw "Normal expansion did not settle to the detail size: $transitionJson"

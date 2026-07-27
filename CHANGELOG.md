@@ -2,6 +2,22 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构。
 
+## [1.1.0] - 2026-07-27
+
+### Added
+
+- 独立 DeepSeek Provider，通过官方余额 API 展示总余额、赠金和充值余额
+- 从 Claude Code 本地日志去重统计 DeepSeek 今日、本轮和缓存 Token
+- Codex / DeepSeek 数据源切换与通知区域入口
+- DeepSeek 设置窗口、DPAPI 当前用户加密密钥和环境变量支持
+- 可选预算基准；未设置时直接显示货币余额
+- DeepSeek 演示预览、数据映射、安全存储和界面回归测试
+
+### Changed
+
+- DeepSeek 网络读取改为异步任务，避免阻塞 WPF 交互
+- 通用设置新增当前 Provider，重复启动仍唤醒同一个实例
+
 ## [1.0.2] - 2026-07-27
 
 ### Added

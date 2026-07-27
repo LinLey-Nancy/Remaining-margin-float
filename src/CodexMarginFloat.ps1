@@ -1,8 +1,12 @@
 ﻿param(
     [switch]$CheckData,
+    [switch]$CheckDeepSeekData,
+    [switch]$CheckDeepSeekUsage,
     [switch]$CheckPlacement,
     [switch]$CheckTransitions,
     [switch]$Demo,
+    [ValidateSet('codex', 'deepseek')]
+    [string]$DemoProvider = 'codex',
     [ValidateSet('', 'compact', 'expanded')]
     [string]$RenderPreview = '',
     [string]$PreviewPath = ''
@@ -10,6 +14,7 @@
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Security
 
 $script:CompactWidth = 108.0
 $script:CompactHeight = 100.0
@@ -25,6 +30,17 @@ $script:TrayAppIcon = $null
 $script:TrayMenu = $null
 $script:TrayTopmostItem = $null
 $script:IsClosing = $false
+$script:ActiveProvider = 'Codex'
+$script:DeepSeekUsageCache = @{}
+$script:DeepSeekLatestUsageCache = @{}
+$script:DeepSeekHttpClient = $null
+$script:DeepSeekRequest = $null
+$script:DeepSeekRequestTask = $null
+$script:LastDeepSeekSnapshot = $null
+$script:CodexSourceMenuItem = $null
+$script:DeepSeekSourceMenuItem = $null
+$script:TrayCodexSourceItem = $null
+$script:TrayDeepSeekSourceItem = $null
 
 function Get-FittedPlacement {
     param(
@@ -218,6 +234,567 @@ function Format-CompactNumber {
     return ('{0:N0}' -f $Value)
 }
 
+function Get-AppDataDirectory {
+    $directory = Join-Path $env:LOCALAPPDATA 'CodexMarginFloat'
+    if (-not (Test-Path -LiteralPath $directory)) {
+        New-Item -Path $directory -ItemType Directory -Force | Out-Null
+    }
+    return $directory
+}
+
+function Get-DeepSeekConfigPath {
+    return Join-Path (Get-AppDataDirectory) 'deepseek.json'
+}
+
+function Protect-LocalSecret {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    try {
+        $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+            $plainBytes,
+            $null,
+            [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [Convert]::ToBase64String($protectedBytes)
+    }
+    finally {
+        [Array]::Clear($plainBytes, 0, $plainBytes.Length)
+    }
+}
+
+function Unprotect-LocalSecret {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    try {
+        $protectedBytes = [Convert]::FromBase64String($Value)
+        $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
+            $protectedBytes,
+            $null,
+            [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        try {
+            return [Text.Encoding]::UTF8.GetString($plainBytes)
+        }
+        finally {
+            [Array]::Clear($plainBytes, 0, $plainBytes.Length)
+        }
+    }
+    catch {
+        return ''
+    }
+}
+
+function Get-DeepSeekConfiguration {
+    $result = [ordered]@{
+        EncryptedApiKey = ''
+        KeyHint = ''
+        Budget = 0.0
+    }
+    try {
+        $path = Get-DeepSeekConfigPath
+        if (Test-Path -LiteralPath $path) {
+            $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($saved.PSObject.Properties['EncryptedApiKey']) {
+                $result.EncryptedApiKey = [string]$saved.EncryptedApiKey
+            }
+            if ($saved.PSObject.Properties['KeyHint']) {
+                $result.KeyHint = [string]$saved.KeyHint
+            }
+            if ($saved.PSObject.Properties['Budget']) {
+                $result.Budget = [Math]::Max(0, [double]$saved.Budget)
+            }
+        }
+    }
+    catch {
+        # A damaged optional configuration must not prevent the widget starting.
+    }
+    return [pscustomobject]$result
+}
+
+function Save-DeepSeekConfiguration {
+    param(
+        [AllowEmptyString()]
+        [string]$ApiKey,
+        [double]$Budget,
+        [switch]$RemoveKey
+    )
+
+    $current = Get-DeepSeekConfiguration
+    $encryptedApiKey = $current.EncryptedApiKey
+    $keyHint = $current.KeyHint
+    if ($RemoveKey) {
+        $encryptedApiKey = ''
+        $keyHint = ''
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
+        $trimmedKey = $ApiKey.Trim()
+        $encryptedApiKey = Protect-LocalSecret -Value $trimmedKey
+        $keyHint = if ($trimmedKey.Length -gt 4) {
+            $trimmedKey.Substring($trimmedKey.Length - 4)
+        } else {
+            $trimmedKey
+        }
+    }
+
+    [ordered]@{
+        EncryptedApiKey = $encryptedApiKey
+        KeyHint = $keyHint
+        Budget = [Math]::Max(0, $Budget)
+    } | ConvertTo-Json | Set-Content -LiteralPath (Get-DeepSeekConfigPath) -Encoding UTF8
+}
+
+function Get-DeepSeekCredential {
+    if (-not [string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY)) {
+        $environmentKey = $env:DEEPSEEK_API_KEY.Trim()
+        $hint = if ($environmentKey.Length -gt 4) {
+            $environmentKey.Substring($environmentKey.Length - 4)
+        } else {
+            $environmentKey
+        }
+        return [pscustomobject]@{
+            ApiKey = $environmentKey
+            Hint = $hint
+            Source = '环境变量'
+        }
+    }
+
+    $configuration = Get-DeepSeekConfiguration
+    $savedKey = Unprotect-LocalSecret -Value $configuration.EncryptedApiKey
+    return [pscustomobject]@{
+        ApiKey = $savedKey
+        Hint = $configuration.KeyHint
+        Source = if ($savedKey) { 'DPAPI 加密存储' } else { '未配置' }
+    }
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        $Object,
+        [string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) { return $Default }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $Default
+}
+
+function ConvertFrom-DeepSeekUsageLine {
+    param([string]$Line)
+
+    if (
+        $Line.IndexOf('"usage"', [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $Line.IndexOf('deepseek', [StringComparison]::OrdinalIgnoreCase) -lt 0
+    ) {
+        return $null
+    }
+
+    try {
+        $entry = $Line | ConvertFrom-Json
+        $message = Get-ObjectPropertyValue -Object $entry -Name 'message'
+        $usage = Get-ObjectPropertyValue -Object $message -Name 'usage'
+        $model = [string](Get-ObjectPropertyValue -Object $message -Name 'model' -Default '')
+        if (-not $usage -or $model -notmatch '(?i)deepseek') { return $null }
+
+        $messageId = [string](Get-ObjectPropertyValue -Object $message -Name 'id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($messageId)) {
+            $messageId = [string](Get-ObjectPropertyValue -Object $entry -Name 'uuid' -Default '')
+        }
+        $timestamp = [DateTimeOffset]::MinValue
+        $timestampText = [string](Get-ObjectPropertyValue -Object $entry -Name 'timestamp' -Default '')
+        if (-not [DateTimeOffset]::TryParse($timestampText, [ref]$timestamp)) { return $null }
+
+        $input = [double](Get-ObjectPropertyValue -Object $usage -Name 'input_tokens' -Default 0)
+        $output = [double](Get-ObjectPropertyValue -Object $usage -Name 'output_tokens' -Default 0)
+        $cacheRead = [double](Get-ObjectPropertyValue -Object $usage -Name 'cache_read_input_tokens' -Default 0)
+        $cacheWrite = [double](Get-ObjectPropertyValue -Object $usage -Name 'cache_creation_input_tokens' -Default 0)
+        return [pscustomobject]@{
+            MessageId = $messageId
+            Timestamp = $timestamp
+            Model = $model
+            InputTokens = $input
+            OutputTokens = $output
+            CachedTokens = $cacheRead
+            CacheWriteTokens = $cacheWrite
+            TotalTokens = $input + $output + $cacheRead + $cacheWrite
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Read-DeepSeekUsageFile {
+    param([System.IO.FileInfo]$File)
+
+    $cacheKey = '{0}:{1}' -f $File.LastWriteTimeUtc.Ticks, $File.Length
+    if ($script:DeepSeekUsageCache.ContainsKey($File.FullName)) {
+        $cached = $script:DeepSeekUsageCache[$File.FullName]
+        if ($cached.Key -eq $cacheKey) { return $cached.Value }
+    }
+
+    $latest = $null
+    $messageEvents = @{}
+    try {
+        foreach ($line in [IO.File]::ReadLines($File.FullName)) {
+            $event = ConvertFrom-DeepSeekUsageLine -Line $line
+            if (-not $event) { continue }
+            $eventKey = if ($event.MessageId) {
+                $event.MessageId
+            } else {
+                '{0}:{1}' -f $event.Timestamp.UtcTicks, $messageEvents.Count
+            }
+            if (
+                -not $messageEvents.ContainsKey($eventKey) -or
+                $event.Timestamp -gt $messageEvents[$eventKey].Timestamp
+            ) {
+                $messageEvents[$eventKey] = $event
+            }
+        }
+
+        foreach ($event in $messageEvents.Values) {
+            if (-not $latest -or $event.Timestamp -gt $latest.Timestamp) {
+                $latest = $event
+            }
+        }
+    }
+    catch {
+        $messageEvents = @{}
+        $latest = $null
+    }
+
+    $value = [pscustomobject]@{
+        Events = @($messageEvents.Values)
+        Latest = $latest
+    }
+    $script:DeepSeekUsageCache[$File.FullName] = [pscustomobject]@{
+        Key = $cacheKey
+        Value = $value
+    }
+    return $value
+}
+
+function Read-DeepSeekLatestUsageFile {
+    param([System.IO.FileInfo]$File)
+
+    $cacheKey = '{0}:{1}' -f $File.LastWriteTimeUtc.Ticks, $File.Length
+    if ($script:DeepSeekLatestUsageCache.ContainsKey($File.FullName)) {
+        $cached = $script:DeepSeekLatestUsageCache[$File.FullName]
+        if ($cached.Key -eq $cacheKey) { return $cached.Value }
+    }
+
+    $latest = $null
+    try {
+        $stream = [IO.File]::Open(
+            $File.FullName,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite
+        )
+        try {
+            $tailLimit = 512KB
+            $startOffset = [Math]::Max(0L, $stream.Length - $tailLimit)
+            [void]$stream.Seek($startOffset, [IO.SeekOrigin]::Begin)
+            $buffer = New-Object byte[] ([int]($stream.Length - $startOffset))
+            $read = $stream.Read($buffer, 0, $buffer.Length)
+            $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+            if ($startOffset -gt 0) {
+                $firstLineBreak = $text.IndexOf("`n", [StringComparison]::Ordinal)
+                $text = if ($firstLineBreak -ge 0) {
+                    $text.Substring($firstLineBreak + 1)
+                } else { '' }
+            }
+
+            foreach ($line in ($text -split "`r?`n")) {
+                $event = ConvertFrom-DeepSeekUsageLine -Line $line
+                if (-not $event) { continue }
+                if (-not $latest -or $event.Timestamp -gt $latest.Timestamp) {
+                    $latest = $event
+                }
+            }
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    catch {
+        $latest = $null
+    }
+
+    if (-not $latest -and $File.Length -gt 512KB) {
+        $latest = (Read-DeepSeekUsageFile -File $File).Latest
+    }
+    $script:DeepSeekLatestUsageCache[$File.FullName] = [pscustomobject]@{
+        Key = $cacheKey
+        Value = $latest
+    }
+    return $latest
+}
+
+function Measure-DeepSeekUsageEvents {
+    param(
+        [object[]]$Events,
+        [datetime]$Date = (Get-Date).Date
+    )
+
+    $uniqueEvents = @{}
+    $anonymousIndex = 0
+    foreach ($event in $Events) {
+        if (-not $event -or $event.Timestamp.LocalDateTime.Date -ne $Date.Date) { continue }
+        $eventKey = if ($event.MessageId) {
+            $event.MessageId
+        } else {
+            $anonymousIndex++
+            '__anonymous_{0}' -f $anonymousIndex
+        }
+        if (
+            -not $uniqueEvents.ContainsKey($eventKey) -or
+            $event.Timestamp -gt $uniqueEvents[$eventKey].Timestamp
+        ) {
+            $uniqueEvents[$eventKey] = $event
+        }
+    }
+
+    $aggregate = [ordered]@{
+        TotalTokens = 0.0
+        InputTokens = 0.0
+        OutputTokens = 0.0
+        CachedTokens = 0.0
+        UniqueMessages = $uniqueEvents.Count
+    }
+    foreach ($event in $uniqueEvents.Values) {
+        $aggregate.TotalTokens += $event.TotalTokens
+        $aggregate.InputTokens += $event.InputTokens
+        $aggregate.OutputTokens += $event.OutputTokens
+        $aggregate.CachedTokens += $event.CachedTokens
+    }
+    return [pscustomobject]$aggregate
+}
+
+function Get-DeepSeekLocalUsage {
+    $result = [ordered]@{
+        TodayTokens = 0.0
+        TodayInputTokens = 0.0
+        TodayOutputTokens = 0.0
+        TodayCachedTokens = 0.0
+        LastTurnTokens = 0.0
+        LastInputTokens = 0.0
+        LastOutputTokens = 0.0
+        LastCachedTokens = 0.0
+        CacheHitPercent = 0.0
+        Model = '暂无本地记录'
+        SampledAt = Get-Date
+    }
+
+    $projectsRoot = Join-Path $env:USERPROFILE '.claude\projects'
+    if (-not (Test-Path -LiteralPath $projectsRoot)) {
+        return [pscustomobject]$result
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $projectsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+    $todayDate = (Get-Date).Date
+    $latest = $null
+    $todayEvents = New-Object System.Collections.ArrayList
+    $todayFiles = @($files | Where-Object { $_.LastWriteTime.Date -eq $todayDate })
+    foreach ($file in $todayFiles) {
+        $summary = Read-DeepSeekUsageFile -File $file
+        foreach ($event in $summary.Events) {
+            [void]$todayEvents.Add($event)
+        }
+        if ($summary.Latest -and (-not $latest -or $summary.Latest.Timestamp -gt $latest.Timestamp)) {
+            $latest = $summary.Latest
+        }
+    }
+
+    $todayUsage = Measure-DeepSeekUsageEvents -Events @($todayEvents) -Date $todayDate
+    $result.TodayTokens = $todayUsage.TotalTokens
+    $result.TodayInputTokens = $todayUsage.InputTokens
+    $result.TodayOutputTokens = $todayUsage.OutputTokens
+    $result.TodayCachedTokens = $todayUsage.CachedTokens
+
+    if (-not $latest) {
+        foreach ($file in ($files | Where-Object {
+            $_.LastWriteTime.Date -ne $todayDate
+        } | Select-Object -First 16)) {
+            $candidate = Read-DeepSeekLatestUsageFile -File $file
+            if ($candidate) {
+                $latest = $candidate
+                break
+            }
+        }
+    }
+
+    if ($latest) {
+        $result.LastTurnTokens = $latest.TotalTokens
+        $result.LastInputTokens = $latest.InputTokens + $latest.CachedTokens + $latest.CacheWriteTokens
+        $result.LastOutputTokens = $latest.OutputTokens
+        $result.LastCachedTokens = $latest.CachedTokens
+        $cacheBase = $latest.InputTokens + $latest.CachedTokens + $latest.CacheWriteTokens
+        $result.CacheHitPercent = if ($cacheBase -gt 0) {
+            [Math]::Round(($latest.CachedTokens / $cacheBase) * 100, 1)
+        } else { 0 }
+        $result.Model = $latest.Model
+        $result.SampledAt = $latest.Timestamp.LocalDateTime
+    }
+    return [pscustomobject]$result
+}
+
+function Format-CurrencyAmount {
+    param(
+        [double]$Amount,
+        [string]$Currency
+    )
+
+    $symbol = if ($Currency -eq 'USD') { '$' } else { '¥' }
+    return '{0}{1:N2}' -f $symbol, $Amount
+}
+
+function ConvertTo-DeepSeekSnapshot {
+    param(
+        $BalancePayload,
+        $LocalUsage,
+        [double]$Budget,
+        [string]$KeyHint,
+        [string]$CredentialSource,
+        [datetime]$SampledAt = (Get-Date)
+    )
+
+    $balanceInfos = @(Get-ObjectPropertyValue -Object $BalancePayload -Name 'balance_infos' -Default @())
+    $selectedBalance = $balanceInfos | Where-Object {
+        [string](Get-ObjectPropertyValue -Object $_ -Name 'currency' -Default '') -eq 'CNY'
+    } | Select-Object -First 1
+    if (-not $selectedBalance) { $selectedBalance = $balanceInfos | Select-Object -First 1 }
+    if (-not $selectedBalance) { throw 'DeepSeek 返回中没有可用的余额字段。' }
+
+    $currency = [string](Get-ObjectPropertyValue -Object $selectedBalance -Name 'currency' -Default 'CNY')
+    $totalBalance = [double]::Parse(
+        [string](Get-ObjectPropertyValue -Object $selectedBalance -Name 'total_balance' -Default '0'),
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $grantedBalance = [double]::Parse(
+        [string](Get-ObjectPropertyValue -Object $selectedBalance -Name 'granted_balance' -Default '0'),
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $toppedUpBalance = [double]::Parse(
+        [string](Get-ObjectPropertyValue -Object $selectedBalance -Name 'topped_up_balance' -Default '0'),
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $isAvailable = [bool](Get-ObjectPropertyValue -Object $BalancePayload -Name 'is_available' -Default $false)
+    $budgetPercent = if ($Budget -gt 0) {
+        [Math]::Round([Math]::Max(0, [Math]::Min(100, ($totalBalance / $Budget) * 100)))
+    } else { $null }
+
+    return [pscustomobject]@{
+        ProviderId = 'DeepSeek'
+        Available = $isAvailable
+        RemainingPercent = if ($null -ne $budgetPercent) { $budgetPercent } else { 0 }
+        HasProgress = $null -ne $budgetPercent
+        WindowLabel = if ($null -ne $budgetPercent) { '预算余量' } else { 'DeepSeek 余额' }
+        ResetDate = Format-CurrencyAmount -Amount $totalBalance -Currency $currency
+        ResetCountdown = if ($isAvailable) { '当前可用于 API 调用' } else { '余额当前不可用' }
+        ResetCount = if ($Budget -gt 0) {
+            Format-CurrencyAmount -Amount $Budget -Currency $currency
+        } else { '未设置' }
+        Plan = '按量计费'
+        AccountName = 'DeepSeek API'
+        AccountEmail = if ($KeyHint) {
+            '密钥 ••••{0} · {1}' -f $KeyHint, $CredentialSource
+        } else { '尚未配置 API Key' }
+        TodayTokens = $LocalUsage.TodayTokens
+        LastTurnTokens = $LocalUsage.LastTurnTokens
+        InputTokens = $LocalUsage.LastInputTokens
+        OutputTokens = $LocalUsage.LastOutputTokens
+        CachedTokens = $LocalUsage.LastCachedTokens
+        CacheHitPercent = $LocalUsage.CacheHitPercent
+        ContextPercent = 0
+        SampledAt = $SampledAt
+        UsageSampledAt = $LocalUsage.SampledAt
+        Status = if (-not $isAvailable) { '余额不可用' }
+            elseif ($Budget -gt 0 -and $budgetPercent -le 20) { '建议留意' }
+            else { '状态舒适' }
+        Source = 'DeepSeek 官方余额 · Claude Code 本地日志'
+        Currency = $currency
+        TotalBalance = $totalBalance
+        GrantedBalance = $grantedBalance
+        ToppedUpBalance = $toppedUpBalance
+        Budget = $Budget
+        BudgetPercent = $budgetPercent
+        Model = $LocalUsage.Model
+    }
+}
+
+function Get-DeepSeekUnavailableSnapshot {
+    param([string]$Reason = '请通过右键菜单配置 DeepSeek')
+
+    return [pscustomobject]@{
+        ProviderId = 'DeepSeek'
+        Available = $false
+        RemainingPercent = 0
+        HasProgress = $false
+        WindowLabel = 'DeepSeek 余额'
+        ResetDate = '暂无'
+        ResetCountdown = $Reason
+        ResetCount = '未设置'
+        Plan = '按量计费'
+        AccountName = 'DeepSeek API'
+        AccountEmail = '尚未配置 API Key'
+        TodayTokens = 0
+        LastTurnTokens = 0
+        InputTokens = 0
+        OutputTokens = 0
+        CachedTokens = 0
+        CacheHitPercent = 0
+        ContextPercent = 0
+        SampledAt = Get-Date
+        UsageSampledAt = Get-Date
+        Status = '等待配置'
+        Source = $Reason
+        Currency = 'CNY'
+        TotalBalance = 0
+        GrantedBalance = 0
+        ToppedUpBalance = 0
+        Budget = 0
+        BudgetPercent = $null
+        Model = '暂无本地记录'
+    }
+}
+
+function Get-DeepSeekDemoSnapshot {
+    $configuration = [pscustomobject]@{ Budget = 120.0 }
+    $usage = [pscustomobject]@{
+        TodayTokens = 382640
+        LastTurnTokens = 174201
+        LastInputTokens = 173880
+        LastOutputTokens = 321
+        LastCachedTokens = 173440
+        CacheHitPercent = 99.7
+        Model = 'deepseek-v4-pro'
+        SampledAt = Get-Date
+    }
+    $payload = [pscustomobject]@{
+        is_available = $true
+        balance_infos = @(
+            [pscustomobject]@{
+                currency = 'CNY'
+                total_balance = '86.40'
+                granted_balance = '10.00'
+                topped_up_balance = '76.40'
+            }
+        )
+    }
+    return ConvertTo-DeepSeekSnapshot `
+        -BalancePayload $payload `
+        -LocalUsage $usage `
+        -Budget $configuration.Budget `
+        -KeyHint '7K9D' `
+        -CredentialSource '演示配置'
+}
+
 function Get-ResetText {
     param($UnixSeconds)
 
@@ -249,8 +826,10 @@ function Get-ResetText {
 function Get-CodexUsageSnapshot {
     if ($Demo) {
         return [pscustomobject]@{
+            ProviderId = 'Codex'
             Available = $true
             RemainingPercent = 82
+            HasProgress = $true
             WindowLabel = '本周余量'
             ResetDate = '8月2日 18:32'
             ResetCountdown = '5 天 7 小时后'
@@ -290,8 +869,10 @@ function Get-CodexUsageSnapshot {
 
     if (-not $latestSnapshot) {
         return [pscustomobject]@{
+            ProviderId = 'Codex'
             Available = $false
             RemainingPercent = 0
+            HasProgress = $true
             WindowLabel = 'Codex 余量'
             ResetDate = '暂无'
             ResetCountdown = '启动一次 Codex 任务后更新'
@@ -358,8 +939,10 @@ function Get-CodexUsageSnapshot {
         else { '等待重置' }
 
     return [pscustomobject]@{
+        ProviderId = 'Codex'
         Available = $true
         RemainingPercent = $remainingPercent
+        HasProgress = $true
         WindowLabel = $windowLabel
         ResetDate = $resetText.Date
         ResetCountdown = $resetText.Countdown
@@ -378,6 +961,45 @@ function Get-CodexUsageSnapshot {
         Status = $status
         Source = 'Codex 本地会话快照'
     }
+}
+
+if ($CheckDeepSeekData) {
+    $checkSnapshot = Get-DeepSeekDemoSnapshot
+    $testSecret = 'deepseek-test-key-1234'
+    $protectedSecret = Protect-LocalSecret -Value $testSecret
+    $roundTripSecret = Unprotect-LocalSecret -Value $protectedSecret
+    $testTimestamp = [DateTimeOffset]::Now
+    $duplicateEvents = @(
+        [pscustomobject]@{
+            MessageId = 'duplicate-message'
+            Timestamp = $testTimestamp.AddSeconds(-1)
+            InputTokens = 10
+            OutputTokens = 2
+            CachedTokens = 20
+            TotalTokens = 32
+        },
+        [pscustomobject]@{
+            MessageId = 'duplicate-message'
+            Timestamp = $testTimestamp
+            InputTokens = 12
+            OutputTokens = 3
+            CachedTokens = 25
+            TotalTokens = 40
+        }
+    )
+    $dedupedUsage = Measure-DeepSeekUsageEvents -Events $duplicateEvents
+    $checkSnapshot | Add-Member -NotePropertyName SecureStorageRoundTrip -NotePropertyValue (
+        $roundTripSecret -eq $testSecret -and $protectedSecret -notmatch [regex]::Escape($testSecret)
+    )
+    $checkSnapshot | Add-Member -NotePropertyName DedupedUsageTokens -NotePropertyValue $dedupedUsage.TotalTokens
+    $checkSnapshot | Add-Member -NotePropertyName DedupedUsageMessages -NotePropertyValue $dedupedUsage.UniqueMessages
+    $checkSnapshot | ConvertTo-Json -Depth 5
+    exit 0
+}
+
+if ($CheckDeepSeekUsage) {
+    Get-DeepSeekLocalUsage | ConvertTo-Json -Depth 5
+    exit 0
 }
 
 if ($CheckData) {
@@ -429,6 +1051,7 @@ Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Net.Http
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -578,6 +1201,14 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
 
                         <StackPanel Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock x:Name="CompactPrefix"
+                                           Text=""
+                                           Margin="0,0,1,3"
+                                           VerticalAlignment="Bottom"
+                                           Foreground="{StaticResource Champagne}"
+                                           FontFamily="Segoe UI"
+                                           FontSize="10"
+                                           FontWeight="SemiBold"/>
                                 <TextBlock x:Name="RemainingValue"
                                            Text="--"
                                            Foreground="{StaticResource TextPrimary}"
@@ -586,7 +1217,8 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                            FontWeight="SemiBold"
                                            FontStretch="SemiCondensed"
                                            LineHeight="30"/>
-                                <TextBlock Text="%"
+                                <TextBlock x:Name="CompactSuffix"
+                                           Text="%"
                                            Margin="1,0,0,3"
                                            VerticalAlignment="Bottom"
                                            Foreground="{StaticResource Champagne}"
@@ -701,7 +1333,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
 
                         <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock Text="下次重置" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                <TextBlock x:Name="MetricOneTitle" Text="下次重置" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                                 <TextBlock x:Name="DetailsResetDate" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="17" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="DetailsResetCountdown" Text="--" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
@@ -709,15 +1341,15 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
 
                         <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock Text="今日 TOKEN" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="TodayTokens" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"/>
-                                <TextBlock Text="本机任务累计" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                <TextBlock x:Name="MetricTwoHint" Text="本机任务累计" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
                         </Border>
 
                         <Border Grid.Row="2" Grid.Column="0" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock Text="本轮 TOKEN" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="MetricThreeTitle" Text="本轮 TOKEN" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="LastTurnTokens" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="ContextText" Text="上下文 --" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                             </StackPanel>
@@ -725,7 +1357,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
 
                         <Border Grid.Row="2" Grid.Column="2" Style="{StaticResource MetricCard}">
                             <StackPanel>
-                                <TextBlock Text="缓存命中" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                <TextBlock x:Name="MetricFourTitle" Text="缓存命中" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
                                 <TextBlock x:Name="CacheHit" Margin="0,5,0,0" Text="--" Foreground="{StaticResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="CacheTokenText" Text="-- cached" Foreground="{StaticResource TextMuted}" FontFamily="Segoe UI" FontSize="9"/>
                             </StackPanel>
@@ -745,7 +1377,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="本轮构成" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
+                                <TextBlock x:Name="BreakdownTitle" Text="本轮构成" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
                                 <TextBlock x:Name="TokenBreakdown"
                                            Margin="0,5,0,0"
                                            Text="输入 --  ·  输出 --"
@@ -755,7 +1387,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                            FontWeight="SemiBold"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-                                <TextBlock Text="可重置次数" HorizontalAlignment="Right" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
+                                <TextBlock x:Name="SecondaryMetricTitle" Text="可重置次数" HorizontalAlignment="Right" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
                                 <TextBlock x:Name="ResetCount" Margin="0,5,0,0" Text="未提供" HorizontalAlignment="Right" Foreground="{StaticResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="11" FontWeight="SemiBold"/>
                             </StackPanel>
                         </Grid>
@@ -787,7 +1419,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                 Width="92"
                                 Style="{StaticResource SoftButton}"
                                 Content="立即刷新"
-                                ToolTip="重新读取 Codex 本地用量"
+                                ToolTip="重新读取当前数据源"
                                 AutomationProperties.Name="立即刷新"/>
                     </Grid>
                 </Grid>
@@ -890,10 +1522,13 @@ if (-not $Demo) {
 
 $names = @(
     'WindowRoot', 'HoverHalo', 'Surface', 'SurfaceShadow', 'CompactHit',
-    'RemainingValue', 'WindowLabel', 'ProgressTrack', 'RemainingProgressColumn',
+    'CompactPrefix', 'RemainingValue', 'CompactSuffix', 'WindowLabel',
+    'ProgressTrack', 'RemainingProgressColumn',
     'UsedProgressColumn', 'DetailsPanel', 'AccountName',
     'PlanBadge', 'AccountEmail', 'CloseButton', 'DetailsResetDate',
-    'DetailsResetCountdown', 'TodayTokens', 'LastTurnTokens', 'ContextText', 'CacheHit',
+    'DetailsResetCountdown', 'MetricOneTitle', 'MetricTwoTitle', 'MetricTwoHint',
+    'TodayTokens', 'MetricThreeTitle', 'LastTurnTokens', 'ContextText',
+    'MetricFourTitle', 'CacheHit', 'BreakdownTitle', 'SecondaryMetricTitle',
     'CacheTokenText', 'ResetCount', 'TokenBreakdown', 'SourceText', 'SampleTime',
     'AutoRefreshText', 'RefreshButton'
 )
@@ -920,11 +1555,7 @@ function New-DoubleAnimation {
 }
 
 function Get-SettingsPath {
-    $directory = Join-Path $env:LOCALAPPDATA 'CodexMarginFloat'
-    if (-not (Test-Path -LiteralPath $directory)) {
-        New-Item -Path $directory -ItemType Directory -Force | Out-Null
-    }
-    return Join-Path $directory 'settings.json'
+    return Join-Path (Get-AppDataDirectory) 'settings.json'
 }
 
 function Save-Settings {
@@ -944,6 +1575,7 @@ function Save-Settings {
             Top = $saveTop
             Expanded = $false
             Topmost = $window.Topmost
+            Provider = $script:ActiveProvider
         } | ConvertTo-Json | Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
     }
     catch {
@@ -970,10 +1602,20 @@ function Restore-Settings {
                 $window.Top = [double]$settings.Top
             }
             if ($null -ne $settings.Topmost) { $window.Topmost = [bool]$settings.Topmost }
+            if (
+                $settings.PSObject.Properties['Provider'] -and
+                [string]$settings.Provider -in @('Codex', 'DeepSeek')
+            ) {
+                $script:ActiveProvider = [string]$settings.Provider
+            }
         }
     }
     catch {
         $script:IsExpanded = $false
+    }
+
+    if ($Demo) {
+        $script:ActiveProvider = if ($DemoProvider -eq 'deepseek') { 'DeepSeek' } else { 'Codex' }
     }
 }
 
@@ -1142,9 +1784,14 @@ function Set-HoverState {
 }
 
 function Set-Progress {
-    param([double]$Percent)
+    param(
+        [double]$Percent,
+        [bool]$Available = $true
+    )
 
-    $remaining = [Math]::Max(0, [Math]::Min(100, $Percent))
+    $remaining = if ($Available) {
+        [Math]::Max(0, [Math]::Min(100, $Percent))
+    } else { 0 }
     $used = 100 - $remaining
     $RemainingProgressColumn.Width = New-Object Windows.GridLength(
         $remaining,
@@ -1154,14 +1801,26 @@ function Set-Progress {
         $used,
         [Windows.GridUnitType]::Star
     )
-    $ProgressTrack.ToolTip = '剩余 {0:0}% · 已使用 {1:0}%' -f $remaining, $used
+    $ProgressTrack.ToolTip = if ($Available) {
+        '剩余 {0:0}% · 已使用 {1:0}%' -f $remaining, $used
+    } else {
+        '设置预算基准后显示百分比进度'
+    }
+}
+
+function Format-CompactBalance {
+    param([double]$Amount)
+
+    if ($Amount -ge 1000000) { return '{0:0.0}M' -f ($Amount / 1000000) }
+    if ($Amount -ge 1000) { return '{0:0.0}K' -f ($Amount / 1000) }
+    if ($Amount -ge 100) { return '{0:0}' -f $Amount }
+    return '{0:0.0}' -f $Amount
 }
 
 function Update-UsageView {
     param($Snapshot)
 
     $script:LastSnapshot = $Snapshot
-    $RemainingValue.Text = [string][int]$Snapshot.RemainingPercent
     $WindowLabel.Text = $Snapshot.WindowLabel
     $DetailsResetDate.Text = $Snapshot.ResetDate
     $DetailsResetCountdown.Text = $Snapshot.ResetCountdown
@@ -1177,20 +1836,391 @@ function Update-UsageView {
     $TokenBreakdown.Text = '输入 {0}  ·  输出 {1}' -f (Format-CompactNumber $Snapshot.InputTokens), (Format-CompactNumber $Snapshot.OutputTokens)
     $SourceText.Text = $Snapshot.Source
     $SampleTime.Text = '采样于 {0}' -f $Snapshot.SampledAt.ToString('M月d日 HH:mm:ss')
-    Set-Progress -Percent $Snapshot.RemainingPercent
+
+    if ($Snapshot.ProviderId -eq 'DeepSeek') {
+        if ($Snapshot.HasProgress) {
+            $CompactPrefix.Text = ''
+            $RemainingValue.Text = [string][int]$Snapshot.RemainingPercent
+            $CompactSuffix.Text = '%'
+        }
+        elseif ($Snapshot.Available) {
+            $CompactPrefix.Text = if ($Snapshot.Currency -eq 'USD') { '$' } else { '¥' }
+            $RemainingValue.Text = Format-CompactBalance -Amount $Snapshot.TotalBalance
+            $CompactSuffix.Text = ''
+        }
+        else {
+            $CompactPrefix.Text = ''
+            $RemainingValue.Text = '--'
+            $CompactSuffix.Text = ''
+        }
+
+        $MetricOneTitle.Text = '当前余额'
+        $MetricTwoTitle.Text = '今日 TOKEN'
+        $MetricTwoHint.Text = 'Claude Code 本机累计'
+        $MetricThreeTitle.Text = '本轮 TOKEN'
+        $ContextText.Text = $Snapshot.Model
+        $MetricFourTitle.Text = '缓存命中'
+        $BreakdownTitle.Text = '余额构成'
+        $SecondaryMetricTitle.Text = '预算基准'
+        $TokenBreakdown.Text = '赠金 {0}  ·  充值 {1}' -f `
+            (Format-CurrencyAmount -Amount $Snapshot.GrantedBalance -Currency $Snapshot.Currency), `
+            (Format-CurrencyAmount -Amount $Snapshot.ToppedUpBalance -Currency $Snapshot.Currency)
+        Set-Progress -Percent $Snapshot.RemainingPercent -Available $Snapshot.HasProgress
+    }
+    else {
+        $CompactPrefix.Text = ''
+        $RemainingValue.Text = [string][int]$Snapshot.RemainingPercent
+        $CompactSuffix.Text = '%'
+        $MetricOneTitle.Text = '下次重置'
+        $MetricTwoTitle.Text = '今日 TOKEN'
+        $MetricTwoHint.Text = '本机任务累计'
+        $MetricThreeTitle.Text = '本轮 TOKEN'
+        $ContextText.Text = '上下文 {0:0.0}%' -f $Snapshot.ContextPercent
+        $MetricFourTitle.Text = '缓存命中'
+        $BreakdownTitle.Text = '本轮构成'
+        $SecondaryMetricTitle.Text = '可重置次数'
+        Set-Progress -Percent $Snapshot.RemainingPercent
+    }
 
     if ($script:TrayNotifyIcon) {
-        $script:TrayNotifyIcon.Text = 'Codex 余量 {0}% · 单击打开详情' -f [int]$Snapshot.RemainingPercent
+        $script:TrayNotifyIcon.Text = if ($Snapshot.ProviderId -eq 'DeepSeek') {
+            if ($Snapshot.Available) {
+                'DeepSeek 余额 {0} · 单击打开详情' -f $Snapshot.ResetDate
+            } else {
+                'DeepSeek 等待配置 · 单击打开详情'
+            }
+        } else {
+            'Codex 余量 {0}% · 单击打开详情' -f [int]$Snapshot.RemainingPercent
+        }
     }
 
     $script:RefreshRemaining = $script:RefreshIntervalSeconds
 }
 
+function Set-RefreshBusy {
+    param([bool]$Busy)
+
+    $script:IsRefreshing = $Busy
+    $RefreshButton.IsEnabled = -not $Busy
+    $RefreshButton.Content = if ($Busy) { '读取中…' } else { '立即刷新' }
+}
+
+function Get-DeepSeekHttpClient {
+    if (-not $script:DeepSeekHttpClient) {
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(8)
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('CodexMarginFloat/1.1')
+        $script:DeepSeekHttpClient = $client
+    }
+    return $script:DeepSeekHttpClient
+}
+
+function Cancel-DeepSeekRefresh {
+    if ($script:DeepSeekRequestTask -and -not $script:DeepSeekRequestTask.IsCompleted) {
+        if ($script:DeepSeekHttpClient) {
+            $script:DeepSeekHttpClient.CancelPendingRequests()
+        }
+    }
+    elseif (
+        $script:DeepSeekRequestTask -and
+        -not $script:DeepSeekRequestTask.IsCanceled -and
+        -not $script:DeepSeekRequestTask.IsFaulted
+    ) {
+        $abandonedResponse = $script:DeepSeekRequestTask.GetAwaiter().GetResult()
+        if ($abandonedResponse) { $abandonedResponse.Dispose() }
+    }
+    if ($script:DeepSeekRequest) {
+        $script:DeepSeekRequest.Dispose()
+    }
+    $script:DeepSeekRequest = $null
+    $script:DeepSeekRequestTask = $null
+    Set-RefreshBusy -Busy $false
+}
+
+function Start-DeepSeekRefresh {
+    if ($Demo) {
+        $snapshot = Get-DeepSeekDemoSnapshot
+        $script:LastDeepSeekSnapshot = $snapshot
+        Update-UsageView -Snapshot $snapshot
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $credential = Get-DeepSeekCredential
+    if ([string]::IsNullOrWhiteSpace($credential.ApiKey)) {
+        Update-UsageView -Snapshot (Get-DeepSeekUnavailableSnapshot)
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $request = $null
+    try {
+        $request = New-Object System.Net.Http.HttpRequestMessage(
+            [System.Net.Http.HttpMethod]::Get,
+            'https://api.deepseek.com/user/balance'
+        )
+        $request.Headers.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
+            'Bearer',
+            $credential.ApiKey
+        )
+        $script:DeepSeekRequest = $request
+        $script:DeepSeekRequestTask = (Get-DeepSeekHttpClient).SendAsync($request)
+    }
+    catch {
+        if ($request) { $request.Dispose() }
+        $script:DeepSeekRequest = $null
+        $script:DeepSeekRequestTask = $null
+        Set-RefreshBusy -Busy $false
+        $SourceText.Text = 'DeepSeek 请求未能启动：' + $_.Exception.Message
+    }
+}
+
+function Complete-DeepSeekRefresh {
+    if (-not $script:DeepSeekRequestTask -or -not $script:DeepSeekRequestTask.IsCompleted) {
+        return
+    }
+
+    $task = $script:DeepSeekRequestTask
+    $request = $script:DeepSeekRequest
+    $script:DeepSeekRequestTask = $null
+    $script:DeepSeekRequest = $null
+    $response = $null
+    try {
+        if ($task.IsCanceled) { throw 'DeepSeek 请求超时，请稍后重试。' }
+        if ($task.IsFaulted) {
+            throw ($task.Exception.GetBaseException().Message)
+        }
+
+        $response = $task.GetAwaiter().GetResult()
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            $message = switch ([int]$response.StatusCode) {
+                401 { 'API Key 无效或已失效，请重新配置。' }
+                402 { 'DeepSeek 余额不足，请充值后重试。' }
+                429 { '请求过于频繁，稍后会自动重试。' }
+                500 { 'DeepSeek 服务暂时异常，稍后会自动重试。' }
+                503 { 'DeepSeek 服务繁忙，稍后会自动重试。' }
+                default { 'DeepSeek 返回 HTTP {0}。' -f [int]$response.StatusCode }
+            }
+            throw $message
+        }
+
+        $payload = $body | ConvertFrom-Json
+        $configuration = Get-DeepSeekConfiguration
+        $credential = Get-DeepSeekCredential
+        $snapshot = ConvertTo-DeepSeekSnapshot `
+            -BalancePayload $payload `
+            -LocalUsage (Get-DeepSeekLocalUsage) `
+            -Budget $configuration.Budget `
+            -KeyHint $credential.Hint `
+            -CredentialSource $credential.Source
+        $script:LastDeepSeekSnapshot = $snapshot
+        if ($script:ActiveProvider -eq 'DeepSeek') {
+            Update-UsageView -Snapshot $snapshot
+        }
+    }
+    catch {
+        if ($script:LastDeepSeekSnapshot -and $script:ActiveProvider -eq 'DeepSeek') {
+            Update-UsageView -Snapshot $script:LastDeepSeekSnapshot
+            $SourceText.Text = '刷新失败，显示上次数据 · ' + $_.Exception.Message
+        }
+        elseif ($script:ActiveProvider -eq 'DeepSeek') {
+            Update-UsageView -Snapshot (Get-DeepSeekUnavailableSnapshot -Reason $_.Exception.Message)
+        }
+    }
+    finally {
+        if ($response) { $response.Dispose() }
+        if ($request) { $request.Dispose() }
+        Set-RefreshBusy -Busy $false
+        $script:RefreshRemaining = $script:RefreshIntervalSeconds
+    }
+}
+
+function Sync-ProviderMenuState {
+    if ($script:CodexSourceMenuItem) {
+        $script:CodexSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'Codex'
+    }
+    if ($script:DeepSeekSourceMenuItem) {
+        $script:DeepSeekSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'DeepSeek'
+    }
+    if ($script:TrayCodexSourceItem) {
+        $script:TrayCodexSourceItem.Checked = $script:ActiveProvider -eq 'Codex'
+    }
+    if ($script:TrayDeepSeekSourceItem) {
+        $script:TrayDeepSeekSourceItem.Checked = $script:ActiveProvider -eq 'DeepSeek'
+    }
+}
+
+function Set-ActiveProvider {
+    param(
+        [ValidateSet('Codex', 'DeepSeek')]
+        [string]$Provider,
+        [switch]$Refresh
+    )
+
+    if ($script:ActiveProvider -ne $Provider -and $script:DeepSeekRequestTask) {
+        Cancel-DeepSeekRefresh
+    }
+    $script:ActiveProvider = $Provider
+    Sync-ProviderMenuState
+    Save-Settings
+    if ($Refresh) { Invoke-Refresh }
+}
+
+function Show-DeepSeekSettings {
+    $configuration = Get-DeepSeekConfiguration
+    $credential = Get-DeepSeekCredential
+    [xml]$dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeepSeek 设置"
+        Width="430"
+        Height="350"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#FCFBF8"
+        FontFamily="Microsoft YaHei UI">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="22"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="18"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="38"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="连接 DeepSeek 官方余额" FontSize="18" FontWeight="SemiBold" Foreground="#343A35"/>
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="API Key" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
+            <PasswordBox x:Name="ApiKeyBox" Height="34" Margin="0,7,0,0" Padding="9,6"
+                         BorderBrush="#D8DDD7" Background="White"
+                         AutomationProperties.Name="DeepSeek API Key"/>
+            <TextBlock x:Name="KeyHelp" Margin="0,6,0,0" FontSize="10" Foreground="#7B847D" TextWrapping="Wrap"/>
+            <CheckBox x:Name="RemoveKeyBox" Margin="0,8,0,0" Content="清除已保存的 API Key"
+                      Foreground="#6B746D" FontSize="11"/>
+        </StackPanel>
+        <StackPanel Grid.Row="5">
+            <TextBlock Text="预算基准（可选）" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
+            <TextBox x:Name="BudgetBox" Height="34" Margin="0,7,0,0" Padding="9,6"
+                     BorderBrush="#D8DDD7" Background="White"
+                     AutomationProperties.Name="预算基准"/>
+            <TextBlock Margin="0,6,0,0" FontSize="10" Foreground="#7B847D"
+                       Text="设置后，小窗显示当前余额相对该金额的百分比；留空则直接显示余额。"/>
+        </StackPanel>
+        <TextBlock x:Name="ErrorText" Grid.Row="7" Margin="0,8,0,0"
+                   Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
+        <Grid Grid.Row="8">
+            <Button x:Name="CancelButton" Width="82" Height="34" HorizontalAlignment="Right"
+                    Margin="0,0,92,0" Content="取消" IsCancel="True"/>
+            <Button x:Name="SaveButton" Width="82" Height="34" HorizontalAlignment="Right"
+                    Content="保存" IsDefault="True" Background="#E9F0EA"
+                    BorderBrush="#BFCDBF" Foreground="#344A3B"/>
+        </Grid>
+    </Grid>
+</Window>
+'@
+    $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
+    $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
+    $dialog.Owner = $window
+    $apiKeyBox = $dialog.FindName('ApiKeyBox')
+    $keyHelp = $dialog.FindName('KeyHelp')
+    $removeKeyBox = $dialog.FindName('RemoveKeyBox')
+    $budgetBox = $dialog.FindName('BudgetBox')
+    $errorText = $dialog.FindName('ErrorText')
+    $saveButton = $dialog.FindName('SaveButton')
+
+    if ($configuration.Budget -gt 0) {
+        $budgetBox.Text = $configuration.Budget.ToString('0.##', [Globalization.CultureInfo]::CurrentCulture)
+    }
+    if ($credential.Source -eq '环境变量') {
+        $keyHelp.Text = '当前由 DEEPSEEK_API_KEY 环境变量提供（••••{0}），环境变量优先。' -f $credential.Hint
+        $apiKeyBox.IsEnabled = $false
+        $removeKeyBox.IsEnabled = $false
+    }
+    elseif ($credential.ApiKey) {
+        $keyHelp.Text = '已通过 Windows DPAPI 安全保存（••••{0}）。留空会保留原密钥。' -f $credential.Hint
+    }
+    else {
+        $keyHelp.Text = '密钥仅加密保存在当前 Windows 用户下，不会写入日志或仓库。'
+        $removeKeyBox.IsEnabled = $false
+    }
+
+    $saveButton.Add_Click({
+        $errorText.Text = ''
+        $budget = 0.0
+        $budgetText = $budgetBox.Text.Trim()
+        if ($budgetText) {
+            $parsed = [double]::TryParse(
+                $budgetText,
+                [Globalization.NumberStyles]::Number,
+                [Globalization.CultureInfo]::CurrentCulture,
+                [ref]$budget
+            )
+            if (-not $parsed) {
+                $parsed = [double]::TryParse(
+                    $budgetText,
+                    [Globalization.NumberStyles]::Number,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$budget
+                )
+            }
+            if (-not $parsed -or $budget -le 0) {
+                $errorText.Text = '预算基准需要是大于 0 的数字，或留空不设置。'
+                $budgetBox.Focus() | Out-Null
+                return
+            }
+        }
+
+        $newKey = $apiKeyBox.Password.Trim()
+        if (
+            $credential.Source -ne '环境变量' -and
+            -not $removeKeyBox.IsChecked -and
+            -not $credential.ApiKey -and
+            [string]::IsNullOrWhiteSpace($newKey)
+        ) {
+            $errorText.Text = '请输入 DeepSeek API Key。'
+            $apiKeyBox.Focus() | Out-Null
+            return
+        }
+        if ($newKey -and $newKey.Length -lt 10) {
+            $errorText.Text = 'API Key 长度看起来不正确，请检查后重试。'
+            $apiKeyBox.Focus() | Out-Null
+            return
+        }
+
+        try {
+            Save-DeepSeekConfiguration `
+                -ApiKey $newKey `
+                -Budget $budget `
+                -RemoveKey:$removeKeyBox.IsChecked
+            $dialog.DialogResult = $true
+        }
+        catch {
+            $errorText.Text = '保存失败：' + $_.Exception.Message
+        }
+    })
+
+    $saved = $dialog.ShowDialog()
+    if ($saved) {
+        $script:LastDeepSeekSnapshot = $null
+        Set-ActiveProvider -Provider 'DeepSeek' -Refresh
+        return $true
+    }
+    return $false
+}
+
 function Invoke-Refresh {
     if ($script:IsRefreshing) { return }
-    $script:IsRefreshing = $true
-    $RefreshButton.IsEnabled = $false
-    $RefreshButton.Content = '读取中…'
+    Set-RefreshBusy -Busy $true
+    if ($script:ActiveProvider -eq 'DeepSeek') {
+        Start-DeepSeekRefresh
+        return
+    }
+
     try {
         Update-UsageView -Snapshot (Get-CodexUsageSnapshot)
     }
@@ -1199,9 +2229,7 @@ function Invoke-Refresh {
         $SourceText.Text = '无法读取本地用量：' + $_.Exception.Message
     }
     finally {
-        $RefreshButton.Content = '立即刷新'
-        $RefreshButton.IsEnabled = $true
-        $script:IsRefreshing = $false
+        Set-RefreshBusy -Busy $false
     }
 }
 
@@ -1294,6 +2322,32 @@ $contextMenu = New-Object Windows.Controls.ContextMenu
 $refreshMenu = New-Object Windows.Controls.MenuItem
 $refreshMenu.Header = '立即刷新'
 $refreshMenu.Add_Click({ Invoke-Refresh })
+$sourceMenu = New-Object Windows.Controls.MenuItem
+$sourceMenu.Header = '数据源'
+$script:CodexSourceMenuItem = New-Object Windows.Controls.MenuItem
+$script:CodexSourceMenuItem.Header = 'Codex'
+$script:CodexSourceMenuItem.IsCheckable = $true
+$script:CodexSourceMenuItem.Add_Click({
+    Set-ActiveProvider -Provider 'Codex' -Refresh
+})
+$script:DeepSeekSourceMenuItem = New-Object Windows.Controls.MenuItem
+$script:DeepSeekSourceMenuItem.Header = 'DeepSeek'
+$script:DeepSeekSourceMenuItem.IsCheckable = $true
+$script:DeepSeekSourceMenuItem.Add_Click({
+    $credential = Get-DeepSeekCredential
+    if ($credential.ApiKey) {
+        Set-ActiveProvider -Provider 'DeepSeek' -Refresh
+    }
+    else {
+        [void](Show-DeepSeekSettings)
+        Sync-ProviderMenuState
+    }
+})
+[void]$sourceMenu.Items.Add($script:CodexSourceMenuItem)
+[void]$sourceMenu.Items.Add($script:DeepSeekSourceMenuItem)
+$deepSeekSettingsMenu = New-Object Windows.Controls.MenuItem
+$deepSeekSettingsMenu.Header = 'DeepSeek 设置…'
+$deepSeekSettingsMenu.Add_Click({ [void](Show-DeepSeekSettings) })
 $topmostMenu = New-Object Windows.Controls.MenuItem
 $topmostMenu.Header = '始终置顶'
 $topmostMenu.IsCheckable = $true
@@ -1329,6 +2383,8 @@ $exitMenu = New-Object Windows.Controls.MenuItem
 $exitMenu.Header = '退出'
 $exitMenu.Add_Click({ Save-Settings; $window.Close() })
 [void]$contextMenu.Items.Add($refreshMenu)
+[void]$contextMenu.Items.Add($sourceMenu)
+[void]$contextMenu.Items.Add($deepSeekSettingsMenu)
 [void]$contextMenu.Items.Add($topmostMenu)
 [void]$contextMenu.Items.Add($resetPositionMenu)
 [void]$contextMenu.Items.Add($separator)
@@ -1377,6 +2433,22 @@ if ($CheckTransitions) {
     Set-Progress -Percent -20
     $lowerClampedRemaining = $RemainingProgressColumn.Width.Value
     $lowerClampedUsed = $UsedProgressColumn.Width.Value
+    $deepSeekCheckSnapshot = Get-DeepSeekDemoSnapshot
+    Update-UsageView -Snapshot $deepSeekCheckSnapshot
+    $deepSeekCompactValue = $RemainingValue.Text
+    $deepSeekCompactSuffix = $CompactSuffix.Text
+    $deepSeekLabel = $WindowLabel.Text
+    $deepSeekBalanceText = $DetailsResetDate.Text
+    $deepSeekMetricTitle = $MetricOneTitle.Text
+    $deepSeekProgressRemaining = $RemainingProgressColumn.Width.Value
+    $deepSeekProgressUsed = $UsedProgressColumn.Width.Value
+    $deepSeekCheckSnapshot.HasProgress = $false
+    $deepSeekCheckSnapshot.WindowLabel = 'DeepSeek 余额'
+    Update-UsageView -Snapshot $deepSeekCheckSnapshot
+    $deepSeekBalanceCompactValue = $RemainingValue.Text
+    $deepSeekBalanceCompactSuffix = $CompactSuffix.Text
+    $deepSeekNoBudgetProgressRemaining = $RemainingProgressColumn.Width.Value
+    $deepSeekNoBudgetProgressUsed = $UsedProgressColumn.Width.Value
     Set-Progress -Percent 82
     Set-ExpandedState -Expanded $false -Immediate
     $anchorLeft = $window.Left
@@ -1416,6 +2488,17 @@ if ($CheckTransitions) {
         UpperClampedUsed = $upperClampedUsed
         LowerClampedRemaining = $lowerClampedRemaining
         LowerClampedUsed = $lowerClampedUsed
+        DeepSeekCompactValue = $deepSeekCompactValue
+        DeepSeekCompactSuffix = $deepSeekCompactSuffix
+        DeepSeekLabel = $deepSeekLabel
+        DeepSeekBalanceText = $deepSeekBalanceText
+        DeepSeekMetricTitle = $deepSeekMetricTitle
+        DeepSeekProgressRemaining = $deepSeekProgressRemaining
+        DeepSeekProgressUsed = $deepSeekProgressUsed
+        DeepSeekBalanceCompactValue = $deepSeekBalanceCompactValue
+        DeepSeekBalanceCompactSuffix = $deepSeekBalanceCompactSuffix
+        DeepSeekNoBudgetProgressRemaining = $deepSeekNoBudgetProgressRemaining
+        DeepSeekNoBudgetProgressUsed = $deepSeekNoBudgetProgressUsed
         RemainingProgressStar = $RemainingProgressColumn.Width.Value
         UsedProgressStar = $UsedProgressColumn.Width.Value
         ReopenedWidth = $reopenedWidth
@@ -1492,6 +2575,34 @@ $trayRefreshItem.Add_Click({
     Show-ExistingWindow
     Invoke-Refresh
 })
+$traySourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$traySourceItem.Text = '数据源'
+$script:TrayCodexSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayCodexSourceItem.Text = 'Codex'
+$script:TrayCodexSourceItem.Add_Click({
+    Set-ActiveProvider -Provider 'Codex' -Refresh
+})
+$script:TrayDeepSeekSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayDeepSeekSourceItem.Text = 'DeepSeek'
+$script:TrayDeepSeekSourceItem.Add_Click({
+    $credential = Get-DeepSeekCredential
+    if ($credential.ApiKey) {
+        Set-ActiveProvider -Provider 'DeepSeek' -Refresh
+    }
+    else {
+        Show-ExistingWindow
+        [void](Show-DeepSeekSettings)
+        Sync-ProviderMenuState
+    }
+})
+[void]$traySourceItem.DropDownItems.Add($script:TrayCodexSourceItem)
+[void]$traySourceItem.DropDownItems.Add($script:TrayDeepSeekSourceItem)
+$trayDeepSeekSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayDeepSeekSettingsItem.Text = 'DeepSeek 设置…'
+$trayDeepSeekSettingsItem.Add_Click({
+    Show-ExistingWindow
+    [void](Show-DeepSeekSettings)
+})
 $script:TrayTopmostItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayTopmostItem.Text = '始终置顶'
 $script:TrayTopmostItem.CheckOnClick = $true
@@ -1510,6 +2621,8 @@ $trayExitItem.Add_Click({
 })
 [void]$script:TrayMenu.Items.Add($trayOpenItem)
 [void]$script:TrayMenu.Items.Add($trayRefreshItem)
+[void]$script:TrayMenu.Items.Add($traySourceItem)
+[void]$script:TrayMenu.Items.Add($trayDeepSeekSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)
@@ -1526,13 +2639,17 @@ $script:TrayNotifyIcon.Add_MouseClick({
     }
 })
 $script:TrayNotifyIcon.Visible = $true
+Sync-ProviderMenuState
 
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
 $timer.Add_Tick({
-    $script:RefreshRemaining--
-    if ($script:RefreshRemaining -le 0) {
-        Invoke-Refresh
+    Complete-DeepSeekRefresh
+    if (-not $script:IsRefreshing) {
+        $script:RefreshRemaining--
+        if ($script:RefreshRemaining -le 0) {
+            Invoke-Refresh
+        }
     }
     $AutoRefreshText.Text = '{0} 秒后自动刷新' -f [Math]::Max(0, $script:RefreshRemaining)
 })
@@ -1551,6 +2668,15 @@ $window.Add_Closing({
     $script:IsClosing = $true
     $timer.Stop()
     $activationTimer.Stop()
+    if ($script:DeepSeekHttpClient) {
+        $script:DeepSeekHttpClient.CancelPendingRequests()
+        $script:DeepSeekHttpClient.Dispose()
+        $script:DeepSeekHttpClient = $null
+    }
+    if ($script:DeepSeekRequest) {
+        $script:DeepSeekRequest.Dispose()
+        $script:DeepSeekRequest = $null
+    }
     Save-Settings
     if ($script:TrayNotifyIcon) {
         $script:TrayNotifyIcon.Visible = $false

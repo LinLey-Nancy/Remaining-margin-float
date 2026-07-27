@@ -30,6 +30,9 @@ system. The widget must remain dependency-free and must not download fonts.
 
 - Window: 108×100 px compact / 370×500 px expanded
 - Compact hierarchy: remaining percentage, period label, progress only
+- Provider semantics: Codex shows quota percentage; DeepSeek shows currency
+  balance unless the user explicitly sets a budget baseline. Never present a
+  wallet balance as an inferred subscription quota.
 - Detail hierarchy: account, four metric cards, token composition, freshness
 - Hover: restrained sage halo plus a small elevation change; no scaling or jitter
 - Base shadow: warm gray, 14 px blur, 2 px depth, 10% opacity
@@ -42,6 +45,8 @@ system. The widget must remain dependency-free and must not download fonts.
   context menu is open.
 - Drag threshold: 5 px so a click does not accidentally move the widget
 - Missing Codex fields must say `未提供`; never synthesize quota data
+- DeepSeek configuration uses a labeled native dialog, inline validation, and
+  a clear cancel route. API keys must never be displayed in full.
 - Structural icons use WPF vector paths
 - Exclude the floating surface from Win+Tab / Alt+Tab; expose a native Windows
   notification-area icon with labeled menu actions instead

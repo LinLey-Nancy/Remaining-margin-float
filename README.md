@@ -1,8 +1,8 @@
 # Codex Margin Float
 
-一个轻量、浅色、可拖动的 Windows Codex 余量悬浮窗。紧凑状态只显示剩余百分比和进度条，点击后展开账号、重置时间、Token 统计和数据采样时间。
+一个轻量、浅色、可拖动的 Windows Codex / DeepSeek 余量悬浮窗。紧凑状态只显示当前数据源最重要的数字，点击后展开账户、余额或额度、Token 统计和数据采样时间。
 
-项目只依赖 Windows PowerShell 5.1 与 WPF。它读取 Codex 已写入本机的会话快照，不访问网络，也不会输出访问令牌。
+项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式只读取本机会话快照；DeepSeek 模式只向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
 
 <p align="center">
   <img src="preview-compact.png" width="108" alt="紧凑状态">
@@ -10,9 +10,16 @@
   <img src="preview-expanded.png" width="370" alt="详情状态">
 </p>
 
+<p align="center">
+  <img src="preview-deepseek-compact.png" width="108" alt="DeepSeek 紧凑状态">
+  &nbsp;&nbsp;&nbsp;
+  <img src="preview-deepseek-expanded.png" width="370" alt="DeepSeek 详情状态">
+</p>
+
 ## 功能
 
-- 108×100 紧凑悬浮窗，展示当前周期剩余百分比
+- Codex 与 DeepSeek 双数据源，可从悬浮窗或通知区域菜单切换
+- 108×100 紧凑悬浮窗：Codex 显示周期余量，DeepSeek 显示余额或预算百分比
 - 双色进度条：鼠尾草绿表示剩余，暖米灰表示已使用
 - 点击展开 370×500 详情，收起后恢复原始位置
 - 详情展开后点击桌面或切换到其他应用会自动收起
@@ -22,13 +29,17 @@
 - 不出现在 `Win+Tab` / `Alt+Tab`，通过任务栏通知区域图标访问
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
 - 本地解析 Codex 会话中的余量、重置时间和 Token 数据
-- 位置与置顶偏好自动保存在本机
+- 读取 DeepSeek 官方余额、赠金和充值余额
+- 从 Claude Code 本地日志去重统计 DeepSeek 今日/本轮 Token
+- DeepSeek API Key 使用 Windows DPAPI 当前用户加密
+- 位置、置顶偏好和当前数据源自动保存在本机
 
 ## 系统要求
 
 - Windows 10 或 Windows 11
 - Windows PowerShell 5.1
-- 已运行过至少一次 Codex 任务
+- Codex 模式：已运行过至少一次 Codex 任务
+- DeepSeek 模式：DeepSeek API Key；本地 Token 统计需要运行过 Claude Code + DeepSeek
 
 无需安装第三方模块或运行时。
 
@@ -46,6 +57,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 
 重复执行启动命令不会创建第二个窗口，而是将正在运行的窗口带到前台。
 
+## DeepSeek 配置
+
+1. 右键悬浮窗或通知区域图标，选择“DeepSeek 设置…”。
+2. 输入 DeepSeek API Key。
+3. 可选填写“预算基准”；设置后小窗显示当前余额相对该金额的百分比，留空则直接显示金额。
+4. 在“数据源”菜单选择 DeepSeek。
+
+也可以通过 `DEEPSEEK_API_KEY` 环境变量提供密钥；环境变量优先于本地加密配置。DeepSeek 模式不依赖 CC Switch。
+
 ## 操作
 
 | 操作 | 结果 |
@@ -53,12 +73,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 | 单击悬浮窗 | 展开或收起详情 |
 | 详情展开后点击桌面或其他应用 | 自动恢复紧凑悬浮窗 |
 | 按住左键拖动 | 移动紧凑悬浮窗 |
-| 鼠标右键 | 打开刷新、置顶、重置位置和退出菜单 |
+| 鼠标右键 | 打开刷新、数据源、DeepSeek 设置、置顶和退出菜单 |
 | `Esc` | 收起详情 |
 | `Ctrl+R` | 立即刷新 |
 | 详情右上角箭头 | 收起详情 |
 | 单击通知区域图标 | 唤醒窗口并打开详情 |
-| 右键通知区域图标 | 打开详情、刷新、置顶或退出 |
+| 右键通知区域图标 | 打开详情、切换数据源、配置 DeepSeek、置顶或退出 |
 
 ## 数据与隐私
 
@@ -66,10 +86,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 
 - `%USERPROFILE%\.codex\sessions\**\*.jsonl`
 - `%USERPROFILE%\.codex\auth.json`
+- `%USERPROFILE%\.claude\projects\**\*.jsonl`
 
 会话文件用于读取 Codex 已记录的 `rate_limits` 和 Token 统计。认证文件只在内存中解析 ID Token 的显示名称和邮箱声明；访问令牌、刷新令牌和原始认证文件不会写入日志或界面。
 
 当前 Codex 本地快照没有提供“剩余可重置次数”，因此界面明确显示“未提供”，不会虚构数据。
+
+DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\CodexMarginFloat\deepseek.json`。应用不读取 CC Switch 密钥或数据库。
+
+DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
 ## 自检
 
@@ -80,7 +105,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
 自检覆盖：
 
 - PowerShell 语法
-- 用量数据结构与数值范围
+- Codex / DeepSeek 数据结构与数值范围
+- DeepSeek DPAPI 加解密与 Claude Code 日志统计
 - 剩余/已使用进度分段与 0–100 边界
 - `Win+Tab` / `Alt+Tab` 隐藏状态和 32×32 通知区域图标
 - 屏幕边界避让
@@ -101,6 +127,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
 ### 显示“等待数据”
 
 先运行一次 Codex 任务，让 Codex 在本机会话目录中写入用量快照，然后点击“立即刷新”。
+
+### DeepSeek 显示“等待配置”
+
+通过右键菜单打开“DeepSeek 设置…”并填写 API Key，或在启动程序前设置 `DEEPSEEK_API_KEY`。HTTP 401 表示密钥无效，需要重新配置。
+
+### DeepSeek 没有显示百分比
+
+这是预期行为。余额本身没有自然的百分比分母；填写预算基准后才会显示百分比和双色进度。
 
 ### 双击启动脚本后没有第二个窗口
 

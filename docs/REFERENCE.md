@@ -25,9 +25,12 @@ Start-CodexMarginFloat.cmd
 | 参数 | 类型 | 默认值 | 作用 |
 |---|---|---|---|
 | `-CheckData` | switch | 关闭 | 输出经过筛选的本地用量 JSON，不创建窗口 |
+| `-CheckDeepSeekData` | switch | 关闭 | 输出固定 DeepSeek 余额映射并验证 DPAPI |
+| `-CheckDeepSeekUsage` | switch | 关闭 | 输出本机 Claude Code DeepSeek Token 汇总 |
 | `-CheckPlacement` | switch | 关闭 | 输出固定测试场景的屏幕避让结果 |
 | `-CheckTransitions` | switch | 关闭 | 运行不可见的窗口状态回归并输出 JSON |
 | `-Demo` | switch | 关闭 | 使用固定演示数据，不读取真实用量 |
+| `-DemoProvider` | string | `codex` | 演示 `codex` 或 `deepseek` 视图 |
 | `-RenderPreview` | string | 空 | 接受 `compact` 或 `expanded`，渲染 PNG 预览 |
 | `-PreviewPath` | string | 空 | 指定预览 PNG 的输出路径 |
 
@@ -59,6 +62,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 
 ## 数据字段
 
+### Codex
+
 应用从最新可用的 `token_count` 事件构造视图模型。
 
 | 界面字段 | 本地来源 |
@@ -77,6 +82,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 
 `Read-SessionSnapshot` 首先读取文件末尾 512KB。若尾部没有 Token 统计，才从头逐行读取整个文件。快照按文件修改时间和长度缓存在进程内。
 
+### DeepSeek
+
+| 界面字段 | 来源 |
+|---|---|
+| 当前余额 | `/user/balance` 的 `total_balance` |
+| 赠金余额 | `granted_balance` |
+| 充值余额 | `topped_up_balance` |
+| 可用状态 | `is_available` |
+| 今日 / 本轮 Token | Claude Code JSONL 中 DeepSeek `message.usage` |
+| 缓存 Token | `cache_read_input_tokens` |
+| 当前模型 | DeepSeek 消息的 `model` |
+| 预算百分比 | 当前余额 ÷ 用户设置的预算基准，限制在 0–100 |
+
+DeepSeek API Key 使用 `Authorization: Bearer` 发送到固定官方地址。网络读取异步进行，8 秒超时；401、429 和其他 HTTP 错误会显示可恢复提示。
+
 ## 设置
 
 设置保存在：
@@ -92,11 +112,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
   "Left": 1200.0,
   "Top": 700.0,
   "Expanded": false,
-  "Topmost": true
+  "Topmost": true,
+  "Provider": "Codex"
 }
 ```
 
 `Expanded` 当前固定保存为 `false`，因此应用始终以紧凑状态启动。保存的坐标在窗口句柄创建后根据对应显示器的工作区域校正。
+
+DeepSeek 配置单独保存在：
+
+```text
+%LOCALAPPDATA%\CodexMarginFloat\deepseek.json
+```
+
+该文件只包含 DPAPI 密文、密钥末四位提示和预算基准。`DEEPSEEK_API_KEY` 环境变量存在时优先使用且不会写入文件。
 
 ## 通知区域菜单
 
@@ -105,6 +134,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 | 左键单击图标 | 唤醒现有窗口并打开详情 |
 | 打开详情 | 唤醒现有窗口并展开 |
 | 立即刷新 | 唤醒窗口并读取本地快照 |
+| 数据源 | 在 Codex 与 DeepSeek 之间切换 |
+| DeepSeek 设置 | 配置加密 API Key 和可选预算基准 |
 | 始终置顶 | 与悬浮窗右键菜单同步 |
 | 退出 | 保存设置、移除图标并释放单实例资源 |
 
@@ -115,6 +146,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 - 缺少重置时间：显示“暂无”
 - 缺少可重置次数：显示“未提供”
 - 单个损坏的 JSONL 行：跳过该行并继续寻找有效事件
+- DeepSeek 未配置密钥：显示“等待配置”
+- DeepSeek 网络失败：保留上次成功数据并显示失败原因
+- DeepSeek 未设置预算：显示货币余额，不显示百分比进度
 
 ## 相关文档
 
