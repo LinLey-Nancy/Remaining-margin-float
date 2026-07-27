@@ -5,6 +5,8 @@
     [switch]$CheckCodexRateLimitSelection,
     [switch]$CheckPlacement,
     [switch]$CheckTransitions,
+    [switch]$CaptureVisuals,
+    [string]$CaptureDirectory = '',
     [switch]$Demo,
     [ValidateSet('codex', 'deepseek')]
     [string]$DemoProvider = 'codex'
@@ -19,18 +21,22 @@ $isDiagnosticRun = (
     $CheckDeepSeekUsage -or
     $CheckCodexRateLimitSelection -or
     $CheckPlacement -or
-    $CheckTransitions
+    $CheckTransitions -or
+    $CaptureVisuals -or
+    $Demo
 )
+$script:ActivationEvent = $null
+$script:AppMutex = $null
 if (-not $isDiagnosticRun) {
     $script:ActivationEvent = New-Object System.Threading.EventWaitHandle(
         $false,
         [System.Threading.EventResetMode]::AutoReset,
-        'Local\CodexMarginFloat.Activate'
+        'Local\RemainingMarginFloat.Activate'
     )
     $createdNew = $false
     $script:AppMutex = New-Object System.Threading.Mutex(
         $true,
-        'Local\CodexMarginFloat.Singleton',
+        'Local\RemainingMarginFloat.Singleton',
         [ref]$createdNew
     )
     if (-not $createdNew) {
@@ -175,8 +181,8 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:CompactWidth = 108.0
-$script:CompactHeight = 100.0
+$script:CompactWidth = 96.0
+$script:CompactHeight = 88.0
 $script:ExpandedWidth = 370.0
 $script:ExpandedHeight = 500.0
 $script:RefreshIntervalSeconds = 60
@@ -202,6 +208,9 @@ $script:TrayCodexSourceItem = $null
 $script:TrayDeepSeekSourceItem = $null
 $script:DeepSeekSettingsMenuItem = $null
 $script:TrayDeepSeekSettingsItem = $null
+$script:IsPointerOverSurface = $false
+$script:CurrentHoverBorderColor = '#C4D0C6'
+$script:CurrentSurfaceBorderColor = '#E1E3DE'
 
 function Get-FittedPlacement {
     param(
@@ -474,9 +483,30 @@ function Format-CompactNumber {
 }
 
 function Get-AppDataDirectory {
-    $directory = Join-Path $env:LOCALAPPDATA 'CodexMarginFloat'
+    $directory = Join-Path $env:LOCALAPPDATA 'RemainingMarginFloat'
     if (-not (Test-Path -LiteralPath $directory)) {
         New-Item -Path $directory -ItemType Directory -Force | Out-Null
+    }
+
+    # Preserve existing settings and DPAPI-encrypted credentials when upgrading
+    # from the previous application name. The legacy directory remains intact.
+    $legacyDirectory = Join-Path $env:LOCALAPPDATA 'CodexMarginFloat'
+    if (Test-Path -LiteralPath $legacyDirectory) {
+        foreach ($fileName in @('deepseek.json', 'settings.json')) {
+            $legacyPath = Join-Path $legacyDirectory $fileName
+            $newPath = Join-Path $directory $fileName
+            if (
+                (Test-Path -LiteralPath $legacyPath) -and
+                -not (Test-Path -LiteralPath $newPath)
+            ) {
+                try {
+                    Copy-Item -LiteralPath $legacyPath -Destination $newPath
+                }
+                catch {
+                    # Migration is best-effort; the app can recreate either file.
+                }
+            }
+        }
     }
     return $directory
 }
@@ -919,7 +949,7 @@ function ConvertTo-DeepSeekSnapshot {
         Available = $isAvailable
         RemainingPercent = if ($null -ne $budgetPercent) { $budgetPercent } else { 0 }
         HasProgress = $null -ne $budgetPercent
-        WindowLabel = if ($null -ne $budgetPercent) { '预算余量' } else { 'DeepSeek 余额' }
+        WindowLabel = if ($null -ne $budgetPercent) { '预算余量' } else { '余额' }
         ResetDate = Format-CurrencyAmount -Amount $totalBalance -Currency $currency
         ResetCountdown = if ($isAvailable) { '当前可用于 API 调用' } else { '余额当前不可用' }
         ResetCount = if ($Budget -gt 0) {
@@ -963,7 +993,7 @@ function Get-DeepSeekUnavailableSnapshot {
         Available = $false
         RemainingPercent = 0
         HasProgress = $false
-        WindowLabel = 'DeepSeek 余额'
+        WindowLabel = '余额'
         ResetDate = '暂无'
         ResetCountdown = $Reason
         ResetCount = '未设置'
@@ -1399,7 +1429,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-public static class CodexMarginNativeWindow
+public static class RemainingMarginNativeWindow
 {
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -1418,12 +1448,12 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Codex Margin Float"
-    Width="108"
-    Height="100"
-    MinWidth="108"
+    Title="Remaining Margin Float"
+    Width="96"
+    Height="88"
+    MinWidth="96"
     MaxWidth="370"
-    MinHeight="100"
+    MinHeight="88"
     MaxHeight="500"
     WindowStyle="None"
     ResizeMode="NoResize"
@@ -1434,25 +1464,29 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
     SnapsToDevicePixels="True"
     UseLayoutRounding="True">
     <Window.Resources>
-        <SolidColorBrush x:Key="TextPrimary" Color="#343A35"/>
-        <SolidColorBrush x:Key="TextSecondary" Color="#6B746D"/>
-        <SolidColorBrush x:Key="TextMuted" Color="#8D958F"/>
-        <SolidColorBrush x:Key="Sage" Color="#7E9584"/>
-        <SolidColorBrush x:Key="SageSoft" Color="#E9F0EA"/>
-        <SolidColorBrush x:Key="Champagne" Color="#BEA374"/>
-        <SolidColorBrush x:Key="Surface" Color="#FCFBF8"/>
-        <SolidColorBrush x:Key="Border" Color="#E8E4DC"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#292D2A"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#626A65"/>
+        <SolidColorBrush x:Key="TextMuted" Color="#8A918C"/>
+        <SolidColorBrush x:Key="Sage" Color="#718478"/>
+        <SolidColorBrush x:Key="SageSoft" Color="#EEF1ED"/>
+        <SolidColorBrush x:Key="StatusStrong" Color="#46564C"/>
+        <SolidColorBrush x:Key="StatusBorder" Color="#DCE3DD"/>
+        <SolidColorBrush x:Key="Champagne" Color="#8A7658"/>
+        <SolidColorBrush x:Key="Surface" Color="#FAFAF7"/>
+        <SolidColorBrush x:Key="SurfaceSubtle" Color="#F4F5F1"/>
+        <SolidColorBrush x:Key="Border" Color="#E1E3DE"/>
+        <SolidColorBrush x:Key="Divider" Color="#E7E8E3"/>
 
         <Style x:Key="SoftButton" TargetType="Button">
-            <Setter Property="Height" Value="36"/>
-            <Setter Property="Padding" Value="13,0"/>
-            <Setter Property="Background" Value="#F2F3EF"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="12,0"/>
+            <Setter Property="Background" Value="#F1F3EF"/>
             <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
-            <Setter Property="BorderBrush" Value="#E5E7E1"/>
+            <Setter Property="BorderBrush" Value="#E0E3DD"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="FontFamily" Value="Segoe UI"/>
-            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -1461,19 +1495,20 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="10">
+                                CornerRadius="9">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ButtonBorder" Property="Background" Value="#E9EEE9"/>
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#CDD8CF"/>
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#C9D2CA"/>
+                                <Setter Property="Foreground" Value="#46544A"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.76"/>
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.72"/>
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#7E9584"/>
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#718478"/>
                                 <Setter TargetName="ButtonBorder" Property="BorderThickness" Value="2"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -1482,115 +1517,121 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
             </Setter>
         </Style>
 
-        <Style x:Key="MetricCard" TargetType="Border">
-            <Setter Property="Background" Value="#F5F4F0"/>
-            <Setter Property="BorderBrush" Value="#EBE8E1"/>
+        <Style x:Key="CompactHitStyle" TargetType="Border">
+            <Setter Property="Background" Value="#01FFFFFF"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="13"/>
-            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="CornerRadius" Value="14"/>
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="BorderBrush" Value="#718478"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="MetricTitleText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
-            <Setter Property="FontSize" Value="9"/>
+            <Setter Property="FontSize" Value="9.5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
 
         <Style x:Key="MetricValueText" TargetType="TextBlock">
-            <Setter Property="Margin" Value="0,5,0,0"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-            <Setter Property="FontFamily" Value="Segoe UI"/>
-            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontFamily" Value="Segoe UI Variable Display"/>
+            <Setter Property="FontSize" Value="21"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
+        </Style>
+
+        <Style x:Key="MetricHintText" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,2,0,0"/>
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="9"/>
         </Style>
     </Window.Resources>
 
-    <Grid x:Name="WindowRoot" Margin="10">
+    <Grid x:Name="WindowRoot" Margin="5">
         <Border x:Name="HoverHalo"
-                Margin="-2"
-                CornerRadius="24"
+                Margin="-1"
+                CornerRadius="17"
                 BorderThickness="1"
-                BorderBrush="#67AAB7A7"
-                Background="#01FFFFFF"
-                Opacity="0">
-            <Border.Effect>
-                <DropShadowEffect Color="#8EAF9A"
-                                  BlurRadius="18"
-                                  ShadowDepth="0"
-                                  Opacity="0.16"/>
-            </Border.Effect>
-        </Border>
+                BorderBrush="{DynamicResource Sage}"
+                Background="Transparent"
+                Opacity="0"/>
 
         <Border x:Name="Surface"
                 Background="{StaticResource Surface}"
                 BorderBrush="{StaticResource Border}"
                 BorderThickness="1"
-                CornerRadius="22"
+                CornerRadius="16"
                 ClipToBounds="True">
             <Border.Effect>
                 <DropShadowEffect x:Name="SurfaceShadow"
-                                  Color="#8D8A82"
-                                  BlurRadius="14"
+                                  Color="#58635B"
+                                  BlurRadius="8"
                                   ShadowDepth="2"
                                   Direction="270"
-                                  Opacity="0.10"/>
+                                  Opacity="0.07"/>
             </Border.Effect>
 
             <Grid>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="79"/>
+                    <RowDefinition Height="77"/>
                     <RowDefinition Height="1"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
                 <Border x:Name="CompactHit"
                         Grid.Row="0"
-                        Background="#01FFFFFF"
-                        Padding="11,9,11,9"
+                        Style="{StaticResource CompactHitStyle}"
+                        Padding="9,7,9,7"
                         Cursor="Hand"
                         ToolTip="拖动移动 · 单击查看详情"
                         Focusable="True">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
-                            <RowDefinition x:Name="CompactProgressRow" Height="15"/>
+                            <RowDefinition x:Name="CompactProgressRow" Height="14"/>
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,1,0,0">
                                 <TextBlock x:Name="CompactPrefix"
                                            Text=""
-                                           Margin="0,0,1,3"
+                                           Margin="0,0,1,4"
                                            VerticalAlignment="Bottom"
-                                           Foreground="{StaticResource Champagne}"
-                                           FontFamily="Segoe UI"
-                                           FontSize="10"
+                                           Foreground="{DynamicResource Sage}"
+                                           FontFamily="Segoe UI Variable Text"
+                                           FontSize="9.5"
                                            FontWeight="SemiBold"/>
                                 <TextBlock x:Name="RemainingValue"
                                            Text="--"
-                                           Foreground="{StaticResource TextPrimary}"
+                                           Foreground="{DynamicResource StatusStrong}"
                                            FontFamily="Segoe UI Variable Display"
-                                           FontSize="27"
+                                           FontSize="26"
                                            FontWeight="SemiBold"
                                            FontStretch="SemiCondensed"
-                                           LineHeight="30"/>
+                                           LineHeight="29"
+                                           Typography.NumeralAlignment="Tabular"/>
                                 <TextBlock x:Name="CompactSuffix"
                                            Text="%"
-                                           Margin="1,0,0,3"
+                                           Margin="1,0,0,4"
                                            VerticalAlignment="Bottom"
-                                           Foreground="{StaticResource Champagne}"
-                                           FontFamily="Segoe UI"
-                                           FontSize="10"
+                                           Foreground="{DynamicResource Sage}"
+                                           FontFamily="Segoe UI Variable Text"
+                                           FontSize="9.5"
                                            FontWeight="SemiBold"/>
                             </StackPanel>
                             <TextBlock x:Name="WindowLabel"
-                                       Margin="0,1,0,0"
+                                       Margin="0,0,0,0"
                                        HorizontalAlignment="Center"
                                        Text="Codex 余量"
                                        Foreground="{StaticResource TextSecondary}"
                                        FontFamily="Microsoft YaHei UI"
-                                       FontSize="9"/>
+                                       FontSize="9.5"/>
                         </StackPanel>
 
                         <Grid Grid.Row="1" VerticalAlignment="Stretch">
@@ -1601,7 +1642,7 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                        Text="Codex 余量"
                                        Foreground="{StaticResource TextMuted}"
                                        FontFamily="Microsoft YaHei UI"
-                                       FontSize="8"
+                                       FontSize="8.5"
                                        FontWeight="SemiBold"/>
                             <StackPanel x:Name="ResetSummaryPanel"
                                         Orientation="Horizontal"
@@ -1611,28 +1652,28 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                 <TextBlock Text="下次重置 "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8"/>
+                                           FontSize="8.5"/>
                                 <TextBlock x:Name="DetailsResetDate"
                                            Text="--"
                                            Foreground="{StaticResource TextSecondary}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8"
+                                           FontSize="8.5"
                                            FontWeight="SemiBold"/>
                                 <TextBlock Text=" · "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8"/>
+                                           FontSize="8.5"/>
                                 <TextBlock x:Name="DetailsResetCountdown"
                                            Text="--"
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8"/>
+                                           FontSize="8.5"/>
                             </StackPanel>
                             <Border x:Name="ProgressTrack"
-                                    Height="4"
+                                    Height="3"
                                     VerticalAlignment="Bottom"
-                                    CornerRadius="2"
-                                    Background="#DDD6CB"
+                                    CornerRadius="1.5"
+                                    Background="#DCDDD8"
                                     ClipToBounds="True"
                                     ToolTip="剩余 -- · 已使用 --">
                                 <Grid>
@@ -1640,28 +1681,28 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                         <ColumnDefinition x:Name="RemainingProgressColumn" Width="0*"/>
                                         <ColumnDefinition x:Name="UsedProgressColumn" Width="100*"/>
                                     </Grid.ColumnDefinitions>
-                                    <Border Grid.Column="0" Background="#90A593"/>
-                                    <Border Grid.Column="1" Background="#DDD6CB"/>
+                                    <Border Grid.Column="0" Background="{DynamicResource Sage}"/>
+                                    <Border Grid.Column="1" Background="#DCDDD8"/>
                                 </Grid>
                             </Border>
                         </Grid>
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1" Background="#ECE9E2" Margin="18,0"/>
+                <Border Grid.Row="1" Background="{StaticResource Divider}" Margin="16,0"/>
 
                 <Grid x:Name="DetailsPanel"
                       Grid.Row="2"
-                      Margin="18,14,18,14"
+                      Margin="18,15,18,15"
                       Visibility="Collapsed"
                       Opacity="0">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="55"/>
-                        <RowDefinition Height="8"/>
-                        <RowDefinition Height="162"/>
-                        <RowDefinition Height="76"/>
+                        <RowDefinition Height="52"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="154"/>
+                        <RowDefinition Height="68"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="38"/>
+                        <RowDefinition Height="36"/>
                     </Grid.RowDefinitions>
 
                     <Grid Grid.Row="0">
@@ -1671,13 +1712,19 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                            Text="本地 Codex"
                                            Foreground="{StaticResource TextPrimary}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="14"
+                                           FontSize="15"
                                            FontWeight="SemiBold"/>
-                                <Border Margin="8,0,0,0" Padding="7,2" Background="#EEEAE1" CornerRadius="7">
+                                <Border Margin="9,1,0,0"
+                                        Padding="7,2"
+                                        VerticalAlignment="Center"
+                                        Background="#F1EFEA"
+                                        BorderBrush="#E1DDD3"
+                                        BorderThickness="1"
+                                        CornerRadius="5">
                                     <TextBlock x:Name="PlanBadge"
                                                Text="Codex"
                                                Foreground="#796B53"
-                                               FontFamily="Segoe UI"
+                                               FontFamily="Segoe UI Variable Text"
                                                FontSize="9"
                                                FontWeight="SemiBold"/>
                                 </Border>
@@ -1686,8 +1733,8 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                        Margin="0,5,0,0"
                                        Text="未找到账号信息"
                                        Foreground="{StaticResource TextSecondary}"
-                                       FontFamily="Segoe UI"
-                                       FontSize="11"
+                                       FontFamily="Segoe UI Variable Text"
+                                       FontSize="10.5"
                                        TextTrimming="CharacterEllipsis"
                                        ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                         </StackPanel>
@@ -1695,109 +1742,149 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                         <Button x:Name="CloseButton"
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Center"
-                                Width="36"
-                                Height="36"
+                                Width="34"
+                                Height="34"
                                 Style="{StaticResource SoftButton}"
                                 Padding="0"
                                 ToolTip="收起详情"
                                 AutomationProperties.Name="收起详情">
-                            <Path Width="10"
-                                  Height="10"
-                                  Stretch="Fill"
-                                  Stroke="#707871"
-                                  StrokeThickness="1.5"
-                                  StrokeStartLineCap="Round"
-                                  StrokeEndLineCap="Round"
-                                  Data="M 0,7 L 5,2 L 10,7"/>
+                            <TextBlock Text="&#xE70E;"
+                                       Foreground="#69716C"
+                                       FontFamily="Segoe Fluent Icons"
+                                       FontSize="11"/>
                         </Button>
                     </Grid>
 
                     <Grid Grid.Row="2">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="77"/>
+                            <RowDefinition Height="*"/>
                             <RowDefinition Height="8"/>
-                            <RowDefinition Height="77"/>
+                            <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="8"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
 
-                        <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource MetricCard}">
-                            <StackPanel>
-                                <TextBlock x:Name="MetricOneTitle" Text="已用额度" Style="{StaticResource MetricTitleText}"/>
-                                <TextBlock x:Name="PrimaryMetricValue" Text="--" Style="{StaticResource MetricValueText}"/>
-                                <TextBlock x:Name="PrimaryMetricHint" Text="剩余 --" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
-                            </StackPanel>
+                        <Border Grid.Row="0"
+                                Background="{DynamicResource SageSoft}"
+                                BorderBrush="{DynamicResource StatusBorder}"
+                                BorderThickness="1"
+                                CornerRadius="11"
+                                Padding="13,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="18"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="MetricOneTitle" Text="已用额度" Style="{StaticResource MetricTitleText}"/>
+                                    <TextBlock x:Name="PrimaryMetricValue"
+                                               Text="--"
+                                               Style="{StaticResource MetricValueText}"
+                                               Foreground="{DynamicResource StatusStrong}"/>
+                                    <TextBlock x:Name="PrimaryMetricHint"
+                                               Text="剩余 --"
+                                               Style="{StaticResource MetricHintText}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                    <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Style="{StaticResource MetricTitleText}"/>
+                                    <TextBlock x:Name="TodayTokens" Text="--" Style="{StaticResource MetricValueText}"/>
+                                    <TextBlock x:Name="MetricTwoHint"
+                                               Text="本机任务累计"
+                                               Style="{StaticResource MetricHintText}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </Grid>
                         </Border>
 
-                        <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource MetricCard}">
-                            <StackPanel>
-                                <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Style="{StaticResource MetricTitleText}"/>
-                                <TextBlock x:Name="TodayTokens" Text="--" Style="{StaticResource MetricValueText}"/>
-                                <TextBlock x:Name="MetricTwoHint" Text="本机任务累计" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
-                            </StackPanel>
-                        </Border>
+                        <Border Grid.Row="2"
+                                Background="{DynamicResource SageSoft}"
+                                BorderBrush="{DynamicResource StatusBorder}"
+                                BorderThickness="1"
+                                CornerRadius="11"
+                                Padding="13,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="18"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
 
-                        <Border Grid.Row="2" Grid.Column="0" Style="{StaticResource MetricCard}">
-                            <StackPanel>
-                                <TextBlock x:Name="MetricThreeTitle" Text="今日输入" Style="{StaticResource MetricTitleText}"/>
-                                <TextBlock x:Name="LastTurnTokens" Text="--" Style="{StaticResource MetricValueText}"/>
-                                <TextBlock x:Name="ContextText" Text="所有本机任务" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
-                            </StackPanel>
-                        </Border>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="MetricThreeTitle" Text="今日输入" Style="{StaticResource MetricTitleText}"/>
+                                    <TextBlock x:Name="LastTurnTokens" Text="--" Style="{StaticResource MetricValueText}"/>
+                                    <TextBlock x:Name="ContextText"
+                                               Text="所有本机任务"
+                                               Style="{StaticResource MetricHintText}"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                </StackPanel>
 
-                        <Border Grid.Row="2" Grid.Column="2" Style="{StaticResource MetricCard}">
-                            <StackPanel>
-                                <TextBlock x:Name="MetricFourTitle" Text="今日输出" Style="{StaticResource MetricTitleText}"/>
-                                <TextBlock x:Name="CacheHit" Text="--" Style="{StaticResource MetricValueText}"/>
-                                <TextBlock x:Name="CacheTokenText" Text="所有本机任务" Foreground="{StaticResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
-                            </StackPanel>
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                    <TextBlock x:Name="MetricFourTitle" Text="今日输出" Style="{StaticResource MetricTitleText}"/>
+                                    <TextBlock x:Name="CacheHit" Text="--" Style="{StaticResource MetricValueText}"/>
+                                    <TextBlock x:Name="CacheTokenText"
+                                               Text="所有本机任务"
+                                               Style="{StaticResource MetricHintText}"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                </StackPanel>
+                            </Grid>
                         </Border>
                     </Grid>
 
                     <Border Grid.Row="3"
-                            Margin="0,9,0,0"
-                            Background="#EFF3EE"
-                            BorderBrush="#DFE7E0"
+                            Margin="0,8,0,0"
+                            Background="{StaticResource SurfaceSubtle}"
+                            BorderBrush="#E5E7E2"
                             BorderThickness="1"
-                            CornerRadius="13"
-                            Padding="12,9">
+                            CornerRadius="10"
+                            Padding="12,8">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock x:Name="BreakdownTitle" Text="今日缓存" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
+                                <TextBlock x:Name="BreakdownTitle" Text="今日缓存" Style="{StaticResource MetricTitleText}"/>
                                 <TextBlock x:Name="TokenBreakdown"
-                                           Margin="0,5,0,0"
+                                           Margin="0,4,0,0"
                                            Text="-- cached  ·  命中 --"
                                            Foreground="{StaticResource TextPrimary}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="11"
+                                           FontSize="10.5"
                                            FontWeight="SemiBold"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-                                <TextBlock x:Name="SecondaryMetricTitle" Text="额度状态" HorizontalAlignment="Right" Foreground="{StaticResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="10"/>
-                                <TextBlock x:Name="ResetCount" Margin="0,5,0,0" Text="等待数据" HorizontalAlignment="Right" Foreground="{StaticResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="11" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="SecondaryMetricTitle"
+                                           Text="额度状态"
+                                           HorizontalAlignment="Right"
+                                           Style="{StaticResource MetricTitleText}"/>
+                                <TextBlock x:Name="ResetCount"
+                                           Margin="0,4,0,0"
+                                           Text="等待数据"
+                                           HorizontalAlignment="Right"
+                                           Foreground="{StaticResource TextPrimary}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="10.5"
+                                           FontWeight="SemiBold"/>
                             </StackPanel>
                         </Grid>
                     </Border>
 
-                    <StackPanel Grid.Row="4" Margin="1,14,1,0">
+                    <StackPanel Grid.Row="4" Margin="1,11,1,0" VerticalAlignment="Top">
                         <TextBlock x:Name="SourceText"
                                    Text="Codex 本地会话快照"
                                    Foreground="{StaticResource TextSecondary}"
                                    FontFamily="Microsoft YaHei UI"
-                                   FontSize="10"/>
+                                   FontSize="9.5"/>
                         <TextBlock x:Name="SampleTime"
-                                   Margin="0,5,0,0"
+                                   Margin="0,4,0,0"
                                    Text="采样于 --"
                                    Foreground="{StaticResource TextMuted}"
                                    FontFamily="Microsoft YaHei UI"
-                                   FontSize="10"/>
+                                   FontSize="9.5"/>
                     </StackPanel>
 
                     <Grid Grid.Row="5">
@@ -1806,10 +1893,10 @@ $script:ReducedMotion = -not [System.Windows.SystemParameters]::ClientAreaAnimat
                                    Text="60 秒后自动刷新"
                                    Foreground="{StaticResource TextMuted}"
                                    FontFamily="Microsoft YaHei UI"
-                                   FontSize="10"/>
+                                   FontSize="9.5"/>
                         <Button x:Name="RefreshButton"
                                 HorizontalAlignment="Right"
-                                Width="92"
+                                Width="88"
                                 Style="{StaticResource SoftButton}"
                                 Content="立即刷新"
                                 ToolTip="重新读取当前数据源"
@@ -1832,7 +1919,7 @@ if ($Demo) {
 function Get-WindowExtendedStyle {
     $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
     if ($helper.Handle -eq [IntPtr]::Zero) { return 0 }
-    return [CodexMarginNativeWindow]::GetWindowLong($helper.Handle, -20)
+    return [RemainingMarginNativeWindow]::GetWindowLong($helper.Handle, -20)
 }
 
 function Hide-WindowFromTaskSwitcher {
@@ -1841,9 +1928,9 @@ function Hide-WindowFromTaskSwitcher {
 
     $toolWindow = 0x00000080
     $appWindow = 0x00040000
-    $style = [CodexMarginNativeWindow]::GetWindowLong($helper.Handle, -20)
+    $style = [RemainingMarginNativeWindow]::GetWindowLong($helper.Handle, -20)
     $style = ($style -bor $toolWindow) -band (-bnot $appWindow)
-    [void][CodexMarginNativeWindow]::SetWindowLong($helper.Handle, -20, $style)
+    [void][RemainingMarginNativeWindow]::SetWindowLong($helper.Handle, -20, $style)
     return (($style -band $toolWindow) -ne 0 -and ($style -band $appWindow) -eq 0)
 }
 
@@ -1881,7 +1968,7 @@ function New-TrayAppIcon {
         $graphics.FillEllipse($sageBrush, 1, 1, 30, 30)
         $graphics.DrawEllipse($champagnePen, 1.5, 1.5, 29, 29)
         $graphics.DrawString(
-            'C',
+            'R',
             $font,
             $ivoryBrush,
             (New-Object Drawing.RectangleF(0, 0, 32, 31)),
@@ -1893,7 +1980,7 @@ function New-TrayAppIcon {
             return ([Drawing.Icon]::FromHandle($iconHandle).Clone())
         }
         finally {
-            [void][CodexMarginNativeWindow]::DestroyIcon($iconHandle)
+            [void][RemainingMarginNativeWindow]::DestroyIcon($iconHandle)
         }
     }
     finally {
@@ -1949,11 +2036,43 @@ function New-DoubleAnimation {
     return $animation
 }
 
+function Save-VisualPng {
+    param(
+        [Windows.FrameworkElement]$Element,
+        [string]$Path
+    )
+
+    $Element.UpdateLayout()
+    $dpi = [Windows.Media.VisualTreeHelper]::GetDpi($Element)
+    $pixelWidth = [Math]::Max(1, [int][Math]::Ceiling($Element.ActualWidth * $dpi.DpiScaleX))
+    $pixelHeight = [Math]::Max(1, [int][Math]::Ceiling($Element.ActualHeight * $dpi.DpiScaleY))
+    $bitmap = New-Object Windows.Media.Imaging.RenderTargetBitmap(
+        $pixelWidth,
+        $pixelHeight,
+        $dpi.PixelsPerInchX,
+        $dpi.PixelsPerInchY,
+        [Windows.Media.PixelFormats]::Pbgra32
+    )
+    $bitmap.Render($Element)
+
+    $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder
+    $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Create, [IO.FileAccess]::Write)
+    try {
+        $encoder.Save($stream)
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-SettingsPath {
     return Join-Path (Get-AppDataDirectory) 'settings.json'
 }
 
 function Save-Settings {
+    if ($isDiagnosticRun) { return }
+
     try {
         $saveLeft = if ($null -ne $script:CompactAnchorLeft) {
             $script:CompactAnchorLeft
@@ -2099,7 +2218,7 @@ function Set-ExpandedState {
     $targetHeight = if ($Expanded) { $script:ExpandedHeight } else { $script:CompactHeight }
 
     # Width and height are one logical state. Keeping them out of independent
-    # WPF animations prevents rapid toggles from settling at 370x100 or 108x500.
+    # WPF animations prevents rapid toggles from settling at 370x88 or 96x500.
     $window.BeginAnimation([Windows.FrameworkElement]::WidthProperty, $null)
     $window.BeginAnimation([Windows.FrameworkElement]::HeightProperty, $null)
 
@@ -2119,8 +2238,8 @@ function Set-ExpandedState {
             'Collapsed'
         } else { 'Visible' }
         if ($ResetSummaryPanel.Visibility -eq 'Visible') {
-            $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 3)
-            $CompactProgressRow.Height = New-Object Windows.GridLength(21)
+            $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
+            $CompactProgressRow.Height = New-Object Windows.GridLength(19)
         }
         if ($Immediate) {
             $DetailsPanel.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
@@ -2143,8 +2262,8 @@ function Set-ExpandedState {
         $ResetSummaryPanel.Visibility = 'Collapsed'
         $ExpandedWindowLabel.Visibility = 'Collapsed'
         $WindowLabel.Visibility = 'Visible'
-        $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 9)
-        $CompactProgressRow.Height = New-Object Windows.GridLength(15)
+        $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 7)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(14)
         $window.Width = $targetWidth
         $window.Height = $targetHeight
         if ($null -ne $script:CompactAnchorLeft) {
@@ -2182,17 +2301,120 @@ function Request-InactiveDetailsCollapse {
 function Set-HoverState {
     param([bool]$Hovering)
 
+    $script:IsPointerOverSurface = $Hovering
     $HoverHalo.BeginAnimation(
         [Windows.UIElement]::OpacityProperty,
-        (New-DoubleAnimation -To $(if ($Hovering) { 0.58 } else { 0 }) -Milliseconds $(if ($Hovering) { 210 } else { 160 }) -EaseOut)
+        (New-DoubleAnimation -To $(if ($Hovering) { 0.46 } else { 0 }) -Milliseconds $(if ($Hovering) { 190 } else { 150 }) -EaseOut)
     )
     $SurfaceShadow.BeginAnimation(
         [Windows.Media.Effects.DropShadowEffect]::OpacityProperty,
-        (New-DoubleAnimation -To $(if ($Hovering) { 0.15 } else { 0.10 }) -Milliseconds 200 -EaseOut)
+        (New-DoubleAnimation -To $(if ($Hovering) { 0.11 } else { 0.07 }) -Milliseconds 180 -EaseOut)
     )
     $Surface.BorderBrush = New-Object Windows.Media.SolidColorBrush(
-        [Windows.Media.ColorConverter]::ConvertFromString($(if ($Hovering) { '#D7DED5' } else { '#E8E4DC' }))
+        [Windows.Media.ColorConverter]::ConvertFromString($(if ($Hovering) {
+            $script:CurrentHoverBorderColor
+        } else {
+            $script:CurrentSurfaceBorderColor
+        }))
     )
+}
+
+function Get-BlendedColor {
+    param(
+        [string]$From,
+        [string]$To,
+        [double]$Amount
+    )
+
+    $start = [Windows.Media.ColorConverter]::ConvertFromString($From)
+    $end = [Windows.Media.ColorConverter]::ConvertFromString($To)
+    $mix = [Math]::Max(0, [Math]::Min(1, $Amount))
+    return [Windows.Media.Color]::FromRgb(
+        [byte][Math]::Round($start.R + (($end.R - $start.R) * $mix)),
+        [byte][Math]::Round($start.G + (($end.G - $start.G) * $mix)),
+        [byte][Math]::Round($start.B + (($end.B - $start.B) * $mix))
+    )
+}
+
+function Get-UsageStatusPalette {
+    param(
+        [double]$Percent,
+        [bool]$Available
+    )
+
+    if (-not $Available) {
+        return [pscustomobject]@{
+            Accent = [Windows.Media.ColorConverter]::ConvertFromString('#89908C')
+            Strong = [Windows.Media.ColorConverter]::ConvertFromString('#5B625E')
+            Soft = [Windows.Media.ColorConverter]::ConvertFromString('#F1F2EF')
+            Border = [Windows.Media.ColorConverter]::ConvertFromString('#E0E3DE')
+            HoverBorder = '#CED2CE'
+        }
+    }
+
+    $remaining = [Math]::Max(0, [Math]::Min(100, $Percent))
+    if ($remaining -le 50) {
+        $amount = $remaining / 50
+        $from = @{
+            Accent = '#A4736F'
+            Strong = '#704E4C'
+            Soft = '#F4ECEB'
+            Border = '#E5D6D4'
+            HoverBorder = '#D4B8B5'
+        }
+        $to = @{
+            Accent = '#9A8968'
+            Strong = '#655B47'
+            Soft = '#F3F0E9'
+            Border = '#E3DDCF'
+            HoverBorder = '#D1C6AE'
+        }
+    }
+    else {
+        $amount = ($remaining - 50) / 50
+        $from = @{
+            Accent = '#9A8968'
+            Strong = '#655B47'
+            Soft = '#F3F0E9'
+            Border = '#E3DDCF'
+            HoverBorder = '#D1C6AE'
+        }
+        $to = @{
+            Accent = '#718478'
+            Strong = '#46564C'
+            Soft = '#EEF1ED'
+            Border = '#DCE3DD'
+            HoverBorder = '#C4D0C6'
+        }
+    }
+
+    return [pscustomobject]@{
+        Accent = Get-BlendedColor -From $from.Accent -To $to.Accent -Amount $amount
+        Strong = Get-BlendedColor -From $from.Strong -To $to.Strong -Amount $amount
+        Soft = Get-BlendedColor -From $from.Soft -To $to.Soft -Amount $amount
+        Border = Get-BlendedColor -From $from.Border -To $to.Border -Amount $amount
+        HoverBorder = (Get-BlendedColor -From $from.HoverBorder -To $to.HoverBorder -Amount $amount).ToString()
+    }
+}
+
+function Set-UsageStatusPalette {
+    param(
+        [double]$Percent,
+        [bool]$Available
+    )
+
+    $palette = Get-UsageStatusPalette -Percent $Percent -Available $Available
+    ([Windows.Media.SolidColorBrush]$window.Resources['Sage']).Color = $palette.Accent
+    ([Windows.Media.SolidColorBrush]$window.Resources['StatusStrong']).Color = $palette.Strong
+    ([Windows.Media.SolidColorBrush]$window.Resources['SageSoft']).Color = $palette.Soft
+    ([Windows.Media.SolidColorBrush]$window.Resources['StatusBorder']).Color = $palette.Border
+    $script:CurrentHoverBorderColor = $palette.HoverBorder
+
+    if ($script:IsPointerOverSurface) {
+        $Surface.BorderBrush = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString($script:CurrentHoverBorderColor)
+        )
+    }
 }
 
 function Set-Progress {
@@ -2218,6 +2440,7 @@ function Set-Progress {
     } else {
         '设置预算基准后显示百分比进度'
     }
+    Set-UsageStatusPalette -Percent $remaining -Available $Available
 }
 
 function Format-CompactBalance {
@@ -2250,12 +2473,12 @@ function Update-UsageView {
         'Collapsed'
     } else { 'Visible' }
     if ($ResetSummaryPanel.Visibility -eq 'Visible') {
-        $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 3)
-        $CompactProgressRow.Height = New-Object Windows.GridLength(21)
+        $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(19)
     }
     else {
-        $CompactHit.Padding = New-Object Windows.Thickness(11, 9, 11, 9)
-        $CompactProgressRow.Height = New-Object Windows.GridLength(15)
+        $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 7)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(14)
     }
 
     if ($Snapshot.ProviderId -eq 'DeepSeek') {
@@ -2307,16 +2530,14 @@ function Update-UsageView {
         $MetricTwoTitle.Text = '今日 TOKEN'
         $TodayTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
         $MetricTwoHint.Text = '本机任务累计'
-        $MetricThreeTitle.Text = '今日输入'
-        $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayInputTokens
-        $ContextText.Text = '所有本机任务'
+        $MetricThreeTitle.Text = '今日缓存'
+        $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayCachedTokens
+        $ContextText.Text = '命中 {0:0.0}%' -f $Snapshot.TodayCacheHitPercent
         $MetricFourTitle.Text = '今日输出'
         $CacheHit.Text = Format-CompactNumber $Snapshot.TodayOutputTokens
         $CacheTokenText.Text = '所有本机任务'
-        $BreakdownTitle.Text = '今日缓存'
-        $TokenBreakdown.Text = '{0} cached  ·  命中 {1:0.0}%' -f `
-            (Format-CompactNumber $Snapshot.TodayCachedTokens), `
-            $Snapshot.TodayCacheHitPercent
+        $BreakdownTitle.Text = '统计口径'
+        $TokenBreakdown.Text = '本机今日全部任务'
         $SecondaryMetricTitle.Text = '额度状态'
         $ResetCount.Text = $Snapshot.Status
         Set-Progress -Percent $Snapshot.RemainingPercent
@@ -2349,7 +2570,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('CodexMarginFloat/1.1.2')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.1.2')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -2850,6 +3071,110 @@ $window.Add_Deactivated({
     Request-InactiveDetailsCollapse
 })
 
+if ($CaptureVisuals) {
+    if ([string]::IsNullOrWhiteSpace($CaptureDirectory)) {
+        throw 'CaptureDirectory is required when CaptureVisuals is enabled.'
+    }
+
+    function Wait-ForCaptureUi {
+        param([int]$Milliseconds)
+
+        $frame = New-Object Windows.Threading.DispatcherFrame
+        $captureTimer = New-Object Windows.Threading.DispatcherTimer
+        $captureTimer.Interval = [TimeSpan]::FromMilliseconds($Milliseconds)
+        $captureTimer.Add_Tick({
+            $captureTimer.Stop()
+            $frame.Continue = $false
+        })
+        $captureTimer.Start()
+        [Windows.Threading.Dispatcher]::PushFrame($frame)
+    }
+
+    $captureRoot = [IO.Path]::GetFullPath($CaptureDirectory)
+    [void][IO.Directory]::CreateDirectory($captureRoot)
+    $window.ShowInTaskbar = $false
+    $window.Left = 24
+    $window.Top = 24
+    $window.Show()
+    Wait-ForCaptureUi -Milliseconds 80
+
+    $previewSnapshot = Get-DeepSeekDemoSnapshot
+    Update-UsageView -Snapshot $previewSnapshot
+    Set-ExpandedState -Expanded $false -Immediate
+
+    $captureFiles = [ordered]@{}
+    foreach ($state in @(
+        [pscustomobject]@{ Name = 'compact-high'; Percent = 82 },
+        [pscustomobject]@{ Name = 'compact-mid'; Percent = 50 },
+        [pscustomobject]@{ Name = 'compact-low'; Percent = 18 }
+    )) {
+        $RemainingValue.Text = [string]$state.Percent
+        $CompactPrefix.Text = ''
+        $CompactSuffix.Text = '%'
+        Set-Progress -Percent $state.Percent
+        Wait-ForCaptureUi -Milliseconds 40
+        $capturePath = Join-Path $captureRoot ($state.Name + '.png')
+        Save-VisualPng -Element $window -Path $capturePath
+        $captureFiles[$state.Name] = $capturePath
+    }
+
+    $balancePreviewSnapshot = Get-DeepSeekDemoSnapshot
+    $balancePreviewSnapshot.HasProgress = $false
+    $balancePreviewSnapshot.WindowLabel = '余额'
+    Update-UsageView -Snapshot $balancePreviewSnapshot
+    Set-ExpandedState -Expanded $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $compactBalancePath = Join-Path $captureRoot 'compact-balance.png'
+    Save-VisualPng -Element $window -Path $compactBalancePath
+    $captureFiles['compact-balance'] = $compactBalancePath
+
+    Update-UsageView -Snapshot $previewSnapshot
+    Set-ExpandedState -Expanded $true -Immediate
+    Wait-ForCaptureUi -Milliseconds 60
+    $expandedPath = Join-Path $captureRoot 'expanded-high.png'
+    Save-VisualPng -Element $window -Path $expandedPath
+    $captureFiles['expanded-high'] = $expandedPath
+
+    $RemainingValue.Text = '18'
+    $PrimaryMetricValue.Text = '82%'
+    $PrimaryMetricHint.Text = '剩余 18%'
+    Set-Progress -Percent 18
+    Wait-ForCaptureUi -Milliseconds 40
+    $expandedLowPath = Join-Path $captureRoot 'expanded-low.png'
+    Save-VisualPng -Element $window -Path $expandedLowPath
+    $captureFiles['expanded-low'] = $expandedLowPath
+
+    $codexPreviewSnapshot = [pscustomobject]@{
+        ProviderId = 'Codex'
+        RemainingPercent = 68
+        WindowLabel = '本周余量'
+        ResetDate = '8月1日 08:00'
+        ResetCountdown = '4 天 15 小时后'
+        ResetCount = '状态正常'
+        Plan = 'Plus'
+        AccountName = '本地 Codex'
+        AccountEmail = '本机账户信息'
+        TodayTokens = 382640
+        TodayInputTokens = 301280
+        TodayOutputTokens = 81360
+        TodayCachedTokens = 245800
+        TodayCacheHitPercent = 64.2
+        SampledAt = Get-Date
+        Status = '额度充足'
+        Source = 'Codex 本地会话快照'
+    }
+    Update-UsageView -Snapshot $codexPreviewSnapshot
+    Set-ExpandedState -Expanded $true -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $expandedCodexPath = Join-Path $captureRoot 'expanded-codex.png'
+    Save-VisualPng -Element $window -Path $expandedCodexPath
+    $captureFiles['expanded-codex'] = $expandedCodexPath
+
+    $window.Close()
+    [pscustomobject]$captureFiles | ConvertTo-Json
+    exit 0
+}
+
 if ($CheckTransitions) {
     function Wait-ForUi {
         param([int]$Milliseconds)
@@ -2904,10 +3229,11 @@ if ($CheckTransitions) {
     $deepSeekProgressRemaining = $RemainingProgressColumn.Width.Value
     $deepSeekProgressUsed = $UsedProgressColumn.Width.Value
     $deepSeekCheckSnapshot.HasProgress = $false
-    $deepSeekCheckSnapshot.WindowLabel = 'DeepSeek 余额'
+    $deepSeekCheckSnapshot.WindowLabel = '余额'
     Update-UsageView -Snapshot $deepSeekCheckSnapshot
     $deepSeekBalanceCompactValue = $RemainingValue.Text
     $deepSeekBalanceCompactSuffix = $CompactSuffix.Text
+    $deepSeekBalanceCompactLabel = $WindowLabel.Text
     $deepSeekNoBudgetProgressRemaining = $RemainingProgressColumn.Width.Value
     $deepSeekNoBudgetProgressUsed = $UsedProgressColumn.Width.Value
     $metricValueFontFamilies = @(
@@ -2981,6 +3307,7 @@ if ($CheckTransitions) {
         DeepSeekProgressUsed = $deepSeekProgressUsed
         DeepSeekBalanceCompactValue = $deepSeekBalanceCompactValue
         DeepSeekBalanceCompactSuffix = $deepSeekBalanceCompactSuffix
+        DeepSeekBalanceCompactLabel = $deepSeekBalanceCompactLabel
         DeepSeekNoBudgetProgressRemaining = $deepSeekNoBudgetProgressRemaining
         DeepSeekNoBudgetProgressUsed = $deepSeekNoBudgetProgressUsed
         MetricValueFontFamilies = $metricValueFontFamilies
@@ -3079,7 +3406,7 @@ $trayExitItem.Add_Click({
 
 $script:TrayNotifyIcon = New-Object System.Windows.Forms.NotifyIcon
 $script:TrayNotifyIcon.Icon = $script:TrayAppIcon
-$script:TrayNotifyIcon.Text = 'Codex Margin Float · 单击打开详情'
+$script:TrayNotifyIcon.Text = 'Remaining Margin Float · 单击打开详情'
 $script:TrayNotifyIcon.ContextMenuStrip = $script:TrayMenu
 $script:TrayNotifyIcon.Add_MouseClick({
     param($sender, $eventArgs)
