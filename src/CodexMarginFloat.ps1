@@ -15,6 +15,138 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text.RegularExpressions;
+
+public sealed class DeepSeekUsageEventData
+{
+    public string MessageId { get; set; }
+    public DateTimeOffset Timestamp { get; set; }
+    public string Model { get; set; }
+    public double InputTokens { get; set; }
+    public double OutputTokens { get; set; }
+    public double CachedTokens { get; set; }
+    public double CacheWriteTokens { get; set; }
+    public double TotalTokens
+    {
+        get { return InputTokens + OutputTokens + CachedTokens + CacheWriteTokens; }
+    }
+}
+
+public static class DeepSeekLogScanner
+{
+    private static readonly Regex Model = Create("\"model\"\\s*:\\s*\"(?<value>[^\"]+)\"");
+    private static readonly Regex MessageId = Create("\"message\"\\s*:\\s*\\{\\s*\"id\"\\s*:\\s*\"(?<value>[^\"]*)\"");
+    private static readonly Regex Uuid = Create("\"uuid\"\\s*:\\s*\"(?<value>[^\"]+)\"");
+    private static readonly Regex Timestamp = Create("\"timestamp\"\\s*:\\s*\"(?<value>[^\"]+)\"");
+    private static readonly Regex Input = Create("\"input_tokens\"\\s*:\\s*(?<value>\\d+(?:\\.\\d+)?)");
+    private static readonly Regex Output = Create("\"output_tokens\"\\s*:\\s*(?<value>\\d+(?:\\.\\d+)?)");
+    private static readonly Regex CacheRead = Create("\"cache_read_input_tokens\"\\s*:\\s*(?<value>\\d+(?:\\.\\d+)?)");
+    private static readonly Regex CacheWrite = Create("\"cache_creation_input_tokens\"\\s*:\\s*(?<value>\\d+(?:\\.\\d+)?)");
+
+    private static Regex Create(string pattern)
+    {
+        return new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    }
+
+    private static string Capture(Regex regex, string line)
+    {
+        Match match = regex.Match(line);
+        return match.Success ? match.Groups["value"].Value : String.Empty;
+    }
+
+    private static double CaptureNumber(Regex regex, string line)
+    {
+        double value;
+        return Double.TryParse(
+            Capture(regex, line),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out value
+        ) ? value : 0.0;
+    }
+
+    public static DeepSeekUsageEventData ParseLine(string line)
+    {
+        if (
+            String.IsNullOrEmpty(line) ||
+            line.IndexOf("\"usage\"", StringComparison.OrdinalIgnoreCase) < 0 ||
+            line.IndexOf("deepseek", StringComparison.OrdinalIgnoreCase) < 0
+        ) {
+            return null;
+        }
+
+        string model = Capture(Model, line);
+        if (model.IndexOf("deepseek", StringComparison.OrdinalIgnoreCase) < 0) {
+            return null;
+        }
+        string timestampText = Capture(Timestamp, line);
+        DateTimeOffset timestamp;
+        if (!DateTimeOffset.TryParse(
+            timestampText,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out timestamp
+        )) {
+            return null;
+        }
+
+        string messageId = Capture(MessageId, line);
+        if (String.IsNullOrWhiteSpace(messageId)) {
+            messageId = Capture(Uuid, line);
+        }
+        return new DeepSeekUsageEventData {
+            MessageId = messageId,
+            Timestamp = timestamp,
+            Model = model,
+            InputTokens = CaptureNumber(Input, line),
+            OutputTokens = CaptureNumber(Output, line),
+            CachedTokens = CaptureNumber(CacheRead, line),
+            CacheWriteTokens = CaptureNumber(CacheWrite, line)
+        };
+    }
+
+    public static DeepSeekUsageEventData[] ReadFile(string path)
+    {
+        Dictionary<string, DeepSeekUsageEventData> events =
+            new Dictionary<string, DeepSeekUsageEventData>(StringComparer.Ordinal);
+        int anonymousIndex = 0;
+        using (FileStream stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete
+        ))
+        using (StreamReader reader = new StreamReader(stream))
+        {
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                DeepSeekUsageEventData item = ParseLine(line);
+                if (item == null) {
+                    continue;
+                }
+                string eventKey = String.IsNullOrWhiteSpace(item.MessageId)
+                    ? "__anonymous_" + (++anonymousIndex).ToString(CultureInfo.InvariantCulture)
+                    : item.MessageId;
+
+                DeepSeekUsageEventData existing;
+                if (!events.TryGetValue(eventKey, out existing) || item.Timestamp > existing.Timestamp) {
+                    events[eventKey] = item;
+                }
+            }
+        }
+
+        DeepSeekUsageEventData[] result = new DeepSeekUsageEventData[events.Count];
+        events.Values.CopyTo(result, 0);
+        return result;
+    }
+}
+'@
 
 $script:CompactWidth = 108.0
 $script:CompactHeight = 100.0
@@ -386,42 +518,8 @@ function Get-ObjectPropertyValue {
 function ConvertFrom-DeepSeekUsageLine {
     param([string]$Line)
 
-    if (
-        $Line.IndexOf('"usage"', [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        $Line.IndexOf('deepseek', [StringComparison]::OrdinalIgnoreCase) -lt 0
-    ) {
-        return $null
-    }
-
     try {
-        $entry = $Line | ConvertFrom-Json
-        $message = Get-ObjectPropertyValue -Object $entry -Name 'message'
-        $usage = Get-ObjectPropertyValue -Object $message -Name 'usage'
-        $model = [string](Get-ObjectPropertyValue -Object $message -Name 'model' -Default '')
-        if (-not $usage -or $model -notmatch '(?i)deepseek') { return $null }
-
-        $messageId = [string](Get-ObjectPropertyValue -Object $message -Name 'id' -Default '')
-        if ([string]::IsNullOrWhiteSpace($messageId)) {
-            $messageId = [string](Get-ObjectPropertyValue -Object $entry -Name 'uuid' -Default '')
-        }
-        $timestamp = [DateTimeOffset]::MinValue
-        $timestampText = [string](Get-ObjectPropertyValue -Object $entry -Name 'timestamp' -Default '')
-        if (-not [DateTimeOffset]::TryParse($timestampText, [ref]$timestamp)) { return $null }
-
-        $input = [double](Get-ObjectPropertyValue -Object $usage -Name 'input_tokens' -Default 0)
-        $output = [double](Get-ObjectPropertyValue -Object $usage -Name 'output_tokens' -Default 0)
-        $cacheRead = [double](Get-ObjectPropertyValue -Object $usage -Name 'cache_read_input_tokens' -Default 0)
-        $cacheWrite = [double](Get-ObjectPropertyValue -Object $usage -Name 'cache_creation_input_tokens' -Default 0)
-        return [pscustomobject]@{
-            MessageId = $messageId
-            Timestamp = $timestamp
-            Model = $model
-            InputTokens = $input
-            OutputTokens = $output
-            CachedTokens = $cacheRead
-            CacheWriteTokens = $cacheWrite
-            TotalTokens = $input + $output + $cacheRead + $cacheWrite
-        }
+        return [DeepSeekLogScanner]::ParseLine($Line)
     }
     catch {
         return $null
@@ -438,37 +536,22 @@ function Read-DeepSeekUsageFile {
     }
 
     $latest = $null
-    $messageEvents = @{}
+    $messageEvents = @()
     try {
-        foreach ($line in [IO.File]::ReadLines($File.FullName)) {
-            $event = ConvertFrom-DeepSeekUsageLine -Line $line
-            if (-not $event) { continue }
-            $eventKey = if ($event.MessageId) {
-                $event.MessageId
-            } else {
-                '{0}:{1}' -f $event.Timestamp.UtcTicks, $messageEvents.Count
-            }
-            if (
-                -not $messageEvents.ContainsKey($eventKey) -or
-                $event.Timestamp -gt $messageEvents[$eventKey].Timestamp
-            ) {
-                $messageEvents[$eventKey] = $event
-            }
-        }
-
-        foreach ($event in $messageEvents.Values) {
+        $messageEvents = @([DeepSeekLogScanner]::ReadFile($File.FullName))
+        foreach ($event in $messageEvents) {
             if (-not $latest -or $event.Timestamp -gt $latest.Timestamp) {
                 $latest = $event
             }
         }
     }
     catch {
-        $messageEvents = @{}
+        $messageEvents = @()
         $latest = $null
     }
 
     $value = [pscustomobject]@{
-        Events = @($messageEvents.Values)
+        Events = $messageEvents
         Latest = $latest
     }
     $script:DeepSeekUsageCache[$File.FullName] = [pscustomobject]@{
@@ -535,16 +618,37 @@ function Read-DeepSeekLatestUsageFile {
     return $latest
 }
 
+function Get-DeepSeekEstimatedEventCostCny {
+    param($Event)
+
+    $isPro = [string]$Event.Model -match '(?i)(v4-pro|opus)'
+    $cacheHitPrice = if ($isPro) { 0.025 } else { 0.02 }
+    $cacheMissPrice = if ($isPro) { 3.0 } else { 1.0 }
+    $outputPrice = if ($isPro) { 6.0 } else { 2.0 }
+    $cacheMissTokens = $Event.InputTokens + $Event.CacheWriteTokens
+
+    return (
+        ($Event.CachedTokens * $cacheHitPrice) +
+        ($cacheMissTokens * $cacheMissPrice) +
+        ($Event.OutputTokens * $outputPrice)
+    ) / 1000000
+}
+
 function Measure-DeepSeekUsageEvents {
     param(
         [object[]]$Events,
-        [datetime]$Date = (Get-Date).Date
+        [datetime]$StartDate = (Get-Date).Date,
+        [Nullable[datetime]]$EndDate = $null
     )
 
+    $rangeStart = $StartDate.Date
+    $rangeEnd = if ($null -ne $EndDate) { [datetime]$EndDate } else { $rangeStart.AddDays(1) }
     $uniqueEvents = @{}
     $anonymousIndex = 0
     foreach ($event in $Events) {
-        if (-not $event -or $event.Timestamp.LocalDateTime.Date -ne $Date.Date) { continue }
+        if (-not $event) { continue }
+        $eventTime = $event.Timestamp.LocalDateTime
+        if ($eventTime -lt $rangeStart -or $eventTime -ge $rangeEnd) { continue }
         $eventKey = if ($event.MessageId) {
             $event.MessageId
         } else {
@@ -564,6 +668,8 @@ function Measure-DeepSeekUsageEvents {
         InputTokens = 0.0
         OutputTokens = 0.0
         CachedTokens = 0.0
+        CacheWriteTokens = 0.0
+        EstimatedCostCny = 0.0
         UniqueMessages = $uniqueEvents.Count
     }
     foreach ($event in $uniqueEvents.Values) {
@@ -571,6 +677,8 @@ function Measure-DeepSeekUsageEvents {
         $aggregate.InputTokens += $event.InputTokens
         $aggregate.OutputTokens += $event.OutputTokens
         $aggregate.CachedTokens += $event.CachedTokens
+        $aggregate.CacheWriteTokens += $event.CacheWriteTokens
+        $aggregate.EstimatedCostCny += Get-DeepSeekEstimatedEventCostCny -Event $event
     }
     return [pscustomobject]$aggregate
 }
@@ -581,6 +689,8 @@ function Get-DeepSeekLocalUsage {
         TodayInputTokens = 0.0
         TodayOutputTokens = 0.0
         TodayCachedTokens = 0.0
+        MonthlyTokens = 0.0
+        MonthlyEstimatedCostCny = 0.0
         LastTurnTokens = 0.0
         LastInputTokens = 0.0
         LastOutputTokens = 0.0
@@ -598,28 +708,36 @@ function Get-DeepSeekLocalUsage {
     $files = @(Get-ChildItem -LiteralPath $projectsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending)
     $todayDate = (Get-Date).Date
+    $monthStart = Get-Date -Day 1 -Hour 0 -Minute 0 -Second 0 -Millisecond 0
+    $nextMonth = $monthStart.AddMonths(1)
     $latest = $null
-    $todayEvents = New-Object System.Collections.ArrayList
-    $todayFiles = @($files | Where-Object { $_.LastWriteTime.Date -eq $todayDate })
-    foreach ($file in $todayFiles) {
+    $monthEvents = New-Object System.Collections.ArrayList
+    $monthFiles = @($files | Where-Object { $_.LastWriteTime -ge $monthStart })
+    foreach ($file in $monthFiles) {
         $summary = Read-DeepSeekUsageFile -File $file
         foreach ($event in $summary.Events) {
-            [void]$todayEvents.Add($event)
+            [void]$monthEvents.Add($event)
         }
         if ($summary.Latest -and (-not $latest -or $summary.Latest.Timestamp -gt $latest.Timestamp)) {
             $latest = $summary.Latest
         }
     }
 
-    $todayUsage = Measure-DeepSeekUsageEvents -Events @($todayEvents) -Date $todayDate
+    $todayUsage = Measure-DeepSeekUsageEvents -Events @($monthEvents) -StartDate $todayDate
+    $monthlyUsage = Measure-DeepSeekUsageEvents `
+        -Events @($monthEvents) `
+        -StartDate $monthStart `
+        -EndDate $nextMonth
     $result.TodayTokens = $todayUsage.TotalTokens
     $result.TodayInputTokens = $todayUsage.InputTokens
     $result.TodayOutputTokens = $todayUsage.OutputTokens
     $result.TodayCachedTokens = $todayUsage.CachedTokens
+    $result.MonthlyTokens = $monthlyUsage.TotalTokens
+    $result.MonthlyEstimatedCostCny = [Math]::Round($monthlyUsage.EstimatedCostCny, 4)
 
     if (-not $latest) {
         foreach ($file in ($files | Where-Object {
-            $_.LastWriteTime.Date -ne $todayDate
+            $_.LastWriteTime -lt $monthStart
         } | Select-Object -First 16)) {
             $candidate = Read-DeepSeekLatestUsageFile -File $file
             if ($candidate) {
@@ -706,6 +824,8 @@ function ConvertTo-DeepSeekSnapshot {
             '密钥 ••••{0} · {1}' -f $KeyHint, $CredentialSource
         } else { '尚未配置 API Key' }
         TodayTokens = $LocalUsage.TodayTokens
+        MonthlyTokens = $LocalUsage.MonthlyTokens
+        MonthlyEstimatedCostCny = $LocalUsage.MonthlyEstimatedCostCny
         LastTurnTokens = $LocalUsage.LastTurnTokens
         InputTokens = $LocalUsage.LastInputTokens
         OutputTokens = $LocalUsage.LastOutputTokens
@@ -744,6 +864,8 @@ function Get-DeepSeekUnavailableSnapshot {
         AccountName = 'DeepSeek API'
         AccountEmail = '尚未配置 API Key'
         TodayTokens = 0
+        MonthlyTokens = 0
+        MonthlyEstimatedCostCny = 0
         LastTurnTokens = 0
         InputTokens = 0
         OutputTokens = 0
@@ -768,6 +890,8 @@ function Get-DeepSeekDemoSnapshot {
     $configuration = [pscustomobject]@{ Budget = 120.0 }
     $usage = [pscustomobject]@{
         TodayTokens = 382640
+        MonthlyTokens = 2846520
+        MonthlyEstimatedCostCny = 2.36
         LastTurnTokens = 174201
         LastInputTokens = 173880
         LastOutputTokens = 321
@@ -973,26 +1097,54 @@ if ($CheckDeepSeekData) {
         [pscustomobject]@{
             MessageId = 'duplicate-message'
             Timestamp = $testTimestamp.AddSeconds(-1)
+            Model = 'deepseek-v4-pro'
             InputTokens = 10
             OutputTokens = 2
             CachedTokens = 20
+            CacheWriteTokens = 0
             TotalTokens = 32
         },
         [pscustomobject]@{
             MessageId = 'duplicate-message'
             Timestamp = $testTimestamp
+            Model = 'deepseek-v4-pro'
             InputTokens = 12
             OutputTokens = 3
             CachedTokens = 25
+            CacheWriteTokens = 0
             TotalTokens = 40
         }
     )
     $dedupedUsage = Measure-DeepSeekUsageEvents -Events $duplicateEvents
+    $parserEvent = ConvertFrom-DeepSeekUsageLine -Line (
+        '{"message":{"id":"parser-message","model":"deepseek-v4-pro","usage":' +
+        '{"input_tokens":100,"cache_creation_input_tokens":20,' +
+        '"cache_read_input_tokens":300,"output_tokens":4}},' +
+        '"uuid":"parser-uuid","timestamp":"' +
+        $testTimestamp.ToString('o', [Globalization.CultureInfo]::InvariantCulture) +
+        '"}'
+    )
+    $pricingUsage = Measure-DeepSeekUsageEvents -Events @(
+        [pscustomobject]@{
+            MessageId = 'pricing-message'
+            Timestamp = $testTimestamp
+            Model = 'deepseek-v4-pro'
+            InputTokens = 1000000
+            OutputTokens = 1000000
+            CachedTokens = 1000000
+            CacheWriteTokens = 0
+            TotalTokens = 3000000
+        }
+    )
     $checkSnapshot | Add-Member -NotePropertyName SecureStorageRoundTrip -NotePropertyValue (
         $roundTripSecret -eq $testSecret -and $protectedSecret -notmatch [regex]::Escape($testSecret)
     )
     $checkSnapshot | Add-Member -NotePropertyName DedupedUsageTokens -NotePropertyValue $dedupedUsage.TotalTokens
     $checkSnapshot | Add-Member -NotePropertyName DedupedUsageMessages -NotePropertyValue $dedupedUsage.UniqueMessages
+    $checkSnapshot | Add-Member -NotePropertyName ParserUsageTokens -NotePropertyValue $parserEvent.TotalTokens
+    $checkSnapshot | Add-Member -NotePropertyName ParserUsageModel -NotePropertyValue $parserEvent.Model
+    $checkSnapshot | Add-Member -NotePropertyName PricingUsageTokens -NotePropertyValue $pricingUsage.TotalTokens
+    $checkSnapshot | Add-Member -NotePropertyName PricingUsageCostCny -NotePropertyValue $pricingUsage.EstimatedCostCny
     $checkSnapshot | ConvertTo-Json -Depth 5
     exit 0
 }
@@ -1857,9 +2009,14 @@ function Update-UsageView {
         $MetricOneTitle.Text = '当前余额'
         $MetricTwoTitle.Text = '今日 TOKEN'
         $MetricTwoHint.Text = 'Claude Code 本机累计'
-        $MetricThreeTitle.Text = '本轮 TOKEN'
-        $ContextText.Text = $Snapshot.Model
-        $MetricFourTitle.Text = '缓存命中'
+        $MetricThreeTitle.Text = '本月累计花费'
+        $LastTurnTokens.Text = Format-CurrencyAmount `
+            -Amount $Snapshot.MonthlyEstimatedCostCny `
+            -Currency 'CNY'
+        $ContextText.Text = '本机日志估算'
+        $MetricFourTitle.Text = '本月累计 TOKEN'
+        $CacheHit.Text = Format-CompactNumber $Snapshot.MonthlyTokens
+        $CacheTokenText.Text = '当月本机去重累计'
         $BreakdownTitle.Text = '余额构成'
         $SecondaryMetricTitle.Text = '预算基准'
         $TokenBreakdown.Text = '赠金 {0}  ·  充值 {1}' -f `
@@ -1909,7 +2066,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('CodexMarginFloat/1.1')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('CodexMarginFloat/1.1.1')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -2440,6 +2597,8 @@ if ($CheckTransitions) {
     $deepSeekLabel = $WindowLabel.Text
     $deepSeekBalanceText = $DetailsResetDate.Text
     $deepSeekMetricTitle = $MetricOneTitle.Text
+    $deepSeekMonthlyCostValue = $LastTurnTokens.Text
+    $deepSeekMonthlyTokenValue = $CacheHit.Text
     $deepSeekProgressRemaining = $RemainingProgressColumn.Width.Value
     $deepSeekProgressUsed = $UsedProgressColumn.Width.Value
     $deepSeekCheckSnapshot.HasProgress = $false
@@ -2493,6 +2652,8 @@ if ($CheckTransitions) {
         DeepSeekLabel = $deepSeekLabel
         DeepSeekBalanceText = $deepSeekBalanceText
         DeepSeekMetricTitle = $deepSeekMetricTitle
+        DeepSeekMonthlyCostValue = $deepSeekMonthlyCostValue
+        DeepSeekMonthlyTokenValue = $deepSeekMonthlyTokenValue
         DeepSeekProgressRemaining = $deepSeekProgressRemaining
         DeepSeekProgressUsed = $deepSeekProgressUsed
         DeepSeekBalanceCompactValue = $deepSeekBalanceCompactValue

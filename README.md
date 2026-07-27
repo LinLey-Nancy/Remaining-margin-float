@@ -30,7 +30,8 @@
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
 - 本地解析 Codex 会话中的余量、重置时间和 Token 数据
 - 读取 DeepSeek 官方余额、赠金和充值余额
-- 从 Claude Code 本地日志去重统计 DeepSeek 今日/本轮 Token
+- 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token
+- 按 DeepSeek V4 官方人民币价格估算本机本月累计花费
 - DeepSeek API Key 使用 Windows DPAPI 当前用户加密
 - 位置、置顶偏好和当前数据源自动保存在本机
 
@@ -95,6 +96,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\CodexMarginFloat\deepseek.json`。应用不读取 CC Switch 密钥或数据库。
 
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
+
+DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命中、缓存未命中和输出 Token 按当前官方人民币价格估算，仅代表本机可见调用，不等同于 DeepSeek 账户账单。账户级精确用量请在 DeepSeek Platform 的 Usage 页面按月导出。
 
 ## 自检
 

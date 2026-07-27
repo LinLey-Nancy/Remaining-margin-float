@@ -90,12 +90,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
 | 赠金余额 | `granted_balance` |
 | 充值余额 | `topped_up_balance` |
 | 可用状态 | `is_available` |
-| 今日 / 本轮 Token | Claude Code JSONL 中 DeepSeek `message.usage` |
+| 今日 Token | Claude Code JSONL 中 DeepSeek `message.usage` |
 | 缓存 Token | `cache_read_input_tokens` |
 | 当前模型 | DeepSeek 消息的 `model` |
 | 预算百分比 | 当前余额 ÷ 用户设置的预算基准，限制在 0–100 |
+| 本月累计 Token | 当月 Claude Code JSONL 中按 `message.id` 去重后的 Token |
+| 本月累计花费 | 按模型、缓存命中、缓存未命中和输出 Token 估算的人民币花费 |
 
 DeepSeek API Key 使用 `Authorization: Bearer` 发送到固定官方地址。网络读取异步进行，8 秒超时；401、429 和其他 HTTP 错误会显示可恢复提示。
+
+本月花费只覆盖本机 Claude Code 日志，不等同于账户级账单。精确账单需要从 DeepSeek Platform 的 Usage 页面导出。
 
 ## 设置
 

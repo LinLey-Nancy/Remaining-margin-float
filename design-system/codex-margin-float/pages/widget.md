@@ -47,6 +47,8 @@ system. The widget must remain dependency-free and must not download fonts.
 - Missing Codex fields must say `未提供`; never synthesize quota data
 - DeepSeek configuration uses a labeled native dialog, inline validation, and
   a clear cancel route. API keys must never be displayed in full.
+- DeepSeek monthly spend must be labeled as a local estimate; never present
+  locally reconstructed token cost as the authoritative account bill.
 - Structural icons use WPF vector paths
 - Exclude the floating surface from Win+Tab / Alt+Tab; expose a native Windows
   notification-area icon with labeled menu actions instead

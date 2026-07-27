@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构。
 
+## [1.1.1] - 2026-07-27
+
+### Changed
+
+- DeepSeek 详情将“本轮 TOKEN”和“缓存命中”替换为本月累计花费与本月累计 Token
+- 本月花费按 Claude Code 本机日志和 DeepSeek V4 官方人民币价格估算
+- 月度日志扫描改用编译型字段提取器，并继续按文件缓存，降低首次统计耗时
+
 ## [1.1.0] - 2026-07-27
 
 ### Added

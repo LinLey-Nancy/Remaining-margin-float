@@ -19,7 +19,9 @@ Codex Provider 不发起网络请求。DeepSeek Provider 使用固定官方地�
 
 切换回 Codex 时会取消未完成的 DeepSeek 请求，再更新 Provider 状态和界面，防止旧请求覆盖新数据源。
 
-Claude Code 日志在单文件解析和当日全局汇总两层按 `message.id` 去重，因为同一 DeepSeek 响应可能在一个或多个 JSONL 中重复出现。解析结果使用文件修改时间和长度缓存。
+Claude Code 日志在单文件解析和统计周期全局汇总两层按 `message.id` 去重，因为同一 DeepSeek 响应可能在一个或多个 JSONL 中重复出现。完整文件由编译型字段提取器读取，解析结果再按文件修改时间和长度缓存在进程内。
+
+本月累计花费使用日志中的缓存命中、缓存未命中和输出 Token，按 DeepSeek V4 当前官方人民币单价估算。它是本机视图，不是账户账单；价格变化或其他设备/API Key 的调用不会自动反映在历史估算中。
 
 ## 为什么使用 PowerShell 和 WPF
 

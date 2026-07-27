@@ -57,7 +57,9 @@ if (
     $deepSeek.TotalBalance -ne 86.4 -or
     $deepSeek.GrantedBalance -ne 10 -or
     $deepSeek.ToppedUpBalance -ne 76.4 -or
-    $deepSeek.RemainingPercent -ne 72
+    $deepSeek.RemainingPercent -ne 72 -or
+    $deepSeek.MonthlyTokens -ne 2846520 -or
+    $deepSeek.MonthlyEstimatedCostCny -ne 2.36
 ) {
     throw "DeepSeek balance mapping is incorrect: $deepSeekJson"
 }
@@ -67,6 +69,12 @@ if (-not $deepSeek.SecureStorageRoundTrip) {
 if ($deepSeek.DedupedUsageTokens -ne 40 -or $deepSeek.DedupedUsageMessages -ne 1) {
     throw "DeepSeek usage events were not deduplicated across files: $deepSeekJson"
 }
+if ($deepSeek.ParserUsageTokens -ne 424 -or $deepSeek.ParserUsageModel -ne 'deepseek-v4-pro') {
+    throw "DeepSeek optimized log parser is incorrect: $deepSeekJson"
+}
+if ($deepSeek.PricingUsageTokens -ne 3000000 -or [Math]::Abs($deepSeek.PricingUsageCostCny - 9.025) -gt 0.000001) {
+    throw "DeepSeek monthly cost estimate is incorrect: $deepSeekJson"
+}
 
 $deepSeekUsageJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appScript -CheckDeepSeekUsage | Out-String
 if ($LASTEXITCODE -ne 0) {
@@ -75,6 +83,8 @@ if ($LASTEXITCODE -ne 0) {
 $deepSeekUsage = $deepSeekUsageJson | ConvertFrom-Json
 if (
     $deepSeekUsage.TodayTokens -lt 0 -or
+    $deepSeekUsage.MonthlyTokens -lt 0 -or
+    $deepSeekUsage.MonthlyEstimatedCostCny -lt 0 -or
     $deepSeekUsage.LastTurnTokens -lt 0 -or
     $deepSeekUsage.CacheHitPercent -lt 0 -or
     $deepSeekUsage.CacheHitPercent -gt 100
@@ -124,7 +134,9 @@ if (
     $transition.DeepSeekBalanceCompactValue -ne '86.4' -or
     $transition.DeepSeekBalanceCompactSuffix -ne '' -or
     $transition.DeepSeekNoBudgetProgressRemaining -ne 0 -or
-    $transition.DeepSeekNoBudgetProgressUsed -ne 100
+    $transition.DeepSeekNoBudgetProgressUsed -ne 100 -or
+    $transition.DeepSeekMonthlyCostValue -notmatch '2\.36$' -or
+    $transition.DeepSeekMonthlyTokenValue -ne '2.8M'
 ) {
     throw "DeepSeek view mapping is incorrect: $transitionJson"
 }
