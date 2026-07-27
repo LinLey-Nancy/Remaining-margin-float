@@ -1,4 +1,4 @@
-# Codex Margin Float
+# Remaining Margin Float
 
 一个轻量、浅色、可拖动的 Windows Codex / DeepSeek 余量悬浮窗。紧凑状态只显示当前数据源最重要的数字，点击后展开账户、余额或额度、Token 统计和数据采样时间。
 
@@ -7,10 +7,11 @@
 ## 功能
 
 - Codex 与 DeepSeek 双数据源，可从悬浮窗或通知区域菜单切换
-- 108×100 紧凑悬浮窗：Codex 显示周期余量，DeepSeek 显示余额或预算百分比
+- 96×88 紧凑悬浮窗：Codex 显示周期余量，DeepSeek 显示余额或预算百分比
+- 余量状态使用低饱和连续色阶：从充足时的灰绿，平滑过渡到中段的香槟褐和偏低时的陶土红
 - 双色进度条：鼠尾草绿表示剩余，暖米灰表示已使用
 - 详情进度条上方右对齐显示下次重置日期与倒计时
-- Codex 详情使用已用额度及今日汇总，不展示并行任务下易失真的“本轮”指标
+- Codex 详情使用已用额度、今日 Token、今日缓存和今日输出，不展示并行任务下易失真的“本轮”指标
 - 点击展开 370×500 详情，收起后恢复原始位置
 - 详情展开后点击桌面或切换到其他应用会自动收起
 - 展开时自动避让当前显示器边界
@@ -37,19 +38,19 @@
 
 ## 快速开始
 
-1. 从 GitHub Release 下载 `Codex-Margin-Float-v*.exe`，或克隆源码。
-2. Release 用户直接运行 EXE；源码用户双击 `Start-CodexMarginFloat.cmd`。
+1. 从 GitHub Release 下载 `Remaining-Margin-Float-v*.exe`，或克隆源码。
+2. Release 用户直接运行 EXE；源码用户双击 `Start-RemainingMarginFloat.cmd`。
 3. 点击悬浮窗查看详情，按住左键拖动位置。
 
 也可以从 PowerShell 启动：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFloat.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\RemainingMarginFloat.ps1
 ```
 
 重复执行启动命令不会创建第二个窗口，而是将正在运行的窗口带到前台。
 
-`Start-CodexMarginFloat.cmd` 只负责创建独立、隐藏的 PowerShell 进程，随即自行退出；悬浮程序不依赖启动窗口存活，程序入口缺失时会显示明确提示。
+`Start-RemainingMarginFloat.cmd` 只负责创建独立、隐藏的 PowerShell 进程，随即自行退出；悬浮程序不依赖启动窗口存活，程序入口缺失时会显示明确提示。
 
 ## 打包
 
@@ -59,16 +60,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
 ```
 
-脚本会在 `dist` 中生成无控制台窗口、带版本信息和应用图标的便携 EXE，以及对应的 SHA-256 校验文件。主 PowerShell 脚本内嵌于 EXE，运行时释放到 `%LOCALAPPDATA%\CodexMarginFloat\app\<版本>`；无需安装第三方模块。
+脚本会在 `dist` 中生成无控制台窗口、带版本信息和应用图标的便携 EXE，以及对应的 SHA-256 校验文件。主 PowerShell 脚本内嵌于 EXE，运行时释放到 `%LOCALAPPDATA%\RemainingMarginFloat\app\<版本>`；无需安装第三方模块。
 
 发布文件示例：
 
 ```text
-Codex-Margin-Float-v1.0.0.exe
-Codex-Margin-Float-v1.0.0.exe.sha256
+Remaining-Margin-Float-v1.1.0.exe
+Remaining-Margin-Float-v1.1.0.exe.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.0.0`）后，`Windows Release` 工作流会在 Windows Runner 上构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
+推送与 `VERSION` 一致的标签（例如 `v1.1.0`）后，`Windows Release` 工作流会在 Windows Runner 上构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
 
 当前 EXE 未进行商业代码签名。Windows SmartScreen 可能在首次下载时显示来源提示；正式广泛分发前建议配置受信任的代码签名证书。
 
@@ -107,7 +108,7 @@ Codex-Margin-Float-v1.0.0.exe.sha256
 
 Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
-DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\CodexMarginFloat\deepseek.json`。应用不读取 CC Switch 密钥或数据库。
+DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。首次运行新命名版本时会从旧的 `%LOCALAPPDATA%\CodexMarginFloat` 复制现有配置。应用不读取 CC Switch 密钥或数据库。
 
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
@@ -141,7 +142,7 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 
 ### Windows 阻止脚本执行
 
-推荐使用仓库中的 `Start-CodexMarginFloat.cmd`。它只为本次进程设置 `ExecutionPolicy Bypass`，不会修改系统执行策略。
+推荐使用仓库中的 `Start-RemainingMarginFloat.cmd`。它只为本次进程设置 `ExecutionPolicy Bypass`，不会修改系统执行策略。
 
 ## 许可证
 

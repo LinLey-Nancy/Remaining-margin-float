@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $versionFile = Join-Path $projectRoot 'VERSION'
-$appScript = Join-Path $projectRoot 'src\CodexMarginFloat.ps1'
+$appScript = Join-Path $projectRoot 'src\RemainingMarginFloat.ps1'
 $version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
@@ -18,13 +18,13 @@ if (-not (Test-Path -LiteralPath $appScript -PathType Leaf)) {
     throw "Application script is missing: $appScript"
 }
 
-$productName = "Codex-Margin-Float-v$version"
+$productName = "Remaining-Margin-Float-v$version"
 $executablePath = Join-Path $outputRoot "$productName.exe"
 $checksumPath = "$executablePath.sha256"
 $legacyArchivePath = Join-Path $outputRoot "$productName.zip"
 $legacyArchiveChecksumPath = "$legacyArchivePath.sha256"
 $buildRoot = Join-Path $outputRoot ".codex-margin-float-build-$PID"
-$iconPath = Join-Path $buildRoot 'CodexMarginFloat.ico'
+$iconPath = Join-Path $buildRoot 'RemainingMarginFloat.ico'
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 
@@ -58,7 +58,7 @@ try {
     try {
         $graphics.FillEllipse($circleBrush, 1, 1, 30, 30)
         $iconRectangle = New-Object Drawing.RectangleF 1, 0, 30, 31
-        $graphics.DrawString('C', $font, $textBrush, $iconRectangle, $textFormat)
+        $graphics.DrawString('R', $font, $textBrush, $iconRectangle, $textFormat)
         $iconHandle = $bitmap.GetHicon()
         $icon = [Drawing.Icon]::FromHandle($iconHandle)
         $iconStream = [IO.File]::Create($iconPath)
@@ -93,9 +93,9 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Windows.Forms;
 
-[assembly: AssemblyTitle("Codex Margin Float")]
+[assembly: AssemblyTitle("Remaining Margin Float")]
 [assembly: AssemblyDescription("Lightweight Codex and DeepSeek usage widget")]
-[assembly: AssemblyProduct("Codex Margin Float")]
+[assembly: AssemblyProduct("Remaining Margin Float")]
 [assembly: AssemblyCompany("LinLey-Nancy")]
 [assembly: AssemblyCopyright("Copyright (c) 2026")]
 [assembly: AssemblyVersion("__ASSEMBLY_VERSION__")]
@@ -107,9 +107,9 @@ internal static class Launcher
     private const string Version = "__VERSION__";
     private const string ScriptSha256 = "__SCRIPT_SHA256__";
     private const string EmbeddedScript = "__SCRIPT_BASE64__";
-    private const string AppMutexName = @"Local\CodexMarginFloat.Singleton";
-    private const string ActivationEventName = @"Local\CodexMarginFloat.Activate";
-    private const string ExtractMutexName = @"Local\CodexMarginFloat.LauncherExtract";
+    private const string AppMutexName = @"Local\RemainingMarginFloat.Singleton";
+    private const string ActivationEventName = @"Local\RemainingMarginFloat.Activate";
+    private const string ExtractMutexName = @"Local\RemainingMarginFloat.LauncherExtract";
 
     [STAThread]
     private static int Main()
@@ -148,8 +148,8 @@ internal static class Launcher
         catch (Exception exception)
         {
             MessageBox.Show(
-                "Codex Margin Float failed to start.\r\n\r\n" + exception.Message,
-                "Codex Margin Float",
+                "Remaining Margin Float failed to start.\r\n\r\n" + exception.Message,
+                "Remaining Margin Float",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             );
@@ -188,11 +188,11 @@ internal static class Launcher
     {
         string applicationRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CodexMarginFloat",
+            "RemainingMarginFloat",
             "app",
             Version
         );
-        string scriptPath = Path.Combine(applicationRoot, "CodexMarginFloat.ps1");
+        string scriptPath = Path.Combine(applicationRoot, "RemainingMarginFloat.ps1");
         byte[] expectedBytes = Convert.FromBase64String(EmbeddedScript);
 
         using (Mutex extractMutex = new Mutex(false, ExtractMutexName))

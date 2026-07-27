@@ -33,7 +33,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codex-Margin-Float-${{ github.ref_name }}
+          name: Remaining-Margin-Float-${{ github.ref_name }}
           path: |
             dist/*.exe
             dist/*.sha256
@@ -46,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
-          $executable = ".\dist\Codex-Margin-Float-v$version.exe"
+          $executable = ".\dist\Remaining-Margin-Float-v$version.exe"
           $checksum = "$executable.sha256"
           gh release view $env:GITHUB_REF_NAME *> $null
           if ($LASTEXITCODE -eq 0) {
@@ -54,6 +54,6 @@ jobs:
           }
           else {
             gh release create $env:GITHUB_REF_NAME $executable $checksum `
-              --title "Codex Margin Float $env:GITHUB_REF_NAME" `
+              --title "Remaining Margin Float $env:GITHUB_REF_NAME" `
               --generate-notes
           }
