@@ -1,0 +1,59 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: powershell
+        run: |
+          $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version."
+          }
+
+      - name: Build release executable
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Margin-Float-${{ github.ref_name }}
+          path: |
+            dist/*.exe
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        if: github.ref_type == 'tag'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
+          $executable = ".\dist\Codex-Margin-Float-v$version.exe"
+          $checksum = "$executable.sha256"
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $executable $checksum --clobber
+          }
+          else {
+            gh release create $env:GITHUB_REF_NAME $executable $checksum `
+              --title "Codex Margin Float $env:GITHUB_REF_NAME" `
+              --generate-notes
+          }

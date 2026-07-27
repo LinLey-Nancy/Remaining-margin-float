@@ -21,3 +21,7 @@ jobs:
       - name: Run PowerShell smoke tests
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
+
+      - name: Build release executable
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1 -SkipTests
