@@ -4,18 +4,6 @@
 
 项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式只读取本机会话快照；DeepSeek 模式只向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
 
-<p align="center">
-  <img src="preview-compact.png" width="108" alt="紧凑状态">
-  &nbsp;&nbsp;&nbsp;
-  <img src="preview-expanded.png" width="370" alt="详情状态">
-</p>
-
-<p align="center">
-  <img src="preview-deepseek-compact.png" width="108" alt="DeepSeek 紧凑状态">
-  &nbsp;&nbsp;&nbsp;
-  <img src="preview-deepseek-expanded.png" width="370" alt="DeepSeek 详情状态">
-</p>
-
 ## 功能
 
 - Codex 与 DeepSeek 双数据源，可从悬浮窗或通知区域菜单切换
@@ -71,16 +59,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\CodexMarginFl
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
 ```
 
-脚本会先运行 Smoke Test，然后在 `dist` 中生成无控制台窗口、带版本信息和应用图标的便携 EXE，以及对应的 SHA-256 校验文件。主 PowerShell 脚本内嵌于 EXE，运行时释放到 `%LOCALAPPDATA%\CodexMarginFloat\app\<版本>`；无需安装第三方模块。若已经单独完成测试，可以添加 `-SkipTests`。
+脚本会在 `dist` 中生成无控制台窗口、带版本信息和应用图标的便携 EXE，以及对应的 SHA-256 校验文件。主 PowerShell 脚本内嵌于 EXE，运行时释放到 `%LOCALAPPDATA%\CodexMarginFloat\app\<版本>`；无需安装第三方模块。
 
 发布文件示例：
 
 ```text
-Codex-Margin-Float-v1.1.2.exe
-Codex-Margin-Float-v1.1.2.exe.sha256
+Codex-Margin-Float-v1.0.0.exe
+Codex-Margin-Float-v1.0.0.exe.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.1.2`）后，`Windows Release` 工作流会在 Windows Runner 上重新测试并构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
+推送与 `VERSION` 一致的标签（例如 `v1.0.0`）后，`Windows Release` 工作流会在 Windows Runner 上构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
 
 当前 EXE 未进行商业代码签名。Windows SmartScreen 可能在首次下载时显示来源提示；正式广泛分发前建议配置受信任的代码签名证书。
 
@@ -90,14 +78,6 @@ Codex-Margin-Float-v1.1.2.exe.sha256
 2. 首次切换会自动打开设置窗口；切换成功后，右键菜单才显示“DeepSeek 设置…”。
 3. 输入 DeepSeek API Key。
 4. 可选填写“预算基准”；设置后小窗显示当前余额相对该金额的百分比，留空则直接显示金额。
-
-<p align="center">
-  <img src="preview-deepseek-settings-unconfigured.png" width="430" alt="DeepSeek 首次配置">
-</p>
-
-<p align="center">
-  <img src="preview-deepseek-settings-configured.png" width="430" alt="DeepSeek 已配置状态">
-</p>
 
 也可以通过 `DEEPSEEK_API_KEY` 环境变量提供密钥；环境变量优先于本地加密配置。DeepSeek 模式不依赖 CC Switch。
 
@@ -132,33 +112,6 @@ DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
 DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命中、缓存未命中和输出 Token 按当前官方人民币价格估算，仅代表本机可见调用，不等同于 DeepSeek 账户账单。账户级精确用量请在 DeepSeek Platform 的 Usage 页面按月导出。
-
-## 自检
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Smoke.ps1
-```
-
-自检覆盖：
-
-- PowerShell 语法
-- Codex / DeepSeek 数据结构与数值范围
-- 并行 Codex 会话的事件时间排序与不完整限额过滤
-- DeepSeek DPAPI 加解密与 Claude Code 日志统计
-- 剩余/已使用进度分段与 0–100 边界
-- `Win+Tab` / `Alt+Tab` 隐藏状态和 32×32 通知区域图标
-- 屏幕边界避让
-- 普通展开与收起
-- 详情失焦自动收起并恢复原始位置
-- 收起过程中重新展开
-- 尺寸和原始位置恢复
-
-## 文档
-
-- [参考手册](docs/REFERENCE.md)：命令行参数、数据字段、设置路径与窗口常量
-- [架构说明](docs/ARCHITECTURE.md)：数据流、单实例机制和窗口状态设计
-- [贡献指南](CONTRIBUTING.md)：开发、测试和预览流程
-- [变更记录](CHANGELOG.md)：版本历史
 
 ## 常见问题
 

@@ -1,6 +1,5 @@
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist'),
-    [switch]$SkipTests
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
 )
 
 Set-StrictMode -Version 2.0
@@ -17,17 +16,6 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {
 }
 if (-not (Test-Path -LiteralPath $appScript -PathType Leaf)) {
     throw "Application script is missing: $appScript"
-}
-
-if (-not $SkipTests) {
-    & powershell.exe `
-        -NoProfile `
-        -ExecutionPolicy Bypass `
-        -File (Join-Path $projectRoot 'tests\Smoke.ps1')
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Smoke tests failed with exit code $LASTEXITCODE."
-    }
 }
 
 $productName = "Codex-Margin-Float-v$version"

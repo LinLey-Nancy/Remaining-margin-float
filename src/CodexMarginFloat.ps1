@@ -7,12 +7,7 @@
     [switch]$CheckTransitions,
     [switch]$Demo,
     [ValidateSet('codex', 'deepseek')]
-    [string]$DemoProvider = 'codex',
-    [ValidateSet('', 'compact', 'expanded')]
-    [string]$RenderPreview = '',
-    [ValidateSet('', 'unconfigured', 'configured')]
-    [string]$RenderDeepSeekSettingsPreview = '',
-    [string]$PreviewPath = ''
+    [string]$DemoProvider = 'codex'
 )
 
 Set-StrictMode -Version 2.0
@@ -24,9 +19,7 @@ $isDiagnosticRun = (
     $CheckDeepSeekUsage -or
     $CheckCodexRateLimitSelection -or
     $CheckPlacement -or
-    $CheckTransitions -or
-    [bool]$RenderDeepSeekSettingsPreview -or
-    [bool]$RenderPreview
+    $CheckTransitions
 )
 if (-not $isDiagnosticRun) {
     $script:ActivationEvent = New-Object System.Threading.EventWaitHandle(
@@ -2523,26 +2516,8 @@ function Set-ActiveProvider {
 }
 
 function Show-DeepSeekSettings {
-    param(
-        [ValidateSet('', 'unconfigured', 'configured')]
-        [string]$PreviewMode = '',
-        [string]$OutputPath = ''
-    )
-
-    if ($PreviewMode) {
-        $configuration = [pscustomobject]@{
-            Budget = if ($PreviewMode -eq 'configured') { 120.0 } else { 0.0 }
-        }
-        $credential = [pscustomobject]@{
-            ApiKey = if ($PreviewMode -eq 'configured') { 'preview-key-not-real' } else { '' }
-            Hint = if ($PreviewMode -eq 'configured') { '7K9D' } else { '' }
-            Source = if ($PreviewMode -eq 'configured') { '本机加密配置' } else { '未配置' }
-        }
-    }
-    else {
-        $configuration = Get-DeepSeekConfiguration
-        $credential = Get-DeepSeekCredential
-    }
+    $configuration = Get-DeepSeekConfiguration
+    $credential = Get-DeepSeekCredential
     [xml]$dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -2600,10 +2575,7 @@ function Show-DeepSeekSettings {
 '@
     $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
     $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
-    if (-not $PreviewMode) {
-        $dialog.Owner = $window
-    }
-    $settingsRoot = $dialog.FindName('SettingsRoot')
+    $dialog.Owner = $window
     $apiKeyBox = $dialog.FindName('ApiKeyBox')
     $keyHelp = $dialog.FindName('KeyHelp')
     $removeKeyBox = $dialog.FindName('RemoveKeyBox')
@@ -2682,40 +2654,6 @@ function Show-DeepSeekSettings {
         }
     })
 
-    if ($PreviewMode) {
-        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            throw '生成 DeepSeek 设置预览时需要提供 PreviewPath。'
-        }
-        $previewWidth = 430
-        $previewHeight = 350
-        $previewSize = New-Object Windows.Size($previewWidth, $previewHeight)
-        $settingsRoot.Measure($previewSize)
-        $settingsRoot.Arrange((New-Object Windows.Rect(0, 0, $previewWidth, $previewHeight)))
-        $settingsRoot.UpdateLayout()
-        $renderBitmap = New-Object Windows.Media.Imaging.RenderTargetBitmap(
-            $previewWidth,
-            $previewHeight,
-            96,
-            96,
-            [Windows.Media.PixelFormats]::Pbgra32
-        )
-        $renderBitmap.Render($settingsRoot)
-        $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder
-        $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($renderBitmap))
-        $fileStream = [System.IO.File]::Open(
-            $OutputPath,
-            [System.IO.FileMode]::Create
-        )
-        try {
-            $encoder.Save($fileStream)
-        }
-        finally {
-            $fileStream.Dispose()
-        }
-        Write-Output ([System.IO.Path]::GetFullPath($OutputPath))
-        return $true
-    }
-
     $saved = $dialog.ShowDialog()
     if ($saved) {
         $script:LastDeepSeekSnapshot = $null
@@ -2723,13 +2661,6 @@ function Show-DeepSeekSettings {
         return $true
     }
     return $false
-}
-
-if ($RenderDeepSeekSettingsPreview) {
-    [void](Show-DeepSeekSettings `
-        -PreviewMode $RenderDeepSeekSettingsPreview `
-        -OutputPath $PreviewPath)
-    exit 0
 }
 
 function Invoke-Refresh {
@@ -3075,45 +3006,6 @@ if ($CheckTransitions) {
     }
     $window.Close()
     $result | ConvertTo-Json
-    exit 0
-}
-
-if ($RenderPreview) {
-    if ([string]::IsNullOrWhiteSpace($PreviewPath)) {
-        $PreviewPath = Join-Path (Get-Location) ('preview-{0}.png' -f $RenderPreview)
-    }
-    $previewExpanded = $RenderPreview -eq 'expanded'
-    Set-ExpandedState -Expanded $previewExpanded -Immediate
-    Invoke-Refresh
-
-    $previewHeight = if ($previewExpanded) { $script:ExpandedHeight } else { $script:CompactHeight }
-    $previewSize = New-Object Windows.Size($window.Width, $previewHeight)
-    $WindowRoot.Measure($previewSize)
-    $WindowRoot.Arrange((New-Object Windows.Rect(0, 0, $window.Width, $previewHeight)))
-    $WindowRoot.UpdateLayout()
-
-    $bitmap = New-Object Windows.Media.Imaging.RenderTargetBitmap(
-        [int]$window.Width,
-        [int]$previewHeight,
-        96,
-        96,
-        [Windows.Media.PixelFormats]::Pbgra32
-    )
-    $bitmap.Render($WindowRoot)
-    $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder
-    $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
-    $outputDirectory = Split-Path -Parent $PreviewPath
-    if ($outputDirectory -and -not (Test-Path -LiteralPath $outputDirectory)) {
-        New-Item -Path $outputDirectory -ItemType Directory -Force | Out-Null
-    }
-    $fileStream = [System.IO.File]::Open($PreviewPath, [System.IO.FileMode]::Create)
-    try {
-        $encoder.Save($fileStream)
-    }
-    finally {
-        $fileStream.Dispose()
-    }
-    Write-Output ([System.IO.Path]::GetFullPath($PreviewPath))
     exit 0
 }
 
