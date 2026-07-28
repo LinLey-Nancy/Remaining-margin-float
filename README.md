@@ -2,7 +2,7 @@
 
 一个轻量、浅色、可拖动的 Windows Codex / DeepSeek 余量悬浮窗。紧凑状态只显示当前数据源最重要的数字，点击后展开账户、余额或额度、Token 统计和数据采样时间。
 
-项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式从 Codex 官方账户用量接口读取周期额度，并从本机会话汇总 Token；DeepSeek 模式向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
+项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式优先从官方账户用量接口读取周期额度；接口不可访问时，自动改用本地 Codex 会话中的最近余量快照，同时从本机会话汇总 Token。DeepSeek 模式向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
 
 ## 功能
 
@@ -23,8 +23,8 @@
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
 - 托盘与悬浮窗右键菜单可同步开关贴边隐藏
 - 可选择计划任务、注册表或启动文件夹三种开机启动方式
-- 从 Codex 官方账户用量接口读取主周期余量和重置时间，本地会话仅用于 Token 汇总
-- 官方用量暂不可用时显示等待状态，不再用模型附加额度或旧会话快照推测账户主额度
+- Codex 余量采用双通道：官方账户用量接口优先，网络不可用时自动读取本地会话中的最近有效余量快照
+- 官方接口在后台异步刷新，不会阻塞悬浮窗；两个通道均无数据时显示“余量未知”，不再误显示为 0%
 - 读取 DeepSeek 官方余额、赠金和充值余额
 - 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token
 - 按 DeepSeek V4 官方人民币价格估算本机本月累计花费
@@ -111,7 +111,7 @@ Remaining-Margin-Float-v1.2.0.exe.sha256
 - `%USERPROFILE%\.codex\auth.json`
 - `%USERPROFILE%\.claude\projects\**\*.jsonl`
 
-会话文件只用于汇总 Codex Token，不再用于推测账户主额度。认证文件只在内存中读取账户标识、访问令牌以及 ID Token 的显示名称和邮箱声明；账户标识和访问令牌仅用于请求 `https://chatgpt.com/backend-api/wham/usage`，不会写入日志或界面，刷新令牌不会被应用使用。
+会话文件用于汇总 Codex Token，也在官方接口不可访问时提供最近一次有效的周期余量快照。该快照来自本机已有 Codex 会话，只代表最近一次本地可见状态；官方接口恢复后会自动覆盖本地快照。认证文件只在内存中读取账户标识、访问令牌以及 ID Token 的显示名称和邮箱声明；账户标识和访问令牌仅用于请求 `https://chatgpt.com/backend-api/wham/usage`，不会写入日志或界面，刷新令牌不会被应用使用。
 
 Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
@@ -125,7 +125,7 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 
 ### 显示“等待数据”
 
-确认 Codex 已登录并能连接 ChatGPT，然后点击“立即刷新”。Token 统计还需要至少运行过一次 Codex 任务。
+应用会先读取本地 Codex 会话，再在后台尝试连接官方用量接口。若显示“余量未知”，请确认本机至少运行过一次包含余量信息的 Codex 任务；若希望获得最新官方数据，还需确认 Codex 已登录并且当前网络或代理可以访问 ChatGPT。
 
 ### DeepSeek 显示“等待配置”
 

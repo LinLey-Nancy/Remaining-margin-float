@@ -212,6 +212,8 @@ $script:DeepSeekUsageCache = @{}
 $script:DeepSeekLatestUsageCache = @{}
 $script:CodexHttpClient = $null
 $script:CodexOfficialUsageCache = $null
+$script:CodexRequest = $null
+$script:CodexRequestTask = $null
 $script:DeepSeekHttpClient = $null
 $script:DeepSeekRequest = $null
 $script:DeepSeekRequestTask = $null
@@ -396,6 +398,54 @@ function Get-CodexHttpClient {
     return $script:CodexHttpClient
 }
 
+function New-CodexOfficialUsageRequest {
+    $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
+    if (-not (Test-Path -LiteralPath $authPath)) {
+        throw '未找到 Codex 登录信息。'
+    }
+
+    $auth = Get-Content -LiteralPath $authPath -Raw | ConvertFrom-Json
+    $tokens = Get-ObjectPropertyValue -Object $auth -Name 'tokens'
+    $accessToken = [string](Get-ObjectPropertyValue `
+        -Object $tokens `
+        -Name 'access_token' `
+        -Default '')
+    $accountId = [string](Get-ObjectPropertyValue `
+        -Object $tokens `
+        -Name 'account_id' `
+        -Default '')
+    if (
+        [string]::IsNullOrWhiteSpace($accessToken) -or
+        [string]::IsNullOrWhiteSpace($accountId)
+    ) {
+        throw 'Codex 登录信息不完整。'
+    }
+
+    $request = New-Object System.Net.Http.HttpRequestMessage(
+        [System.Net.Http.HttpMethod]::Get,
+        'https://chatgpt.com/backend-api/wham/usage'
+    )
+    try {
+        $request.Headers.Authorization =
+            New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
+                'Bearer',
+                $accessToken
+            )
+        [void]$request.Headers.TryAddWithoutValidation('ChatGPT-Account-Id', $accountId)
+        [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
+        [void]$request.Headers.TryAddWithoutValidation(
+            'User-Agent',
+            'remaining-margin-float/1.2'
+        )
+        [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
+        return $request
+    }
+    catch {
+        $request.Dispose()
+        throw
+    }
+}
+
 function Get-CodexOfficialUsage {
     $now = [DateTimeOffset]::Now
     if (
@@ -406,43 +456,8 @@ function Get-CodexOfficialUsage {
     }
 
     try {
-        $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
-        if (-not (Test-Path -LiteralPath $authPath)) { throw 'Codex auth file not found.' }
-        $auth = Get-Content -LiteralPath $authPath -Raw | ConvertFrom-Json
-        $tokens = Get-ObjectPropertyValue -Object $auth -Name 'tokens'
-        $accessToken = [string](Get-ObjectPropertyValue `
-            -Object $tokens `
-            -Name 'access_token' `
-            -Default '')
-        $accountId = [string](Get-ObjectPropertyValue `
-            -Object $tokens `
-            -Name 'account_id' `
-            -Default '')
-        if (
-            [string]::IsNullOrWhiteSpace($accessToken) -or
-            [string]::IsNullOrWhiteSpace($accountId)
-        ) {
-            throw 'Codex account credentials are incomplete.'
-        }
-
-        $request = New-Object System.Net.Http.HttpRequestMessage(
-            [System.Net.Http.HttpMethod]::Get,
-            'https://chatgpt.com/backend-api/wham/usage'
-        )
+        $request = New-CodexOfficialUsageRequest
         try {
-            $request.Headers.Authorization =
-                New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
-                    'Bearer',
-                    $accessToken
-                )
-            [void]$request.Headers.TryAddWithoutValidation('ChatGPT-Account-Id', $accountId)
-            [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
-            [void]$request.Headers.TryAddWithoutValidation(
-                'User-Agent',
-                'remaining-margin-float/1.2'
-            )
-            [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
-
             $response = (Get-CodexHttpClient).SendAsync($request).GetAwaiter().GetResult()
             try {
                 if (-not $response.IsSuccessStatusCode) {
@@ -623,6 +638,71 @@ function Select-CodexRateLimitSnapshot {
     return $validSnapshots |
         Sort-Object RateLimitObservedAt -Descending |
         Select-Object -First 1
+}
+
+function Resolve-CodexQuotaUsage {
+    param(
+        $OfficialUsage,
+        [object[]]$SessionSnapshots = @(),
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    if ($OfficialUsage) {
+        $isCached = [bool](Get-ObjectPropertyValue `
+            -Object $OfficialUsage `
+            -Name 'IsCached' `
+            -Default $false)
+        return [pscustomobject]@{
+            Channel = if ($isCached) { 'OfficialCache' } else { 'Official' }
+            UsedPercent = [Math]::Max(
+                0,
+                [Math]::Min(100, [double]$OfficialUsage.UsedPercent)
+            )
+            WindowMinutes = [int]$OfficialUsage.WindowMinutes
+            ResetsAt = [long]$OfficialUsage.ResetsAt
+            PlanType = [string]$OfficialUsage.PlanType
+            SampledAt = [DateTimeOffset]$OfficialUsage.SampledAt
+            SessionSnapshot = $null
+        }
+    }
+
+    $localSnapshot = Select-CodexRateLimitSnapshot `
+        -Snapshots $SessionSnapshots `
+        -Now $Now
+    if (-not $localSnapshot) { return $null }
+
+    $rateLimitPayload = $localSnapshot.RateLimitPayload
+    $window = Get-CodexRateLimitWindow -Payload $rateLimitPayload
+    if (-not $window) { return $null }
+
+    $limits = Get-ObjectPropertyValue -Object $rateLimitPayload -Name 'rate_limits'
+    return [pscustomobject]@{
+        Channel = 'Local'
+        UsedPercent = [Math]::Max(
+            0,
+            [Math]::Min(
+                100,
+                [double](Get-ObjectPropertyValue `
+                    -Object $window `
+                    -Name 'used_percent' `
+                    -Default 0)
+            )
+        )
+        WindowMinutes = [int](Get-ObjectPropertyValue `
+            -Object $window `
+            -Name 'window_minutes' `
+            -Default 0)
+        ResetsAt = [long](Get-ObjectPropertyValue `
+            -Object $window `
+            -Name 'resets_at' `
+            -Default 0)
+        PlanType = [string](Get-ObjectPropertyValue `
+            -Object $limits `
+            -Name 'plan_type' `
+            -Default '')
+        SampledAt = [DateTimeOffset]$localSnapshot.RateLimitObservedAt
+        SessionSnapshot = $localSnapshot
+    }
 }
 
 function Test-CodexRootSessionMetadata {
@@ -1456,6 +1536,11 @@ function Get-ResetText {
 }
 
 function Get-CodexUsageSnapshot {
+    param(
+        $OfficialUsageOverride = $null,
+        [switch]$SkipOfficialRequest
+    )
+
     if ($Demo) {
         return [pscustomobject]@{
             ProviderId = 'Codex'
@@ -1487,7 +1572,11 @@ function Get-CodexUsageSnapshot {
     }
 
     $account = Get-SafeAccountInfo
-    $officialUsage = Get-CodexOfficialUsage
+    $officialUsage = if ($SkipOfficialRequest) {
+        $OfficialUsageOverride
+    } else {
+        Get-CodexOfficialUsage
+    }
     $sessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
     $files = @()
     if (Test-Path -LiteralPath $sessionsRoot) {
@@ -1504,20 +1593,23 @@ function Get-CodexUsageSnapshot {
     $recentSnapshots = @($rootSessionFiles | Select-Object -First 48 | ForEach-Object {
         Read-SessionSnapshot -File $_
     })
+    $quotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $officialUsage `
+        -SessionSnapshots $recentSnapshots
     $latestSnapshot = $recentSnapshots | Where-Object { $_.Payload } |
         Sort-Object ObservedAt -Descending | Select-Object -First 1
 
-    if (-not $officialUsage) {
+    if (-not $quotaUsage) {
         return [pscustomobject]@{
             ProviderId = 'Codex'
             Available = $false
             RemainingPercent = 0
-            HasProgress = $true
-            WindowLabel = 'Codex 余量'
+            HasProgress = $false
+            WindowLabel = '余量未知'
             ResetDate = '暂无'
-            ResetCountdown = '连接 Codex 后更新'
+            ResetCountdown = '等待官方接口或本地会话数据'
             ResetCount = '未提供'
-            Plan = 'Codex'
+            Plan = '--'
             AccountName = $account.DisplayName
             AccountEmail = $account.Email
             TodayTokens = 0
@@ -1533,20 +1625,23 @@ function Get-CodexUsageSnapshot {
             ContextPercent = 0
             SampledAt = Get-Date
             Status = '等待数据'
-            Source = 'Codex 官方用量暂不可用'
+            Source = '官方接口与本地会话均无可用余量数据'
         }
     }
 
+    if (-not $latestSnapshot -and $quotaUsage.SessionSnapshot) {
+        $latestSnapshot = $quotaUsage.SessionSnapshot
+    }
     $payload = if ($latestSnapshot) { $latestSnapshot.Payload } else { $null }
-    $usedPercent = [double]$officialUsage.UsedPercent
-    $windowMinutes = [int]$officialUsage.WindowMinutes
-    $resetTimestamp = [long]$officialUsage.ResetsAt
-    $planType = [string]$officialUsage.PlanType
-    $quotaSampledAt = $officialUsage.SampledAt.LocalDateTime
-    $source = if ($officialUsage.IsCached) {
-        'Codex 官方用量缓存 · 本地 Token 汇总'
-    } else {
-        'Codex 官方用量接口 · 本地 Token 汇总'
+    $usedPercent = [double]$quotaUsage.UsedPercent
+    $windowMinutes = [int]$quotaUsage.WindowMinutes
+    $resetTimestamp = [long]$quotaUsage.ResetsAt
+    $planType = [string]$quotaUsage.PlanType
+    $quotaSampledAt = ([DateTimeOffset]$quotaUsage.SampledAt).LocalDateTime
+    $source = switch ($quotaUsage.Channel) {
+        'Official' { '官方用量接口 · 本地令牌汇总' }
+        'OfficialCache' { '官方用量缓存 · 本地令牌汇总' }
+        default { '本地会话余量快照' }
     }
 
     $remainingPercent = [Math]::Round(100 - $usedPercent)
@@ -1777,6 +1872,17 @@ if ($CheckCodexRateLimitSelection) {
     $officialUsage = ConvertTo-CodexOfficialUsage `
         -Payload $officialPayload `
         -SampledAt ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $officialQuotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $officialUsage `
+        -SessionSnapshots $selectionCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $localQuotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $null `
+        -SessionSnapshots $selectionCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $missingQuotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $null `
+        -SessionSnapshots @()
     $selectedWindow = Get-CodexRateLimitWindow -Payload $selected.RateLimitPayload
     [pscustomobject]@{
         SelectedUsedPercent = [double]$selectedWindow.used_percent
@@ -1804,6 +1910,16 @@ if ($CheckCodexRateLimitSelection) {
             $officialUsage.PlanType -eq 'prolite'
         )
         AdditionalModelLimitIgnored = $officialUsage.UsedPercent -ne 0
+        OfficialChannelPreferred = (
+            $officialQuotaUsage.Channel -eq 'Official' -and
+            $officialQuotaUsage.UsedPercent -eq 40
+        )
+        LocalChannelFallbackSelected = (
+            $localQuotaUsage.Channel -eq 'Local' -and
+            $localQuotaUsage.UsedPercent -eq 22 -and
+            $localQuotaUsage.PlanType -eq 'pro'
+        )
+        MissingChannelsRemainUnknown = $null -eq $missingQuotaUsage
     } | ConvertTo-Json
     exit 0
 }
@@ -3916,11 +4032,17 @@ function Update-UsageView {
     }
     else {
         $CompactPrefix.Text = ''
-        $RemainingValue.Text = [string][int]$Snapshot.RemainingPercent
-        $CompactSuffix.Text = '%'
+        $RemainingValue.Text = if ($Snapshot.HasProgress) {
+            [string][int]$Snapshot.RemainingPercent
+        } else { '--' }
+        $CompactSuffix.Text = if ($Snapshot.HasProgress) { '%' } else { '' }
         $MetricOneTitle.Text = '已用额度'
-        $PrimaryMetricValue.Text = '{0:0}%' -f (100 - $Snapshot.RemainingPercent)
-        $PrimaryMetricHint.Text = '剩余 {0:0}%' -f $Snapshot.RemainingPercent
+        $PrimaryMetricValue.Text = if ($Snapshot.HasProgress) {
+            '{0:0}%' -f (100 - $Snapshot.RemainingPercent)
+        } else { '--' }
+        $PrimaryMetricHint.Text = if ($Snapshot.HasProgress) {
+            '剩余 {0:0}%' -f $Snapshot.RemainingPercent
+        } else { '暂无可用余量快照' }
         $MetricTwoTitle.Text = '今日 TOKEN'
         $TodayTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
         $MetricTwoHint.Text = '本机任务累计'
@@ -3934,7 +4056,9 @@ function Update-UsageView {
         $TokenBreakdown.Text = '本机今日全部任务'
         $SecondaryMetricTitle.Text = '额度状态'
         $ResetCount.Text = $Snapshot.Status
-        Set-Progress -Percent $Snapshot.RemainingPercent
+        Set-Progress `
+            -Percent $Snapshot.RemainingPercent `
+            -Available $Snapshot.HasProgress
     }
 
     if ($script:TrayNotifyIcon) {
@@ -3945,7 +4069,11 @@ function Update-UsageView {
                 'DeepSeek 等待配置 · 单击打开详情'
             }
         } else {
-            'Codex 余量 {0}% · 单击打开详情' -f [int]$Snapshot.RemainingPercent
+            if ($Snapshot.HasProgress) {
+                'Codex 余量 {0}% · 单击打开详情' -f [int]$Snapshot.RemainingPercent
+            } else {
+                'Codex 余量暂不可用 · 单击打开详情'
+            }
         }
     }
 
@@ -3958,6 +4086,132 @@ function Set-RefreshBusy {
     $script:IsRefreshing = $Busy
     $RefreshButton.IsEnabled = -not $Busy
     $RefreshButton.Content = if ($Busy) { '读取中…' } else { '立即刷新' }
+}
+
+function Cancel-CodexRefresh {
+    if ($script:CodexRequestTask -and -not $script:CodexRequestTask.IsCompleted) {
+        if ($script:CodexHttpClient) {
+            $script:CodexHttpClient.CancelPendingRequests()
+        }
+    }
+    elseif (
+        $script:CodexRequestTask -and
+        -not $script:CodexRequestTask.IsCanceled -and
+        -not $script:CodexRequestTask.IsFaulted
+    ) {
+        $abandonedResponse = $script:CodexRequestTask.GetAwaiter().GetResult()
+        if ($abandonedResponse) { $abandonedResponse.Dispose() }
+    }
+    if ($script:CodexRequest) {
+        $script:CodexRequest.Dispose()
+    }
+    $script:CodexRequest = $null
+    $script:CodexRequestTask = $null
+    Set-RefreshBusy -Busy $false
+}
+
+function Start-CodexRefresh {
+    if ($Demo) {
+        Update-UsageView -Snapshot (
+            Get-CodexUsageSnapshot -SkipOfficialRequest
+        )
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $now = [DateTimeOffset]::Now
+    if (
+        $script:CodexOfficialUsageCache -and
+        ($now - $script:CodexOfficialUsageCache.SampledAt).TotalSeconds -lt 15
+    ) {
+        Update-UsageView -Snapshot (
+            Get-CodexUsageSnapshot `
+                -OfficialUsageOverride $script:CodexOfficialUsageCache `
+                -SkipOfficialRequest
+        )
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $request = $null
+    try {
+        $request = New-CodexOfficialUsageRequest
+        $script:CodexRequest = $request
+        $script:CodexRequestTask = (Get-CodexHttpClient).SendAsync($request)
+    }
+    catch {
+        if ($request) { $request.Dispose() }
+        $script:CodexRequest = $null
+        $script:CodexRequestTask = $null
+        Set-RefreshBusy -Busy $false
+    }
+}
+
+function Complete-CodexRefresh {
+    if (-not $script:CodexRequestTask -or -not $script:CodexRequestTask.IsCompleted) {
+        return
+    }
+
+    $task = $script:CodexRequestTask
+    $request = $script:CodexRequest
+    $script:CodexRequestTask = $null
+    $script:CodexRequest = $null
+    $response = $null
+    try {
+        if ($task.IsCanceled) { throw '官方用量请求超时。' }
+        if ($task.IsFaulted) {
+            throw ($task.Exception.GetBaseException().Message)
+        }
+
+        $response = $task.GetAwaiter().GetResult()
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            throw ('官方用量接口返回状态码 {0}。' -f [int]$response.StatusCode)
+        }
+
+        $payload = $body | ConvertFrom-Json
+        $usage = ConvertTo-CodexOfficialUsage `
+            -Payload $payload `
+            -SampledAt ([DateTimeOffset]::Now)
+        if (-not $usage) { throw '官方用量响应缺少有效限额周期。' }
+
+        $script:CodexOfficialUsageCache = $usage
+        if ($script:ActiveProvider -eq 'Codex') {
+            Update-UsageView -Snapshot (
+                Get-CodexUsageSnapshot `
+                    -OfficialUsageOverride $usage `
+                    -SkipOfficialRequest
+            )
+        }
+    }
+    catch {
+        if (
+            $script:CodexOfficialUsageCache -and
+            ([DateTimeOffset]::Now - $script:CodexOfficialUsageCache.SampledAt).TotalMinutes -lt 10 -and
+            $script:ActiveProvider -eq 'Codex'
+        ) {
+            $cached = $script:CodexOfficialUsageCache
+            $cachedUsage = [pscustomobject]@{
+                UsedPercent = $cached.UsedPercent
+                WindowMinutes = $cached.WindowMinutes
+                ResetsAt = $cached.ResetsAt
+                PlanType = $cached.PlanType
+                SampledAt = $cached.SampledAt
+                IsCached = $true
+            }
+            Update-UsageView -Snapshot (
+                Get-CodexUsageSnapshot `
+                    -OfficialUsageOverride $cachedUsage `
+                    -SkipOfficialRequest
+            )
+        }
+    }
+    finally {
+        if ($response) { $response.Dispose() }
+        if ($request) { $request.Dispose() }
+        Set-RefreshBusy -Busy $false
+        $script:RefreshRemaining = $script:RefreshIntervalSeconds
+    }
 }
 
 function Get-DeepSeekHttpClient {
@@ -4121,8 +4375,13 @@ function Set-ActiveProvider {
         [switch]$Refresh
     )
 
-    if ($script:ActiveProvider -ne $Provider -and $script:DeepSeekRequestTask) {
-        Cancel-DeepSeekRefresh
+    if ($script:ActiveProvider -ne $Provider) {
+        if ($script:DeepSeekRequestTask) {
+            Cancel-DeepSeekRefresh
+        }
+        if ($script:CodexRequestTask) {
+            Cancel-CodexRefresh
+        }
     }
     $script:ActiveProvider = $Provider
     Sync-ProviderMenuState
@@ -4287,13 +4546,16 @@ function Invoke-Refresh {
     }
 
     try {
-        Update-UsageView -Snapshot (Get-CodexUsageSnapshot)
+        Update-UsageView -Snapshot (
+            Get-CodexUsageSnapshot `
+                -OfficialUsageOverride $null `
+                -SkipOfficialRequest
+        )
+        Start-CodexRefresh
     }
     catch {
         $WindowLabel.Text = '读取失败'
         $SourceText.Text = '无法读取本地用量：' + $_.Exception.Message
-    }
-    finally {
         Set-RefreshBusy -Busy $false
     }
 }
@@ -5087,6 +5349,7 @@ Sync-StartupMenuState
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
 $timer.Add_Tick({
+    Complete-CodexRefresh
     Complete-DeepSeekRefresh
     if (-not $script:IsRefreshing) {
         $script:RefreshRemaining--
@@ -5117,6 +5380,9 @@ $window.Add_Closing({
         $script:DeepSeekHttpClient.CancelPendingRequests()
         $script:DeepSeekHttpClient.Dispose()
         $script:DeepSeekHttpClient = $null
+    }
+    if ($script:CodexRequestTask) {
+        Cancel-CodexRefresh
     }
     if ($script:CodexHttpClient) {
         $script:CodexHttpClient.CancelPendingRequests()

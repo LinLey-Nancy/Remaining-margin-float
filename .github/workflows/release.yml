@@ -67,6 +67,7 @@ jobs:
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
           $executable = ".\dist\Remaining-Margin-Float-v$version.exe"
           $checksum = "$executable.sha256"
+          $releaseTitle = "Remaining Margin Float $env:GITHUB_REF_NAME"
 
           $previousErrorActionPreference = $ErrorActionPreference
           $ErrorActionPreference = 'SilentlyContinue'
@@ -75,10 +76,13 @@ jobs:
           $ErrorActionPreference = $previousErrorActionPreference
 
           if ($releaseExists) {
+            gh release edit $env:GITHUB_REF_NAME `
+              --title $releaseTitle `
+              --notes-file .\RELEASE_NOTES.md
             gh release upload $env:GITHUB_REF_NAME $executable $checksum --clobber
           }
           else {
             gh release create $env:GITHUB_REF_NAME $executable $checksum `
-              --title "Remaining Margin Float $env:GITHUB_REF_NAME" `
-              --generate-notes
+              --title $releaseTitle `
+              --notes-file .\RELEASE_NOTES.md
           }
