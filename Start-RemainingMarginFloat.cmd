@@ -2,6 +2,27 @@
 setlocal
 
 set "REMAINING_MARGIN_FLOAT_SCRIPT=%~dp0src\RemainingMarginFloat.ps1"
+set /p "REMAINING_MARGIN_FLOAT_VERSION="<"%~dp0VERSION"
+set "REMAINING_MARGIN_FLOAT_PACKAGE=%~dp0dist\Remaining-Margin-Float-v%REMAINING_MARGIN_FLOAT_VERSION%"
+set "REMAINING_MARGIN_FLOAT_EXE=%REMAINING_MARGIN_FLOAT_PACKAGE%\RemainingMarginFloat.exe"
+set "REMAINING_MARGIN_FLOAT_PACKAGED_SCRIPT=%REMAINING_MARGIN_FLOAT_PACKAGE%\RemainingMarginFloat.ps1"
+
+if exist "%REMAINING_MARGIN_FLOAT_EXE%" if exist "%REMAINING_MARGIN_FLOAT_PACKAGED_SCRIPT%" (
+    if defined REMAINING_MARGIN_FLOAT_START_CHECK (
+        echo Mode=PackagedExe
+        echo Path=%REMAINING_MARGIN_FLOAT_EXE%
+        exit /b 0
+    )
+    echo [Remaining Margin Float] Starting packaged launcher...
+    powershell.exe -NoProfile -NonInteractive -Command ^
+        "Start-Process -FilePath $env:REMAINING_MARGIN_FLOAT_EXE -WorkingDirectory $env:REMAINING_MARGIN_FLOAT_PACKAGE"
+    if errorlevel 1 (
+        echo [Remaining Margin Float] Packaged launcher could not be started.
+        pause
+        exit /b 1
+    )
+    exit /b 0
+)
 
 if not exist "%REMAINING_MARGIN_FLOAT_SCRIPT%" (
     echo [Remaining Margin Float] Cannot find:
@@ -10,10 +31,18 @@ if not exist "%REMAINING_MARGIN_FLOAT_SCRIPT%" (
     exit /b 1
 )
 
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command ^
-    "$scriptPath = $env:REMAINING_MARGIN_FLOAT_SCRIPT; $quotedPath = [char]34 + $scriptPath + [char]34; Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-STA', '-File', $quotedPath) -WindowStyle Hidden"
+if defined REMAINING_MARGIN_FLOAT_START_CHECK (
+    echo Mode=PowerShell
+    echo Path=%REMAINING_MARGIN_FLOAT_SCRIPT%
+    exit /b 0
+)
+
+echo [Remaining Margin Float] Packaged launcher not found; starting source mode.
+echo [Remaining Margin Float] Keep this window open while the widget is running.
+powershell.exe -NoProfile -STA -File "%REMAINING_MARGIN_FLOAT_SCRIPT%"
 if errorlevel 1 (
-    echo [Remaining Margin Float] Failed to start PowerShell.
+    echo [Remaining Margin Float] PowerShell could not run the application script.
+    echo If your organization blocks local scripts, use the packaged launcher instead.
     pause
     exit /b 1
 )

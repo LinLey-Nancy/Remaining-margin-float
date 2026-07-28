@@ -5,18 +5,25 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Submit this manual build to SignPath
+        required: false
+        type: boolean
+        default: false
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
   build-release:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verify release version
         shell: powershell
@@ -26,35 +33,130 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version."
           }
 
-      - name: Run application diagnostics
+      - name: Restrict manual signing to the default branch
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.sign &&
+          github.ref_name != github.event.repository.default_branch
         shell: powershell
         run: |
-          $checks = @(
-            'CheckCodexRateLimitSelection',
-            'CheckDeepSeekData',
-            'CheckPlacement',
-            'CheckEdgeDocking',
-            'CheckStartup',
-            'CheckTransitions'
-          )
-          foreach ($check in $checks) {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA `
-              -File .\src\RemainingMarginFloat.ps1 "-$check"
-            if ($LASTEXITCODE -ne 0) {
-              throw "Diagnostic failed: $check"
-            }
-          }
+          throw 'Manual signing is allowed only from the protected default branch.'
 
-      - name: Build release executable
+      - name: Run application diagnostics
         shell: powershell
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
+        run: powershell.exe -NoProfile -File .\Test-Diagnostics.ps1
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+      - name: Build transparent release directory
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Build-Package.ps1 -SkipArchive
+
+      - name: Check release behavior policy
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-Release.ps1
+
+      - name: Upload unsigned launcher for signing
+        if: github.ref_type == 'tag' || inputs.sign
+        id: upload-unsigned-launcher
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: Remaining-Margin-Float-${{ github.ref_name }}
+          name: unsigned-launcher-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/Remaining-Margin-Float-*/RemainingMarginFloat.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Require signing configuration for tagged releases
+        if: github.ref_type == 'tag' || inputs.sign
+        shell: powershell
+        env:
+          SIGNPATH_ORGANIZATION_ID: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          SIGNPATH_PROJECT_SLUG: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          SIGNPATH_SIGNING_POLICY_SLUG: '${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          SIGNPATH_CERTIFICATE_THUMBPRINT: '${{ vars.SIGNPATH_CERTIFICATE_THUMBPRINT }}'
+          SIGNPATH_API_TOKEN: '${{ secrets.SIGNPATH_API_TOKEN }}'
+        run: |
+          $missing = @(
+            'SIGNPATH_ORGANIZATION_ID'
+            'SIGNPATH_PROJECT_SLUG'
+            'SIGNPATH_SIGNING_POLICY_SLUG'
+            'SIGNPATH_CERTIFICATE_THUMBPRINT'
+            'SIGNPATH_API_TOKEN'
+          ) | Where-Object {
+            [string]::IsNullOrWhiteSpace(
+              [Environment]::GetEnvironmentVariable($_)
+            )
+          }
+          if ($missing.Count -eq 0) {
+            return
+          }
+          throw @'
+          Signed builds require these repository variables:
+          SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
+          SIGNPATH_SIGNING_POLICY_SLUG, SIGNPATH_CERTIFICATE_THUMBPRINT.
+          They also require the SIGNPATH_API_TOKEN repository secret.
+          '@
+
+      - name: Submit SignPath signing request
+        if: github.ref_type == 'tag' || inputs.sign
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          github-artifact-id: '${{ steps.upload-unsigned-launcher.outputs.artifact-id }}'
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1500
+          output-artifact-directory: '${{ github.workspace }}\dist\signed'
+
+      - name: Install signed launcher
+        if: github.ref_type == 'tag' || inputs.sign
+        shell: powershell
+        run: |
+          $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
+          $destination = ".\dist\Remaining-Margin-Float-v$version\RemainingMarginFloat.exe"
+          $signed = @(
+            Get-ChildItem -LiteralPath .\dist\signed -Recurse -File `
+              -Filter RemainingMarginFloat.exe
+          )
+          if ($signed.Count -ne 1) {
+            throw "SignPath returned $($signed.Count) matching launchers; expected exactly one."
+          }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination $destination -Force
+
+      - name: Verify signed launcher
+        if: github.ref_type == 'tag' || inputs.sign
+        shell: powershell
+        run: >-
+          powershell.exe -NoProfile -File .\Test-Release.ps1
+          -RequireSignature
+          -ExpectedSignerThumbprint '${{ vars.SIGNPATH_CERTIFICATE_THUMBPRINT }}'
+          -RequireTimestamp
+
+      - name: Finalize archive and checksum
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Finalize-Package.ps1
+
+      - name: Verify final signed archive
+        if: github.ref_type == 'tag' || inputs.sign
+        shell: powershell
+        run: >-
+          powershell.exe -NoProfile -File .\Test-Release.ps1
+          -RequireSignature
+          -ExpectedSignerThumbprint '${{ vars.SIGNPATH_CERTIFICATE_THUMBPRINT }}'
+          -RequireTimestamp
+          -RequireArchive
+
+      - name: Verify final unsigned archive
+        if: github.ref_type != 'tag' && !inputs.sign
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-Release.ps1 -RequireArchive
+
+      - name: Upload final workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Remaining-Margin-Float-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            dist/*.exe
+            dist/*.zip
             dist/*.sha256
           if-no-files-found: error
 
@@ -65,9 +167,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
-          $executable = ".\dist\Remaining-Margin-Float-v$version.exe"
-          $checksum = "$executable.sha256"
+          $archive = ".\dist\Remaining-Margin-Float-v$version.zip"
+          $checksum = "$archive.sha256"
           $releaseTitle = "Remaining Margin Float $env:GITHUB_REF_NAME"
+          $legacyExecutable = "Remaining-Margin-Float-v$version.exe"
+          $legacyChecksum = "$legacyExecutable.sha256"
 
           $previousErrorActionPreference = $ErrorActionPreference
           $ErrorActionPreference = 'SilentlyContinue'
@@ -76,13 +180,48 @@ jobs:
           $ErrorActionPreference = $previousErrorActionPreference
 
           if ($releaseExists) {
+            foreach ($legacyAsset in @($legacyExecutable, $legacyChecksum)) {
+              $assetNames = @(
+                gh release view $env:GITHUB_REF_NAME `
+                  --json assets `
+                  --jq '.assets[].name'
+              )
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not inspect existing release assets."
+              }
+              if ($legacyAsset -in $assetNames) {
+                gh release delete-asset $env:GITHUB_REF_NAME $legacyAsset --yes
+                if ($LASTEXITCODE -ne 0) {
+                  throw "Could not remove legacy release asset: $legacyAsset"
+                }
+              }
+            }
             gh release edit $env:GITHUB_REF_NAME `
               --title $releaseTitle `
               --notes-file .\RELEASE_NOTES.md
-            gh release upload $env:GITHUB_REF_NAME $executable $checksum --clobber
+            gh release upload $env:GITHUB_REF_NAME $archive $checksum --clobber
           }
           else {
-            gh release create $env:GITHUB_REF_NAME $executable $checksum `
+            gh release create $env:GITHUB_REF_NAME $archive $checksum `
               --title $releaseTitle `
               --notes-file .\RELEASE_NOTES.md
+          }
+
+          $finalAssetNames = @(
+            gh release view $env:GITHUB_REF_NAME `
+              --json assets `
+              --jq '.assets[].name'
+          )
+          foreach ($requiredAsset in @(
+            [IO.Path]::GetFileName($archive),
+            [IO.Path]::GetFileName($checksum)
+          )) {
+            if ($requiredAsset -notin $finalAssetNames) {
+              throw "Required release asset is missing: $requiredAsset"
+            }
+          }
+          foreach ($legacyAsset in @($legacyExecutable, $legacyChecksum)) {
+            if ($legacyAsset -in $finalAssetNames) {
+              throw "Legacy release asset is still present: $legacyAsset"
+            }
           }

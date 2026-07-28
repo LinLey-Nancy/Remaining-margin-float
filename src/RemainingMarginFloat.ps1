@@ -29,18 +29,34 @@ $isDiagnosticRun = (
     $CaptureVisuals -or
     $Demo
 )
+
+function Get-SingleInstanceObjectNames {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $sid = if ($identity.User) { $identity.User.Value } else { $identity.Name }
+    if ([string]::IsNullOrWhiteSpace($sid)) {
+        throw '无法确定当前 Windows 用户，不能创建单实例对象。'
+    }
+    $scope = $sid -replace '[^0-9A-Za-z._-]', '_'
+    return [pscustomobject]@{
+        Scope = $scope
+        ActivationEvent = "Local\RemainingMarginFloat.Activate.$scope"
+        Mutex = "Local\RemainingMarginFloat.Singleton.$scope"
+    }
+}
+
+$script:SingleInstanceObjectNames = Get-SingleInstanceObjectNames
 $script:ActivationEvent = $null
 $script:AppMutex = $null
 if (-not $isDiagnosticRun) {
     $script:ActivationEvent = New-Object System.Threading.EventWaitHandle(
         $false,
         [System.Threading.EventResetMode]::AutoReset,
-        'Local\RemainingMarginFloat.Activate'
+        $script:SingleInstanceObjectNames.ActivationEvent
     )
     $createdNew = $false
     $script:AppMutex = New-Object System.Threading.Mutex(
         $true,
-        'Local\RemainingMarginFloat.Singleton',
+        $script:SingleInstanceObjectNames.Mutex,
         [ref]$createdNew
     )
     if (-not $createdNew) {
@@ -222,11 +238,15 @@ $script:CodexSourceMenuItem = $null
 $script:DeepSeekSourceMenuItem = $null
 $script:TrayCodexSourceItem = $null
 $script:TrayDeepSeekSourceItem = $null
+$script:CodexOfficialAccessMenuItem = $null
+$script:TrayCodexOfficialAccessItem = $null
+$script:CodexOfficialAccessEnabled = $false
 $script:DeepSeekSettingsMenuItem = $null
 $script:TrayDeepSeekSettingsItem = $null
 $script:EdgeDockMenuItem = $null
 $script:EdgeDockEnabled = $true
 $script:EdgeDockSide = $null
+$script:EdgeDockWorkArea = $null
 $script:IsEdgeRevealed = $false
 $script:StartupMode = 'Off'
 $script:StartupMenuItems = @{}
@@ -328,6 +348,11 @@ function Get-SafeAccountInfo {
         Email = '未找到账号信息'
     }
 
+    if (-not $script:CodexOfficialAccessEnabled) {
+        $result.Email = '官方接口访问未启用'
+        return [pscustomobject]$result
+    }
+
     $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
     if (-not (Test-Path -LiteralPath $authPath)) { return [pscustomobject]$result }
 
@@ -399,6 +424,10 @@ function Get-CodexHttpClient {
 }
 
 function New-CodexOfficialUsageRequest {
+    if (-not $script:CodexOfficialAccessEnabled) {
+        throw 'Codex 官方接口访问未启用。'
+    }
+
     $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
     if (-not (Test-Path -LiteralPath $authPath)) {
         throw '未找到 Codex 登录信息。'
@@ -435,7 +464,7 @@ function New-CodexOfficialUsageRequest {
         [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
         [void]$request.Headers.TryAddWithoutValidation(
             'User-Agent',
-            'remaining-margin-float/1.2'
+            'remaining-margin-float/1.3.0'
         )
         [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
         return $request
@@ -2546,7 +2575,7 @@ $script:HighContrast = [System.Windows.SystemParameters]::HighContrast
         <Grid x:Name="UltraCompactPanel"
               Panel.ZIndex="3"
               Width="14"
-              Background="#01FFFFFF"
+              Background="#0CFFFFFF"
               HorizontalAlignment="Right"
               VerticalAlignment="Stretch"
               SnapsToDevicePixels="False"
@@ -2800,27 +2829,68 @@ function Get-StartupLaunchSpec {
         'REMAINING_MARGIN_FLOAT_LAUNCHER',
         [EnvironmentVariableTarget]::Process
     )
+    $packagedScriptPath = [Environment]::GetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_SCRIPT',
+        [EnvironmentVariableTarget]::Process
+    )
     if (
         -not [string]::IsNullOrWhiteSpace($launcherPath) -and
-        (Test-Path -LiteralPath $launcherPath -PathType Leaf)
+        (Test-Path -LiteralPath $launcherPath -PathType Leaf) -and
+        -not [string]::IsNullOrWhiteSpace($packagedScriptPath) -and
+        (Test-Path -LiteralPath $packagedScriptPath -PathType Leaf)
     ) {
-        $managedLauncher = Join-Path (Get-AppDataDirectory) 'RemainingMarginFloat.exe'
+        $launcherHash = (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).
+            Hash.ToLowerInvariant()
+        $scriptHash = (Get-FileHash -LiteralPath $packagedScriptPath -Algorithm SHA256).
+            Hash.ToLowerInvariant()
+        $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($launcherPath).FileVersion
+        if ([string]::IsNullOrWhiteSpace($fileVersion)) {
+            $fileVersion = 'unversioned'
+        }
+        $releaseId = '{0}-{1}-{2}' -f `
+            ($fileVersion -replace '[^0-9A-Za-z._-]', '_'), `
+            $launcherHash.Substring(0, 12), `
+            $scriptHash.Substring(0, 12)
+        $managedRoot = Join-Path (Get-AppDataDirectory) 'app'
+        $managedDirectory = Join-Path $managedRoot $releaseId
+        $managedLauncher = Join-Path $managedDirectory 'RemainingMarginFloat.exe'
+        $managedScript = Join-Path $managedDirectory 'RemainingMarginFloat.ps1'
         if ($PrepareLauncher) {
-            $sourceFullPath = [IO.Path]::GetFullPath($launcherPath)
-            $managedFullPath = [IO.Path]::GetFullPath($managedLauncher)
-            if (-not [string]::Equals(
-                $sourceFullPath,
-                $managedFullPath,
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-                $updatePath = $managedFullPath + '.updating'
+            $managedMatches = (
+                (Test-Path -LiteralPath $managedLauncher -PathType Leaf) -and
+                (Test-Path -LiteralPath $managedScript -PathType Leaf) -and
+                (Get-FileHash -LiteralPath $managedLauncher -Algorithm SHA256).
+                    Hash.Equals($launcherHash, [StringComparison]::OrdinalIgnoreCase) -and
+                (Get-FileHash -LiteralPath $managedScript -Algorithm SHA256).
+                    Hash.Equals($scriptHash, [StringComparison]::OrdinalIgnoreCase)
+            )
+            if (-not $managedMatches) {
+                if (Test-Path -LiteralPath $managedDirectory) {
+                    throw "托管启动目录内容与当前版本不一致：$managedDirectory"
+                }
+                New-Item -Path $managedRoot -ItemType Directory -Force | Out-Null
+                $stagingDirectory = Join-Path $managedRoot (
+                    '.staging-{0}-{1}' -f $releaseId, [Guid]::NewGuid().ToString('N')
+                )
                 try {
-                    Copy-Item -LiteralPath $sourceFullPath -Destination $updatePath -Force
-                    Move-Item -LiteralPath $updatePath -Destination $managedFullPath -Force
+                    New-Item -Path $stagingDirectory -ItemType Directory | Out-Null
+                    $stagedLauncher = Join-Path $stagingDirectory 'RemainingMarginFloat.exe'
+                    $stagedScript = Join-Path $stagingDirectory 'RemainingMarginFloat.ps1'
+                    Copy-Item -LiteralPath $launcherPath -Destination $stagedLauncher
+                    Copy-Item -LiteralPath $packagedScriptPath -Destination $stagedScript
+                    if (
+                        -not (Get-FileHash -LiteralPath $stagedLauncher -Algorithm SHA256).
+                            Hash.Equals($launcherHash, [StringComparison]::OrdinalIgnoreCase) -or
+                        -not (Get-FileHash -LiteralPath $stagedScript -Algorithm SHA256).
+                            Hash.Equals($scriptHash, [StringComparison]::OrdinalIgnoreCase)
+                    ) {
+                        throw '托管启动文件复制后校验失败。'
+                    }
+                    Move-Item -LiteralPath $stagingDirectory -Destination $managedDirectory
                 }
                 finally {
-                    if (Test-Path -LiteralPath $updatePath -PathType Leaf) {
-                        Remove-Item -LiteralPath $updatePath -Force
+                    if (Test-Path -LiteralPath $stagingDirectory) {
+                        Remove-Item -LiteralPath $stagingDirectory -Recurse -Force
                     }
                 }
             }
@@ -2834,10 +2904,14 @@ function Get-StartupLaunchSpec {
     }
 
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $scriptPath = [IO.Path]::GetFullPath($PSCommandPath)
+    $scriptPath = if (-not [string]::IsNullOrWhiteSpace($packagedScriptPath)) {
+        [IO.Path]::GetFullPath($packagedScriptPath)
+    } else {
+        [IO.Path]::GetFullPath($PSCommandPath)
+    }
     return [pscustomobject]@{
         FilePath = $powershellPath
-        Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "{0}"' -f (
+        Arguments = '-NoProfile -NonInteractive -STA -File "{0}"' -f (
             $scriptPath.Replace('"', '\"')
         )
         WorkingDirectory = Split-Path -Parent $scriptPath
@@ -3139,7 +3213,23 @@ function Sync-PackagedStartupLauncher {
 
         $presence = Get-StartupRegistrationPresence
         if ($presence.Task -or $presence.Registry -or $presence.StartupFolder) {
-            [void](Get-StartupLaunchSpec -PrepareLauncher)
+            $launchSpec = Get-StartupLaunchSpec -PrepareLauncher
+            $existingMode = if ($presence.Task) {
+                'Task'
+            }
+            elseif ($presence.Registry) {
+                'Registry'
+            }
+            else {
+                'StartupFolder'
+            }
+            switch ($existingMode) {
+                'Task' { Register-StartupScheduledTask -LaunchSpec $launchSpec }
+                'Registry' { Register-StartupRegistry -LaunchSpec $launchSpec }
+                'StartupFolder' { Register-StartupShortcut -LaunchSpec $launchSpec }
+            }
+            Remove-StartupRegistrations -Except $existingMode
+            Assert-StartupMode -Mode $existingMode -LaunchSpec $launchSpec
         }
     }
     catch {
@@ -3248,7 +3338,7 @@ function Save-Settings {
 
     try {
         $saveLeft = if ($script:EdgeDockSide) {
-            $workArea = Get-WindowWorkArea
+            $workArea = Get-EdgeDockWorkArea
             Get-EdgeDockPlacement `
                 -Side $script:EdgeDockSide `
                 -Revealed $true `
@@ -3273,6 +3363,7 @@ function Save-Settings {
             Expanded = $false
             Topmost = $window.Topmost
             Provider = $script:ActiveProvider
+            CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
             EdgeDockEnabled = $script:EdgeDockEnabled
             EdgeDockSide = $script:EdgeDockSide
         } | ConvertTo-Json | Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
@@ -3317,6 +3408,10 @@ function Restore-Settings {
             ) {
                 $script:ActiveProvider = [string]$settings.Provider
             }
+            if ($settings.PSObject.Properties['CodexOfficialAccessEnabled']) {
+                $script:CodexOfficialAccessEnabled =
+                    [bool]$settings.CodexOfficialAccessEnabled
+            }
         }
     }
     catch {
@@ -3351,6 +3446,19 @@ function Get-WindowWorkArea {
         # Fall back to the primary work area if per-monitor lookup is unavailable.
     }
     return [System.Windows.SystemParameters]::WorkArea
+}
+
+function Get-EdgeDockWorkArea {
+    if ($null -eq $script:EdgeDockWorkArea) {
+        $workArea = Get-WindowWorkArea
+        $script:EdgeDockWorkArea = New-Object Windows.Rect(
+            $workArea.Left,
+            $workArea.Top,
+            $workArea.Width,
+            $workArea.Height
+        )
+    }
+    return $script:EdgeDockWorkArea
 }
 
 function Set-EdgeDockChrome {
@@ -3487,7 +3595,7 @@ function Set-EdgeDockReveal {
 
     $script:IsEdgeRevealed = $Revealed
 
-    $workArea = Get-WindowWorkArea
+    $workArea = Get-EdgeDockWorkArea
     $window.Top = [Math]::Max(
         $workArea.Top,
         [Math]::Min($window.Top, $workArea.Bottom - $script:CompactHeight)
@@ -3537,6 +3645,7 @@ function Clear-EdgeDock {
     if (-not $script:EdgeDockSide) { return }
     Set-EdgeDockReveal -Revealed $true -Immediate
     $script:EdgeDockSide = $null
+    $script:EdgeDockWorkArea = $null
     $script:IsEdgeRevealed = $false
     $WindowRoot.Margin = New-Object Windows.Thickness(5)
     $UltraCompactPanel.Margin = New-Object Windows.Thickness(0)
@@ -3568,6 +3677,12 @@ function Try-DockWindowAfterMove {
     }
 
     $script:EdgeDockSide = $side
+    $script:EdgeDockWorkArea = New-Object Windows.Rect(
+        $workArea.Left,
+        $workArea.Top,
+        $workArea.Width,
+        $workArea.Height
+    )
     $script:IsEdgeRevealed = $true
     Set-EdgeDockReveal -Revealed $false
     Save-Settings
@@ -4119,6 +4234,11 @@ function Start-CodexRefresh {
         return
     }
 
+    if (-not $script:CodexOfficialAccessEnabled) {
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
     $now = [DateTimeOffset]::Now
     if (
         $script:CodexOfficialUsageCache -and
@@ -4218,7 +4338,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.1.2')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.3.0')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -4358,6 +4478,19 @@ function Sync-ProviderMenuState {
     if ($script:TrayDeepSeekSourceItem) {
         $script:TrayDeepSeekSourceItem.Checked = $script:ActiveProvider -eq 'DeepSeek'
     }
+    if ($script:CodexOfficialAccessMenuItem) {
+        $script:CodexOfficialAccessMenuItem.Visibility = if (
+            $script:ActiveProvider -eq 'Codex'
+        ) { 'Visible' } else { 'Collapsed' }
+        $script:CodexOfficialAccessMenuItem.IsChecked =
+            $script:CodexOfficialAccessEnabled
+    }
+    if ($script:TrayCodexOfficialAccessItem) {
+        $script:TrayCodexOfficialAccessItem.Visible =
+            $script:ActiveProvider -eq 'Codex'
+        $script:TrayCodexOfficialAccessItem.Checked =
+            $script:CodexOfficialAccessEnabled
+    }
     if ($script:DeepSeekSettingsMenuItem) {
         $script:DeepSeekSettingsMenuItem.Visibility = if (
             $script:ActiveProvider -eq 'DeepSeek'
@@ -4387,6 +4520,45 @@ function Set-ActiveProvider {
     Sync-ProviderMenuState
     Save-Settings
     if ($Refresh) { Invoke-Refresh }
+}
+
+function Set-CodexOfficialAccess {
+    param(
+        [bool]$Enabled,
+        [switch]$Confirm
+    )
+
+    if ($Enabled -and $Confirm) {
+        $decision = [Windows.MessageBox]::Show(
+            "启用后，应用会在内存中读取：`n" +
+            "• %USERPROFILE%\.codex\auth.json 中的访问令牌和账户标识`n" +
+            "• ID Token 中的显示名称与邮箱`n`n" +
+            "这些信息仅用于请求：`n" +
+            "https://chatgpt.com/backend-api/wham/usage`n`n" +
+            "令牌不会写入设置、日志或界面。是否启用？",
+            '启用 Codex 官方接口',
+            [Windows.MessageBoxButton]::YesNo,
+            [Windows.MessageBoxImage]::Information
+        )
+        if ($decision -ne [Windows.MessageBoxResult]::Yes) {
+            Sync-ProviderMenuState
+            return $false
+        }
+    }
+
+    if (-not $Enabled -and $script:CodexRequestTask) {
+        Cancel-CodexRefresh
+    }
+    $script:CodexOfficialAccessEnabled = $Enabled
+    if (-not $Enabled) {
+        $script:CodexOfficialUsageCache = $null
+    }
+    Sync-ProviderMenuState
+    Save-Settings
+    if ($script:ActiveProvider -eq 'Codex') {
+        Invoke-Refresh
+    }
+    return $true
 }
 
 function Show-DeepSeekSettings {
@@ -4561,7 +4733,6 @@ function Invoke-Refresh {
 }
 
 if ($CheckStartup) {
-    Sync-PackagedStartupLauncher
     $launchSpec = Get-StartupLaunchSpec
     [pscustomobject]@{
         Mode = Get-StartupMode
@@ -4576,7 +4747,9 @@ if ($CheckStartup) {
 
 $script:IsRestoringSettings = $true
 Restore-Settings
-Sync-PackagedStartupLauncher
+if (-not $isDiagnosticRun) {
+    Sync-PackagedStartupLauncher
+}
 $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
 $script:IsRestoringSettings = $false
@@ -4599,7 +4772,11 @@ $script:EdgeRevealTimer.Interval = [TimeSpan]::FromMilliseconds(70)
 $script:EdgeRevealTimer.Add_Tick({
     $script:EdgeRevealTimer.Stop()
     if (
-        $window.IsMouseOver -and
+        (
+            $window.IsMouseOver -or
+            $UltraCompactPanel.IsMouseOver -or
+            $script:IsPointerOverSurface
+        ) -and
         $script:EdgeDockSide -and
         -not $script:IsExpanded -and
         -not $script:IsEdgeRevealed
@@ -4670,6 +4847,18 @@ $window.Add_MouseLeave({
     $script:EdgeRevealTimer.Stop()
     Set-HoverState -Hovering $false
     Request-EdgeDockHide
+})
+$UltraCompactPanel.Add_MouseEnter({
+    $script:EdgeHideTimer.Stop()
+    $script:IsPointerOverSurface = $true
+    if (
+        $script:EdgeDockSide -and
+        -not $script:IsExpanded -and
+        -not $script:IsEdgeRevealed
+    ) {
+        $script:EdgeRevealTimer.Stop()
+        $script:EdgeRevealTimer.Start()
+    }
 })
 
 $UltraCompactPanel.Add_PreviewMouseLeftButtonDown({
@@ -4789,6 +4978,13 @@ $script:DeepSeekSourceMenuItem.Add_Click({
 })
 [void]$sourceMenu.Items.Add($script:CodexSourceMenuItem)
 [void]$sourceMenu.Items.Add($script:DeepSeekSourceMenuItem)
+$script:CodexOfficialAccessMenuItem = New-Object Windows.Controls.MenuItem
+$script:CodexOfficialAccessMenuItem.Header = 'Codex 官方接口（读取登录凭据）'
+$script:CodexOfficialAccessMenuItem.IsCheckable = $true
+$script:CodexOfficialAccessMenuItem.Add_Click({
+    $enabled = [bool]$script:CodexOfficialAccessMenuItem.IsChecked
+    [void](Set-CodexOfficialAccess -Enabled $enabled -Confirm:$enabled)
+})
 $script:DeepSeekSettingsMenuItem = New-Object Windows.Controls.MenuItem
 $script:DeepSeekSettingsMenuItem.Header = 'DeepSeek 设置…'
 $script:DeepSeekSettingsMenuItem.Add_Click({ [void](Show-DeepSeekSettings) })
@@ -4864,6 +5060,7 @@ $exitMenu.Header = '退出'
 $exitMenu.Add_Click({ Save-Settings; $window.Close() })
 [void]$contextMenu.Items.Add($refreshMenu)
 [void]$contextMenu.Items.Add($sourceMenu)
+[void]$contextMenu.Items.Add($script:CodexOfficialAccessMenuItem)
 [void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
 [void]$contextMenu.Items.Add($topmostMenu)
 [void]$contextMenu.Items.Add($script:EdgeDockMenuItem)
@@ -5019,6 +5216,24 @@ if ($CheckTransitions) {
         [Windows.Threading.Dispatcher]::PushFrame($frame)
     }
 
+    $singleInstanceScoped = (
+        $script:SingleInstanceObjectNames.Mutex.EndsWith(
+            '.' + $script:SingleInstanceObjectNames.Scope,
+            [StringComparison]::Ordinal
+        ) -and
+        $script:SingleInstanceObjectNames.ActivationEvent.EndsWith(
+            '.' + $script:SingleInstanceObjectNames.Scope,
+            [StringComparison]::Ordinal
+        ) -and
+        $script:SingleInstanceObjectNames.Mutex -ne
+            'Local\RemainingMarginFloat.Singleton' -and
+        $script:SingleInstanceObjectNames.ActivationEvent -ne
+            'Local\RemainingMarginFloat.Activate'
+    )
+    if (-not $singleInstanceScoped) {
+        throw 'Single-instance objects are not scoped to the current Windows user.'
+    }
+
     $window.Opacity = 0
     $window.Left = 1812
     $window.Top = 980
@@ -5112,6 +5327,7 @@ if ($CheckTransitions) {
     $inactiveTop = $window.Top
 
     $script:EdgeDockSide = 'Right'
+    $script:EdgeDockWorkArea = $null
     Set-EdgeDockReveal -Revealed $false -Immediate
     $window.UpdateLayout()
     $hiddenTrackX = $UltraProgressTrack.TranslatePoint(
@@ -5129,6 +5345,44 @@ if ($CheckTransitions) {
         $edgeTrackInset -
         $UltraProgressTrack.ActualWidth
     )
+    $edgeRevealHitWidth = $UltraCompactPanel.ActualWidth
+    $edgeDockAnchorRight = $script:EdgeDockWorkArea.Right
+    $expectedEdgeGap = (
+        $script:EdgeVisibleWidth - $UltraProgressTrack.ActualWidth
+    ) / 2
+    $edgeGapSamples = @()
+    foreach ($side in @('Right', 'Left')) {
+        $script:EdgeDockSide = $side
+        foreach ($cycle in 1..8) {
+            Set-EdgeDockReveal -Revealed $true -Immediate
+            Set-EdgeDockReveal -Revealed $false -Immediate
+            $window.UpdateLayout()
+            $trackX = $UltraProgressTrack.TranslatePoint(
+                (New-Object Windows.Point(0, 0)),
+                $window
+            ).X
+            $trackScreenLeft = $window.Left + $trackX
+            $edgeGapSamples += if ($side -eq 'Right') {
+                $script:EdgeDockWorkArea.Right - (
+                    $trackScreenLeft + $UltraProgressTrack.ActualWidth
+                )
+            } else {
+                $trackScreenLeft - $script:EdgeDockWorkArea.Left
+            }
+        }
+    }
+    $edgeGapStableAcrossCycles = @(
+        $edgeGapSamples | Where-Object {
+            [Math]::Abs($_ - $expectedEdgeGap) -ge 0.01
+        }
+    ).Count -eq 0
+    $edgeDockAnchorStable = (
+        [Math]::Abs(
+            $script:EdgeDockWorkArea.Right - $edgeDockAnchorRight
+        ) -lt 0.01
+    )
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
     Set-EdgeDockReveal -Revealed $true -Immediate
     $window.UpdateLayout()
     $revealedTrackX = $UltraProgressTrack.TranslatePoint(
@@ -5138,17 +5392,26 @@ if ($CheckTransitions) {
     $edgeSpacingStable = [Math]::Abs($hiddenTrackX - $revealedTrackX) -lt 0.01
     if (
         -not $hiddenRailHitTest -or
-        $hiddenRailAlpha -ne 1 -or
+        $hiddenRailAlpha -lt 8 -or
+        [Math]::Abs($edgeRevealHitWidth - $script:EdgeVisibleWidth) -ge 0.01 -or
         [Math]::Abs($edgeTrackInset - $edgeTrackTrailingInset) -ge 0.01 -or
-        -not $edgeSpacingStable
+        -not $edgeSpacingStable -or
+        -not $edgeGapStableAcrossCycles -or
+        -not $edgeDockAnchorStable
     ) {
         throw (
-            'Edge rail unstable: hit={0}, alpha={1}, insets={2}/{3}, spacing={4}.' -f
+            (
+                'Edge rail unstable: hit={0}, alpha={1}, width={2}, ' +
+                'insets={3}/{4}, spacing={5}, cycles={6}, anchor={7}.'
+            ) -f
             $hiddenRailHitTest,
             $hiddenRailAlpha,
+            $edgeRevealHitWidth,
             $edgeTrackInset,
             $edgeTrackTrailingInset,
-            $edgeSpacingStable
+            $edgeSpacingStable,
+            $edgeGapStableAcrossCycles,
+            $edgeDockAnchorStable
         )
     }
     Set-EdgeDockReveal -Revealed $false
@@ -5168,6 +5431,7 @@ if ($CheckTransitions) {
         ExpandedWidth = $expandedWidth
         ExpandedHeight = $expandedHeight
         ExpandedVisibility = $expandedVisibility
+        SingleInstanceUserScoped = $singleInstanceScoped
         TaskViewHidden = $taskViewHidden
         TrayIconWidth = $trayIconWidth
         TrayIconHeight = $trayIconHeight
@@ -5210,7 +5474,10 @@ if ($CheckTransitions) {
         EdgeRailAlpha = $hiddenRailAlpha
         EdgeTrackInset = $edgeTrackInset
         EdgeTrackTrailingInset = $edgeTrackTrailingInset
+        EdgeRevealHitWidth = $edgeRevealHitWidth
         EdgeSpacingStable = $edgeSpacingStable
+        EdgeGapStableAcrossCycles = $edgeGapStableAcrossCycles
+        EdgeDockAnchorStable = $edgeDockAnchorStable
         HiddenSurfaceAlpha = $hiddenSurfaceAlpha
         Width = $window.Width
         Height = $window.Height
@@ -5263,6 +5530,13 @@ $script:TrayDeepSeekSourceItem.Add_Click({
 })
 [void]$traySourceItem.DropDownItems.Add($script:TrayCodexSourceItem)
 [void]$traySourceItem.DropDownItems.Add($script:TrayDeepSeekSourceItem)
+$script:TrayCodexOfficialAccessItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayCodexOfficialAccessItem.Text = 'Codex 官方接口（读取登录凭据）'
+$script:TrayCodexOfficialAccessItem.CheckOnClick = $true
+$script:TrayCodexOfficialAccessItem.Add_Click({
+    $enabled = [bool]$script:TrayCodexOfficialAccessItem.Checked
+    [void](Set-CodexOfficialAccess -Enabled $enabled -Confirm:$enabled)
+})
 $script:TrayDeepSeekSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayDeepSeekSettingsItem.Text = 'DeepSeek 设置…'
 $script:TrayDeepSeekSettingsItem.Add_Click({
@@ -5323,6 +5597,7 @@ $trayExitItem.Add_Click({
 [void]$script:TrayMenu.Items.Add($trayOpenItem)
 [void]$script:TrayMenu.Items.Add($trayRefreshItem)
 [void]$script:TrayMenu.Items.Add($traySourceItem)
+[void]$script:TrayMenu.Items.Add($script:TrayCodexOfficialAccessItem)
 [void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
 [void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)

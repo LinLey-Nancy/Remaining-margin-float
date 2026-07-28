@@ -2,7 +2,10 @@
 
 一个轻量、浅色、可拖动的 Windows Codex / DeepSeek 余量悬浮窗。紧凑状态只显示当前数据源最重要的数字，点击后展开账户、余额或额度、Token 统计和数据采样时间。
 
-项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式优先从官方账户用量接口读取周期额度；接口不可访问时，自动改用本地 Codex 会话中的最近余量快照，同时从本机会话汇总 Token。DeepSeek 模式向官方余额接口发起请求，并从 Claude Code 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
+项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式默认读取本地 Codex
+会话中的最近余量快照并汇总 Token；用户明确启用后，才会优先从官方账户用量
+接口读取周期额度。DeepSeek 模式向官方余额接口发起请求，并从 Claude Code
+本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
 
 ## 功能
 
@@ -23,7 +26,7 @@
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
 - 托盘与悬浮窗右键菜单可同步开关贴边隐藏
 - 可选择计划任务、注册表或启动文件夹三种开机启动方式
-- Codex 余量采用双通道：官方账户用量接口优先，网络不可用时自动读取本地会话中的最近有效余量快照
+- Codex 余量采用双通道：默认读取本地会话；用户明确启用官方接口后优先使用官方数据，网络不可用时回退到本地快照
 - 官方接口在后台异步刷新，不会阻塞悬浮窗；两个通道均无数据时显示“余量未知”，不再误显示为 0%
 - 读取 DeepSeek 官方余额、赠金和充值余额
 - 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token
@@ -42,40 +45,53 @@
 
 ## 快速开始
 
-1. 从 GitHub Release 下载 `Remaining-Margin-Float-v*.exe`，或克隆源码。
-2. Release 用户直接运行 EXE；源码用户双击 `Start-RemainingMarginFloat.cmd`。
+1. 从 GitHub Release 下载 `Remaining-Margin-Float-v*.zip`，或克隆源码。
+2. 解压 ZIP 并保持目录内容完整，然后运行 `RemainingMarginFloat.exe`；源码用户
+   可以双击 `Start-RemainingMarginFloat.cmd`；仓库中已有当前版本构建时，该
+   脚本会优先启动打包版，否则回退到源码模式。
 3. 点击悬浮窗查看详情，按住左键拖动位置。
 
 也可以从 PowerShell 启动：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\src\RemainingMarginFloat.ps1
+powershell.exe -NoProfile -STA -File .\src\RemainingMarginFloat.ps1
 ```
 
 重复执行启动命令不会创建第二个窗口，而是将正在运行的窗口带到前台。
 
-`Start-RemainingMarginFloat.cmd` 只负责创建独立、隐藏的 PowerShell 进程，随即自行退出；悬浮程序不依赖启动窗口存活，程序入口缺失时会显示明确提示。
+`Start-RemainingMarginFloat.cmd` 是透明的本地启动入口，不隐藏窗口，也不绕过
+PowerShell 执行策略。它会优先异步启动 `dist` 中与 `VERSION` 匹配的打包版，
+没有打包版时才在当前命令窗口运行源码，并显示明确状态。面向普通用户建议
+直接使用 Release ZIP 中的启动器。
 
 ## 打包
 
 在项目根目录运行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Package.ps1
+powershell.exe -NoProfile -File .\Build-Package.ps1
 ```
 
-脚本会在 `dist` 中生成无控制台窗口、带版本信息和应用图标的便携 EXE，以及对应的 SHA-256 校验文件。主 PowerShell 脚本内嵌于 EXE，运行时释放到 `%LOCALAPPDATA%\RemainingMarginFloat\app\<版本>`；无需安装第三方模块。
+脚本会在 `dist` 中生成透明的便携目录和 ZIP。ZIP 内包含启动器、可审查的
+PowerShell 脚本和使用说明。启动器运行前会验证脚本 SHA-256，并在自身进程中
+托管 PowerShell；不会释放内嵌脚本、创建隐藏的 `powershell.exe` 子进程或使用
+`ExecutionPolicy Bypass`。
 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.2.0.exe
-Remaining-Margin-Float-v1.2.0.exe.sha256
+Remaining-Margin-Float-v1.3.0.zip
+Remaining-Margin-Float-v1.3.0.zip.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.2.0`）后，`Windows Release` 工作流会在 Windows Runner 上构建 EXE，随后创建或更新 GitHub Release。手动运行该工作流时只生成可下载的 Actions Artifact，不创建 Release。
+推送与 `VERSION` 一致的标签（例如 `v1.3.0`）后，`Windows Release` 工作流会
+在 Windows Runner 上测试、构建、签名、验证并生成 ZIP，随后创建或更新
+GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
-当前 EXE 未进行商业代码签名。Windows SmartScreen 可能在首次下载时显示来源提示；正式广泛分发前建议配置受信任的代码签名证书。
+正式标签发布必须配置受信任的代码签名；未签名构建只能用于测试。签名发布
+规范见 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)，安全报告方式见
+[SECURITY.md](SECURITY.md)，SignPath 的人工接入步骤见
+[SIGNING_SETUP.md](SIGNING_SETUP.md)。
 
 ## DeepSeek 配置
 
@@ -108,10 +124,14 @@ Remaining-Margin-Float-v1.2.0.exe.sha256
 应用读取以下本地文件：
 
 - `%USERPROFILE%\.codex\sessions\**\*.jsonl`
-- `%USERPROFILE%\.codex\auth.json`
+- `%USERPROFILE%\.codex\auth.json`（仅在用户明确启用 Codex 官方接口后）
 - `%USERPROFILE%\.claude\projects\**\*.jsonl`
 
-会话文件用于汇总 Codex Token，也在官方接口不可访问时提供最近一次有效的周期余量快照。该快照来自本机已有 Codex 会话，只代表最近一次本地可见状态；官方接口恢复后会自动覆盖本地快照。认证文件只在内存中读取账户标识、访问令牌以及 ID Token 的显示名称和邮箱声明；账户标识和访问令牌仅用于请求 `https://chatgpt.com/backend-api/wham/usage`，不会写入日志或界面，刷新令牌不会被应用使用。
+会话文件用于汇总 Codex Token，并提供最近一次本地可见的周期余量快照。
+Codex 官方接口访问默认关闭；用户在右键菜单中明确启用后，认证文件才会在
+内存中读取账户标识、访问令牌以及 ID Token 的显示名称和邮箱声明。账户标识
+和访问令牌仅用于请求 `https://chatgpt.com/backend-api/wham/usage`，不会写入
+日志或界面，刷新令牌不会被应用使用。完整说明见 [PRIVACY.md](PRIVACY.md)。
 
 Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
@@ -125,7 +145,10 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 
 ### 显示“等待数据”
 
-应用会先读取本地 Codex 会话，再在后台尝试连接官方用量接口。若显示“余量未知”，请确认本机至少运行过一次包含余量信息的 Codex 任务；若希望获得最新官方数据，还需确认 Codex 已登录并且当前网络或代理可以访问 ChatGPT。
+应用默认只读取本地 Codex 会话。若显示“余量未知”，请确认本机至少运行过
+一次包含余量信息的 Codex 任务。若希望获得最新官方数据，请在右键菜单中明确
+启用“Codex 官方接口（读取登录凭据）”，并确认 Codex 已登录且网络可以访问
+ChatGPT。
 
 ### DeepSeek 显示“等待配置”
 
@@ -161,7 +184,16 @@ Windows 服务运行在隔离的 Session 0 中，无法向当前用户桌面显�
 
 ### Windows 阻止脚本执行
 
-推荐使用仓库中的 `Start-RemainingMarginFloat.cmd`。它只为本次进程设置 `ExecutionPolicy Bypass`，不会修改系统执行策略。
+面向普通用户请使用 Release ZIP 中的 `RemainingMarginFloat.exe`。源码启动入口
+不会绕过本机执行策略；如果组织策略禁止运行本地脚本，请不要降低系统安全
+设置，改用官方签名的 Release。
+
+### Windows 显示“未知发布者”或安全软件报风险
+
+只从本仓库的 GitHub Release 下载，并核对签名和 SHA-256。正式标签构建必须
+通过受信任代码签名验证；如果发布者为空、签名无效或文件哈希不一致，请勿
+运行，也不要通过关闭安全软件或添加全局白名单绕过提示。维护者的火绒申诉
+材料模板见 [HUORONG_SUBMISSION_TEMPLATE.md](HUORONG_SUBMISSION_TEMPLATE.md)。
 
 ## 许可证
 
