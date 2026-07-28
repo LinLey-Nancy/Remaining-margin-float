@@ -24,7 +24,3 @@
 
 下载 `Remaining-Margin-Float-v1.3.0.zip`，解压后保持目录内容完整，并运行
 `RemainingMarginFloat.exe`。可使用同名 `.sha256` 文件核对下载完整性。
-
-> 当前 v1.3.0 下载资产尚未完成受信任代码签名，Windows 可能显示“未知发布者”，
-> 安全软件也可能提示风险。请只从本项目 GitHub Release 下载并核对 SHA-256；
-> 不要通过关闭安全软件或添加全局白名单绕过提示。
