@@ -85,13 +85,11 @@ Remaining-Margin-Float-v1.3.0.zip.sha256
 ```
 
 推送与 `VERSION` 一致的标签（例如 `v1.3.0`）后，`Windows Release` 工作流会
-在 Windows Runner 上测试、构建、签名、验证并生成 ZIP，随后创建或更新
+在 Windows Runner 上测试、构建、验证并生成 ZIP，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
-正式标签发布必须配置受信任的代码签名；未签名构建只能用于测试。签名发布
-规范见 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)，安全报告方式见
-[SECURITY.md](SECURITY.md)，SignPath 的人工接入步骤见
-[SIGNING_SETUP.md](SIGNING_SETUP.md)。
+当前项目发布未签名的透明便携包，不要求代码签名。安全报告方式见
+[SECURITY.md](SECURITY.md)。
 
 ## DeepSeek 配置
 
@@ -186,14 +184,15 @@ Windows 服务运行在隔离的 Session 0 中，无法向当前用户桌面显�
 
 面向普通用户请使用 Release ZIP 中的 `RemainingMarginFloat.exe`。源码启动入口
 不会绕过本机执行策略；如果组织策略禁止运行本地脚本，请不要降低系统安全
-设置，改用官方签名的 Release。
+设置，也不要通过关闭安全软件或添加全局白名单绕过限制。
 
 ### Windows 显示“未知发布者”或安全软件报风险
 
-只从本仓库的 GitHub Release 下载，并核对签名和 SHA-256。正式标签构建必须
-通过受信任代码签名验证；如果发布者为空、签名无效或文件哈希不一致，请勿
-运行，也不要通过关闭安全软件或添加全局白名单绕过提示。维护者的火绒申诉
-材料模板见 [HUORONG_SUBMISSION_TEMPLATE.md](HUORONG_SUBMISSION_TEMPLATE.md)。
+当前 Release 未进行代码签名，因此 Windows 可能显示“未知发布者”，安全软件
+也可能提示风险。只从本仓库的 GitHub Release 下载并核对 SHA-256；如果文件
+哈希不一致，请勿运行，也不要通过关闭安全软件或添加全局白名单绕过提示。
+维护者的火绒申诉材料模板见
+[HUORONG_SUBMISSION_TEMPLATE.md](HUORONG_SUBMISSION_TEMPLATE.md)。
 
 ## 许可证
 
