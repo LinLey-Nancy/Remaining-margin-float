@@ -50,15 +50,15 @@
     Set-Progress -Percent 82
     Set-EdgeDockReveal -Revealed $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
-    $edgeLeftPath = Join-Path $captureRoot 'edge-thermometer-left.png'
+    $edgeLeftPath = Join-Path $captureRoot 'edge-energy-left.png'
     Save-VisualPng -Element $window -Path $edgeLeftPath
-    $captureFiles['edge-thermometer-left'] = $edgeLeftPath
+    $captureFiles['edge-energy-left'] = $edgeLeftPath
     $script:EdgeDockSide = 'Right'
     Set-EdgeDockReveal -Revealed $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
-    $edgeRightPath = Join-Path $captureRoot 'edge-thermometer-right.png'
+    $edgeRightPath = Join-Path $captureRoot 'edge-energy-right.png'
     Save-VisualPng -Element $window -Path $edgeRightPath
-    $captureFiles['edge-thermometer-right'] = $edgeRightPath
+    $captureFiles['edge-energy-right'] = $edgeRightPath
     Clear-EdgeDock
     $window.Left = 24
 
@@ -311,10 +311,73 @@ if ($CheckTransitions) {
     )
     $edgeRevealHitWidth = $UltraCompactPanel.ActualWidth
     $edgeDockAnchorRight = $script:EdgeDockWorkArea.Right
-    $expectedEdgeGap = (
-        $script:EdgeVisibleWidth - $UltraProgressTrack.ActualWidth
-    ) / 2
+    $energyFillOrigin = $UltraProgressFill.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $UltraProgressTrack
+    )
+    $energyFillRightInset = (
+        $UltraProgressTrack.ActualWidth -
+        $energyFillOrigin.X -
+        $UltraProgressFill.ActualWidth
+    )
+    $energyFillBottomInset = (
+        $UltraProgressTrack.ActualHeight -
+        $energyFillOrigin.Y -
+        $UltraProgressFill.ActualHeight
+    )
+    $outlineThickness = $UltraProgressOutline.BorderThickness
+    $outlineCorners = $UltraProgressOutline.CornerRadius
+    $energyContainedByOutline = (
+        [Math]::Abs($energyFillOrigin.X - 1) -lt 0.01 -and
+        [Math]::Abs($energyFillOrigin.Y - 1) -lt 0.01 -and
+        [Math]::Abs($energyFillRightInset - 1) -lt 0.01 -and
+        [Math]::Abs($energyFillBottomInset - 1) -lt 0.01 -and
+        $outlineThickness.Left -eq 1 -and
+        $outlineThickness.Top -eq 1 -and
+        $outlineThickness.Right -eq 1 -and
+        $outlineThickness.Bottom -eq 1 -and
+        $outlineCorners.TopLeft -eq 2 -and
+        $outlineCorners.TopRight -eq 2 -and
+        $outlineCorners.BottomRight -eq 2 -and
+        $outlineCorners.BottomLeft -eq 2
+    )
+    $expectedEdgeGap = 0
+    $edgeTrackFlushInPanel = (
+        [Math]::Abs([Math]::Min($edgeTrackInset, $edgeTrackTrailingInset)) -lt 0.01 -and
+        [Math]::Abs(
+            [Math]::Max($edgeTrackInset, $edgeTrackTrailingInset) -
+            ($script:EdgeVisibleWidth - $UltraProgressTrack.ActualWidth)
+        ) -lt 0.01
+    )
     $edgeGapSamples = @()
+    $edgePixelGapSamples = @()
+    function Get-CurrentEdgePixelGap {
+        $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
+        $screenArea = [System.Windows.Forms.Screen]::FromHandle($helper.Handle).WorkingArea
+        $edgeElement = if ($script:IsEdgeRevealed) {
+            $Surface
+        }
+        else {
+            $UltraProgressTrack
+        }
+        $visualEdge = if ($script:EdgeDockSide -eq 'Left') {
+            $edgeElement.PointToScreen(
+                (New-Object Windows.Point(0, 0))
+            ).X
+        }
+        else {
+            $edgeElement.PointToScreen(
+                (New-Object Windows.Point($edgeElement.ActualWidth, 0))
+            ).X
+        }
+        $screenEdge = if ($script:EdgeDockSide -eq 'Left') {
+            [double]$screenArea.Left
+        }
+        else {
+            [double]$screenArea.Right
+        }
+        return [Math]::Abs($screenEdge - $visualEdge)
+    }
     foreach ($side in @('Right', 'Left')) {
         $script:EdgeDockSide = $side
         foreach ($cycle in 1..8) {
@@ -333,6 +396,7 @@ if ($CheckTransitions) {
             } else {
                 $trackScreenLeft - $script:EdgeDockWorkArea.Left
             }
+            $edgePixelGapSamples += Get-CurrentEdgePixelGap
         }
     }
     $edgeGapStableAcrossCycles = @(
@@ -345,6 +409,46 @@ if ($CheckTransitions) {
             $script:EdgeDockWorkArea.Right - $edgeDockAnchorRight
         ) -lt 0.01
     )
+    $edgePixelAlignedAcrossCycles = @(
+        $edgePixelGapSamples | Where-Object { $_ -ge 0.01 }
+    ).Count -eq 0
+    $animatedEdgePixelGapSamples = @()
+    $animatedRevealPixelGapSamples = @()
+    foreach ($side in @('Right', 'Left')) {
+        $script:EdgeDockSide = $side
+        foreach ($cycle in 1..6) {
+            Set-EdgeDockReveal -Revealed $false -Immediate
+            Set-EdgeDockReveal -Revealed $true
+            Wait-ForUi -Milliseconds ($script:EdgeRevealDurationMs + 45)
+            $window.UpdateLayout()
+            $animatedRevealPixelGapSamples += Get-CurrentEdgePixelGap
+            Set-EdgeDockReveal -Revealed $false
+            Wait-ForUi -Milliseconds ($script:EdgeHideDurationMs + 45)
+            $window.UpdateLayout()
+            $animatedEdgePixelGapSamples += Get-CurrentEdgePixelGap
+        }
+    }
+    $animatedEdgePixelAligned = @(
+        $animatedEdgePixelGapSamples | Where-Object { $_ -ge 0.01 }
+    ).Count -eq 0
+    $animatedRevealPixelAligned = @(
+        $animatedRevealPixelGapSamples | Where-Object { $_ -ge 0.01 }
+    ).Count -eq 0
+    $script:EdgeDockSide = 'Right'
+    $script:IsPointerOverSurface = $true
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    $script:EdgeRevealTimer.Stop()
+    $script:EdgeRevealTimer.Start()
+    Wait-ForUi -Milliseconds (
+        70 + $script:EdgeRevealDurationMs + 70
+    )
+    $window.UpdateLayout()
+    $hoverTimerRevealedEdgeDock = $script:IsEdgeRevealed
+    $hoverRevealPixelAligned = (
+        $hoverTimerRevealedEdgeDock -and
+        (Get-CurrentEdgePixelGap) -lt 0.01
+    )
+    $script:IsPointerOverSurface = $false
     $script:EdgeDockSide = 'Right'
     Set-EdgeDockReveal -Revealed $false -Immediate
     Set-EdgeDockReveal -Revealed $true -Immediate
@@ -358,15 +462,22 @@ if ($CheckTransitions) {
         -not $hiddenRailHitTest -or
         $hiddenRailAlpha -lt 8 -or
         [Math]::Abs($edgeRevealHitWidth - $script:EdgeVisibleWidth) -ge 0.01 -or
-        [Math]::Abs($edgeTrackInset - $edgeTrackTrailingInset) -ge 0.01 -or
+        -not $edgeTrackFlushInPanel -or
         -not $edgeSpacingStable -or
         -not $edgeGapStableAcrossCycles -or
-        -not $edgeDockAnchorStable
+        -not $edgeDockAnchorStable -or
+        -not $energyContainedByOutline -or
+        -not $edgePixelAlignedAcrossCycles -or
+        -not $animatedEdgePixelAligned -or
+        -not $animatedRevealPixelAligned -or
+        -not $hoverRevealPixelAligned
     ) {
         throw (
             (
                 'Edge rail unstable: hit={0}, alpha={1}, width={2}, ' +
-                'insets={3}/{4}, spacing={5}, cycles={6}, anchor={7}.'
+                'insets={3}/{4}, spacing={5}, cycles={6}, anchor={7}, ' +
+                'pixels={8}, animated={9}, reveal={10}, hover={11}, ' +
+                'outline={12}.'
             ) -f
             $hiddenRailHitTest,
             $hiddenRailAlpha,
@@ -375,7 +486,12 @@ if ($CheckTransitions) {
             $edgeTrackTrailingInset,
             $edgeSpacingStable,
             $edgeGapStableAcrossCycles,
-            $edgeDockAnchorStable
+            $edgeDockAnchorStable,
+            $edgePixelAlignedAcrossCycles,
+            $animatedEdgePixelAligned,
+            $animatedRevealPixelAligned,
+            $hoverRevealPixelAligned,
+            $energyContainedByOutline
         )
     }
     Set-EdgeDockReveal -Revealed $false
@@ -440,6 +556,40 @@ if ($CheckTransitions) {
         EdgeRailAlpha = $hiddenRailAlpha
         EdgeTrackInset = $edgeTrackInset
         EdgeTrackTrailingInset = $edgeTrackTrailingInset
+        EdgeTrackWidth = $UltraProgressTrack.ActualWidth
+        EdgeTrackFlush = ($edgeTrackFlushInPanel -and $edgeGapStableAcrossCycles)
+        EdgeEnergyContainedByOutline = $energyContainedByOutline
+        EdgeEnergyInsets = @(
+            $energyFillOrigin.X,
+            $energyFillOrigin.Y,
+            $energyFillRightInset,
+            $energyFillBottomInset
+        )
+        EdgeOutlineThickness = @(
+            $outlineThickness.Left,
+            $outlineThickness.Top,
+            $outlineThickness.Right,
+            $outlineThickness.Bottom
+        )
+        EdgeOutlineCorners = @(
+            $outlineCorners.TopLeft,
+            $outlineCorners.TopRight,
+            $outlineCorners.BottomRight,
+            $outlineCorners.BottomLeft
+        )
+        EdgePixelAlignedAcrossCycles = $edgePixelAlignedAcrossCycles
+        AnimatedEdgePixelAligned = $animatedEdgePixelAligned
+        AnimatedRevealPixelAligned = $animatedRevealPixelAligned
+        HoverTimerRevealedEdgeDock = $hoverTimerRevealedEdgeDock
+        HoverRevealPixelAligned = $hoverRevealPixelAligned
+        MaximumEdgePixelGap = (
+            @(
+                $edgePixelGapSamples +
+                $animatedEdgePixelGapSamples +
+                $animatedRevealPixelGapSamples
+            ) |
+                Measure-Object -Maximum
+        ).Maximum
         EdgeRevealHitWidth = $edgeRevealHitWidth
         EdgeSpacingStable = $edgeSpacingStable
         EdgeGapStableAcrossCycles = $edgeGapStableAcrossCycles

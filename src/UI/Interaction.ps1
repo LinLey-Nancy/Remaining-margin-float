@@ -285,7 +285,7 @@ $script:EdgeDockMenuItem = New-Object Windows.Controls.MenuItem
 $script:EdgeDockMenuItem.Header = '贴边隐藏'
 $script:EdgeDockMenuItem.IsCheckable = $true
 $script:EdgeDockMenuItem.IsChecked = $script:EdgeDockEnabled
-$script:EdgeDockMenuItem.ToolTip = '拖到屏幕左侧或右侧后，自动收为温度计进度条'
+$script:EdgeDockMenuItem.ToolTip = '拖到屏幕左侧或右侧后，自动收为竖向能量条'
 $script:EdgeDockMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Set-EdgeDockEnabled -Enabled $script:EdgeDockMenuItem.IsChecked
 }))

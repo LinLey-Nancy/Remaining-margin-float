@@ -69,7 +69,7 @@ $script:TrayEdgeDockItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayEdgeDockItem.Text = '贴边隐藏'
 $script:TrayEdgeDockItem.CheckOnClick = $true
 $script:TrayEdgeDockItem.Checked = $script:EdgeDockEnabled
-$script:TrayEdgeDockItem.ToolTipText = '拖到屏幕左侧或右侧后，自动收为温度计进度条'
+$script:TrayEdgeDockItem.ToolTipText = '拖到屏幕左侧或右侧后，自动收为竖向能量条'
 $script:TrayEdgeDockItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Set-EdgeDockEnabled -Enabled $script:TrayEdgeDockItem.Checked
 }))

@@ -345,11 +345,35 @@ using System.Runtime.InteropServices;
 
 public static class RemainingMarginNativeWindow
 {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int X,
+        int Y,
+        int cx,
+        int cy,
+        uint uFlags);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -537,6 +561,7 @@ $names = @(
     'WindowRoot', 'HoverHalo', 'Surface', 'SurfaceShadow', 'CompactHit',
     'CompactDivider',
     'UltraCompactPanel', 'UltraProgressTrack', 'UltraProgressFill',
+    'UltraProgressOutline', 'UltraDepletedMask', 'UltraLevelMarker',
     'UltraEmptyProgressRow', 'UltraRemainingProgressRow',
     'CompactPrefix', 'RemainingValue', 'CompactSuffix', 'WindowLabel',
     'CompactProgressRow', 'ExpandedWindowLabel', 'ResetSummaryPanel',
@@ -581,7 +606,7 @@ function Apply-SystemAccessibilityTheme {
     $Surface.Background = [Windows.SystemColors]::WindowBrush
     $Surface.BorderBrush = [Windows.SystemColors]::ActiveBorderBrush
     $UltraProgressTrack.Background = [Windows.SystemColors]::WindowBrush
-    $UltraProgressTrack.BorderBrush = [Windows.SystemColors]::ActiveBorderBrush
+    $UltraProgressOutline.BorderBrush = [Windows.SystemColors]::ActiveBorderBrush
 }
 
 Apply-SystemAccessibilityTheme

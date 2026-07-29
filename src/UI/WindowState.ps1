@@ -36,6 +36,80 @@ function Get-EdgeDockWorkArea {
     return $script:EdgeDockWorkArea
 }
 
+function Align-EdgeDockToPhysicalScreenEdge {
+    if (-not $script:EdgeDockSide -or $script:IsExpanded) { return $null }
+
+    $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
+    if ($helper.Handle -eq [IntPtr]::Zero) { return $null }
+
+    $window.UpdateLayout()
+    $screenArea = [System.Windows.Forms.Screen]::FromHandle($helper.Handle).WorkingArea
+    $edgeElement = if ($script:IsEdgeRevealed) {
+        $Surface
+    }
+    else {
+        $UltraProgressTrack
+    }
+    $visualPoint = if ($script:EdgeDockSide -eq 'Left') {
+        $edgeElement.PointToScreen((New-Object Windows.Point(0, 0)))
+    }
+    else {
+        $edgeElement.PointToScreen(
+            (New-Object Windows.Point($edgeElement.ActualWidth, 0))
+        )
+    }
+    $screenEdge = if ($script:EdgeDockSide -eq 'Left') {
+        [double]$screenArea.Left
+    }
+    else {
+        [double]$screenArea.Right
+    }
+    $pixelCorrection = [int][Math]::Round(
+        $screenEdge - $visualPoint.X,
+        [MidpointRounding]::AwayFromZero
+    )
+
+    if ($pixelCorrection -ne 0) {
+        $windowRect = New-Object RemainingMarginNativeWindow+RECT
+        if (-not [RemainingMarginNativeWindow]::GetWindowRect(
+            $helper.Handle,
+            [ref]$windowRect
+        )) {
+            return $null
+        }
+        $positionOnly = 0x0001 -bor 0x0004 -bor 0x0010 -bor 0x0200
+        if (-not [RemainingMarginNativeWindow]::SetWindowPos(
+            $helper.Handle,
+            [IntPtr]::Zero,
+            $windowRect.Left + $pixelCorrection,
+            $windowRect.Top,
+            0,
+            0,
+            $positionOnly
+        )) {
+            return $null
+        }
+        $window.UpdateLayout()
+    }
+
+    $alignedPoint = if ($script:EdgeDockSide -eq 'Left') {
+        $edgeElement.PointToScreen((New-Object Windows.Point(0, 0))).X
+    }
+    else {
+        $edgeElement.PointToScreen(
+            (New-Object Windows.Point($edgeElement.ActualWidth, 0))
+        ).X
+    }
+    return [pscustomobject]@{
+        Side = $script:EdgeDockSide
+        Revealed = $script:IsEdgeRevealed
+        ScreenEdge = $screenEdge
+        VisualEdge = $alignedPoint
+        GapPixels = [Math]::Abs($screenEdge - $alignedPoint)
+        CorrectionPixels = $pixelCorrection
+    }
+}
+
 function Set-EdgeDockChrome {
     param([bool]$Revealed)
 
@@ -58,7 +132,7 @@ function Set-EdgeDockChrome {
     }
 
     # Docking must not reshape the card. Only the hidden-state chrome becomes
-    # transparent so the thermometer reads as a quiet edge affordance.
+    # transparent so the energy rail reads as a focused edge affordance.
     $Surface.CornerRadius = New-Object Windows.CornerRadius(16)
     $HoverHalo.CornerRadius = New-Object Windows.CornerRadius(17)
 
@@ -175,10 +249,13 @@ function Set-EdgeDockReveal {
         $workArea.Top,
         [Math]::Min($window.Top, $workArea.Bottom - $script:CompactHeight)
     )
-    $UltraCompactPanel.HorizontalAlignment = if ($script:EdgeDockSide -eq 'Left') {
-        [Windows.HorizontalAlignment]::Right
-    } else {
-        [Windows.HorizontalAlignment]::Left
+    if ($script:EdgeDockSide -eq 'Left') {
+        $UltraCompactPanel.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
+        $UltraProgressTrack.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
+    }
+    else {
+        $UltraCompactPanel.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
+        $UltraProgressTrack.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
     }
 
     $targetLeft = Get-EdgeDockPlacement `
@@ -205,10 +282,25 @@ function Set-EdgeDockReveal {
             -EaseIn:(-not $Revealed)
         $leftAnimation.From = $currentLeft
         $leftAnimation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+        $leftAnimation.Add_Completed((New-RmfEventHandler -Kind Event -Callback {
+            if ($script:EdgeDockSide -and -not $script:IsExpanded) {
+                $window.Dispatcher.BeginInvoke(
+                    [Windows.Threading.DispatcherPriority]::ContextIdle,
+                    (New-RmfAction -Callback {
+                        if ($script:EdgeDockSide -and -not $script:IsExpanded) {
+                            [void](Align-EdgeDockToPhysicalScreenEdge)
+                        }
+                    })
+                ) | Out-Null
+            }
+        }))
         $window.BeginAnimation([Windows.Window]::LeftProperty, $leftAnimation)
     }
 
     Set-EdgeDockVisualState -Revealed $Revealed -Immediate:$Immediate
+    if ($Immediate -or $script:ReducedMotion) {
+        [void](Align-EdgeDockToPhysicalScreenEdge)
+    }
     $CompactHit.ToolTip = if ($Revealed) {
         '拖动移动 · 单击查看详情'
     } else {
@@ -586,16 +678,77 @@ function Set-UsageStatusPalette {
     ([Windows.Media.SolidColorBrush]$window.Resources['SageSoft']).Color = $palette.Soft
     ([Windows.Media.SolidColorBrush]$window.Resources['StatusBorder']).Color = $palette.Border
     $script:CurrentHoverBorderColor = $palette.HoverBorder
-    $thermometerBrush = New-Object Windows.Media.LinearGradientBrush
-    $thermometerBrush.StartPoint = New-Object Windows.Point(0, 1)
-    $thermometerBrush.EndPoint = New-Object Windows.Point(0, 0)
-    $thermometerBrush.GradientStops.Add(
-        (New-Object Windows.Media.GradientStop($palette.Strong, 0.0))
-    )
-    $thermometerBrush.GradientStops.Add(
-        (New-Object Windows.Media.GradientStop($palette.Accent, 1.0))
-    )
-    $UltraProgressFill.Background = $thermometerBrush
+    $energyBrush = New-Object Windows.Media.LinearGradientBrush
+    $energyBrush.StartPoint = New-Object Windows.Point(0, 0)
+    $energyBrush.EndPoint = New-Object Windows.Point(0, 1)
+    if ($script:HighContrast) {
+        $energyBrush.GradientStops.Add(
+            (New-Object Windows.Media.GradientStop([Windows.SystemColors]::HighlightColor, 0.0))
+        )
+        $energyBrush.GradientStops.Add(
+            (New-Object Windows.Media.GradientStop([Windows.SystemColors]::HighlightColor, 1.0))
+        )
+        $UltraDepletedMask.Background = [Windows.SystemColors]::WindowBrush
+    }
+    elseif ($Available) {
+        foreach ($stop in @(
+            [pscustomobject]@{ Color = '#25D982'; Offset = 0.0 },
+            [pscustomobject]@{ Color = '#76D955'; Offset = 0.42 },
+            [pscustomobject]@{ Color = '#FFD447'; Offset = 0.60 },
+            [pscustomobject]@{ Color = '#FF8A3D'; Offset = 0.80 },
+            [pscustomobject]@{ Color = '#F34F60'; Offset = 1.0 }
+        )) {
+            $energyBrush.GradientStops.Add(
+                (New-Object Windows.Media.GradientStop(
+                    [Windows.Media.ColorConverter]::ConvertFromString($stop.Color),
+                    $stop.Offset
+                ))
+            )
+        }
+        $UltraDepletedMask.Background = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#BCEFEFEA')
+        )
+    }
+    else {
+        $energyBrush.GradientStops.Add(
+            (New-Object Windows.Media.GradientStop(
+                [Windows.Media.ColorConverter]::ConvertFromString('#9AA19C'),
+                0.0
+            ))
+        )
+        $energyBrush.GradientStops.Add(
+            (New-Object Windows.Media.GradientStop(
+                [Windows.Media.ColorConverter]::ConvertFromString('#747B77'),
+                1.0
+            ))
+        )
+        $UltraDepletedMask.Background = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#A6F1F2EF')
+        )
+    }
+    $UltraProgressFill.Background = $energyBrush
+    $UltraProgressOutline.BorderBrush = if ($script:HighContrast) {
+        [Windows.SystemColors]::ActiveBorderBrush
+    }
+    elseif ($Available) {
+        New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#E52B3831')
+        )
+    }
+    else {
+        New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#C84E5651')
+        )
+    }
+    $UltraLevelMarker.Background = if ($script:HighContrast) {
+        [Windows.SystemColors]::WindowTextBrush
+    }
+    else {
+        New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#F2FFFFFF')
+        )
+    }
+    $UltraLevelMarker.Visibility = if ($Available) { 'Visible' } else { 'Collapsed' }
 
     if ($script:IsPointerOverSurface) {
         $Surface.BorderBrush = New-Object Windows.Media.SolidColorBrush(

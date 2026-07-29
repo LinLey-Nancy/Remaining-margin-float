@@ -536,32 +536,60 @@
               Background="#0CFFFFFF"
               HorizontalAlignment="Right"
               VerticalAlignment="Stretch"
-              SnapsToDevicePixels="False"
-              UseLayoutRounding="False"
+              SnapsToDevicePixels="True"
+              UseLayoutRounding="True"
               IsHitTestVisible="False"
               Opacity="0">
             <Border x:Name="UltraProgressTrack"
-                    Width="4"
-                    Margin="0,8"
+                    Width="12"
+                    Margin="0"
                     VerticalAlignment="Stretch"
-                    Background="#A6D9DCD7"
+                    Background="Transparent"
                     BorderBrush="Transparent"
                     BorderThickness="0"
                     CornerRadius="2"
                     ClipToBounds="True"
-                    SnapsToDevicePixels="False"
-                    UseLayoutRounding="False"
+                    SnapsToDevicePixels="True"
+                    UseLayoutRounding="True"
                     ToolTip="剩余 --">
                 <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition x:Name="UltraEmptyProgressRow" Height="100*"/>
-                        <RowDefinition x:Name="UltraRemainingProgressRow" Height="0*"/>
-                    </Grid.RowDefinitions>
-                    <Border x:Name="UltraProgressFill"
-                            Grid.Row="1"
-                            Margin="0"
+                    <Grid Margin="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition x:Name="UltraEmptyProgressRow" Height="100*"/>
+                            <RowDefinition x:Name="UltraRemainingProgressRow" Height="0*"/>
+                        </Grid.RowDefinitions>
+                        <Border x:Name="UltraProgressFill"
+                                Grid.RowSpan="2"
+                                Margin="0"
+                                CornerRadius="1">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#25D982" Offset="0"/>
+                                    <GradientStop Color="#76D955" Offset="0.42"/>
+                                    <GradientStop Color="#FFD447" Offset="0.6"/>
+                                    <GradientStop Color="#FF8A3D" Offset="0.8"/>
+                                    <GradientStop Color="#F34F60" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                        <Border x:Name="UltraDepletedMask"
+                                Grid.Row="0"
+                                Background="#BCEFEFEA"/>
+                        <Border x:Name="UltraLevelMarker"
+                                Grid.Row="1"
+                                Height="2"
+                                VerticalAlignment="Top"
+                                Background="#F2FFFFFF"/>
+                    </Grid>
+                    <Border x:Name="UltraProgressOutline"
+                            Panel.ZIndex="2"
+                            Background="Transparent"
+                            BorderBrush="#F02B3831"
+                            BorderThickness="1"
                             CornerRadius="2"
-                            Background="{DynamicResource Sage}"/>
+                            IsHitTestVisible="False"
+                            SnapsToDevicePixels="True"
+                            UseLayoutRounding="True"/>
                 </Grid>
             </Border>
         </Grid>

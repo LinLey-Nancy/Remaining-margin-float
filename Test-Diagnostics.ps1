@@ -179,6 +179,18 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.EdgeRailHitTest -and
     $transitions.EdgeRailAlpha -ge 8 -and
     $transitions.EdgeRevealHitWidth -eq 14 -and
+    $transitions.EdgeTrackWidth -eq 12 -and
+    [bool]$transitions.EdgeTrackFlush -and
+    [bool]$transitions.EdgeEnergyContainedByOutline -and
+    @($transitions.EdgeEnergyInsets | Where-Object { $_ -ne 1 }).Count -eq 0 -and
+    @($transitions.EdgeOutlineThickness | Where-Object { $_ -ne 1 }).Count -eq 0 -and
+    @($transitions.EdgeOutlineCorners | Where-Object { $_ -ne 2 }).Count -eq 0 -and
+    [bool]$transitions.EdgePixelAlignedAcrossCycles -and
+    [bool]$transitions.AnimatedEdgePixelAligned -and
+    [bool]$transitions.AnimatedRevealPixelAligned -and
+    [bool]$transitions.HoverTimerRevealedEdgeDock -and
+    [bool]$transitions.HoverRevealPixelAligned -and
+    $transitions.MaximumEdgePixelGap -eq 0 -and
     [bool]$transitions.EdgeSpacingStable -and
     [bool]$transitions.EdgeGapStableAcrossCycles -and
     [bool]$transitions.EdgeDockAnchorStable -and
