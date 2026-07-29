@@ -224,8 +224,6 @@ Windows 服务运行在隔离的 Session 0 中，无法向当前用户桌面显�
 当前 Release 未进行代码签名，因此 Windows 可能显示“未知发布者”，安全软件
 也可能提示风险。只从本仓库的 GitHub Release 下载并核对 SHA-256；如果文件
 哈希不一致，请勿运行，也不要通过关闭安全软件或添加全局白名单绕过提示。
-维护者的火绒申诉材料模板见
-[HUORONG_SUBMISSION_TEMPLATE.md](HUORONG_SUBMISSION_TEMPLATE.md)。
 
 ## 许可证
 
