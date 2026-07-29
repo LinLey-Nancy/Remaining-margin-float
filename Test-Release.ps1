@@ -17,8 +17,16 @@ $executablePath = Join-Path $packageRoot 'RemainingMarginFloat.exe'
 $scriptPath = Join-Path $packageRoot 'RemainingMarginFloat.ps1'
 $archivePath = Join-Path $outputRoot "$productName.zip"
 $checksumPath = "$archivePath.sha256"
+$componentManifestPath = Join-Path $PSScriptRoot 'src\Components.psd1'
+$packageLicensePath = Join-Path $packageRoot 'LICENSE'
+$packagePrivacyPath = Join-Path $packageRoot 'PRIVACY.md'
 
-foreach ($requiredPath in @($executablePath, $scriptPath)) {
+foreach ($requiredPath in @(
+    $executablePath
+    $scriptPath
+    $packageLicensePath
+    $packagePrivacyPath
+)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Release input is missing: $requiredPath"
     }
@@ -31,8 +39,12 @@ if (Test-Path -LiteralPath $legacyExecutable) {
 
 $runtimeFiles = @(
     (Join-Path $PSScriptRoot 'Build-Package.ps1'),
-    (Join-Path $PSScriptRoot 'Start-RemainingMarginFloat.cmd'),
-    (Join-Path $PSScriptRoot 'src\RemainingMarginFloat.ps1')
+    (Join-Path $PSScriptRoot 'Start-RemainingMarginFloat.cmd')
+)
+$runtimeFiles += @(
+    Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Recurse -File |
+        Where-Object { $_.Extension -in @('.ps1', '.psd1') } |
+        ForEach-Object { $_.FullName }
 )
 $forbiddenPatterns = @(
     'ExecutionPolicy\s+Bypass',
@@ -50,6 +62,47 @@ foreach ($runtimeFile in $runtimeFiles) {
             throw "Forbidden release behavior '$pattern' found in $runtimeFile"
         }
     }
+}
+
+$runtimeVersionPattern =
+    '(?i)(?:remaining-margin-float|RemainingMarginFloat)/(?<version>\d+\.\d+\.\d+)'
+$runtimeVersionMatches = @(
+    foreach ($runtimeFile in $runtimeFiles) {
+        $content = Get-Content -LiteralPath $runtimeFile -Raw
+        [regex]::Matches($content, $runtimeVersionPattern)
+    }
+)
+if ($runtimeVersionMatches.Count -eq 0) {
+    throw 'No runtime User-Agent version marker was found.'
+}
+foreach ($runtimeVersionMatch in $runtimeVersionMatches) {
+    if ($runtimeVersionMatch.Groups['version'].Value -ne $Version) {
+        throw (
+            'Runtime User-Agent version does not match VERSION: ' +
+            $runtimeVersionMatch.Value
+        )
+    }
+}
+
+$componentManifest = Import-PowerShellDataFile -LiteralPath $componentManifestPath
+$componentPaths = @($componentManifest.Components)
+$packagedScriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+$bundledComponentMarkers = @(
+    [regex]::Matches($packagedScriptText, '(?m)^# component: (.+)$') |
+        ForEach-Object { $_.Groups[1].Value.Trim() }
+)
+if (
+    $componentPaths.Count -ne $bundledComponentMarkers.Count -or
+    (Compare-Object `
+        -ReferenceObject $componentPaths `
+        -DifferenceObject $bundledComponentMarkers `
+        -SyncWindow 0)
+) {
+    throw (
+        'Bundled release components do not match src\Components.psd1. ' +
+        "Expected: $($componentPaths -join ', '); " +
+        "actual: $($bundledComponentMarkers -join ', ')"
+    )
 }
 
 $signature = Get-AuthenticodeSignature -LiteralPath $executablePath
@@ -94,6 +147,14 @@ $previousLauncherCheck = [Environment]::GetEnvironmentVariable(
     'REMAINING_MARGIN_FLOAT_LAUNCHER_CHECK',
     $processEnvironment
 )
+$previousGuiCheck = [Environment]::GetEnvironmentVariable(
+    'REMAINING_MARGIN_FLOAT_GUI_CHECK',
+    $processEnvironment
+)
+$previousInstanceScope = [Environment]::GetEnvironmentVariable(
+    'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+    $processEnvironment
+)
 $negativeTestRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'RemainingMarginFloat.ReleaseTest.{0}.{1}' -f $PID, [Guid]::NewGuid().ToString('N')
 )
@@ -120,11 +181,85 @@ try {
     if ((Invoke-LauncherCheck -Path $negativeExecutable) -eq 0) {
         throw 'Launcher accepted a package with a modified script.'
     }
+
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_LAUNCHER_CHECK',
+        $null,
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_GUI_CHECK',
+        '1',
+        $processEnvironment
+    )
+    $guiCheckExitCode = Invoke-LauncherCheck -Path $executablePath
+    if ($guiCheckExitCode -ne 0) {
+        throw "Packaged GUI callback check failed: $guiCheckExitCode"
+    }
+
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_GUI_CHECK',
+        $null,
+        $processEnvironment
+    )
+    $instanceScope = 'ReleaseTest.{0}.{1}' -f
+        $PID,
+        [Guid]::NewGuid().ToString('N')
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+        $instanceScope,
+        $processEnvironment
+    )
+    $activationEventName = "Local\RemainingMarginFloat.Activate.$instanceScope"
+    $mutexName = "Local\RemainingMarginFloat.Singleton.$instanceScope"
+    $activationEvent = New-Object Threading.EventWaitHandle(
+        $false,
+        [Threading.EventResetMode]::AutoReset,
+        $activationEventName
+    )
+    $ownsTestMutex = $false
+    $testMutex = New-Object Threading.Mutex(
+        $true,
+        $mutexName,
+        [ref]$ownsTestMutex
+    )
+    try {
+        if (-not $ownsTestMutex) {
+            throw 'Could not create isolated single-instance test mutex.'
+        }
+        $secondLaunchExitCode = Invoke-LauncherCheck -Path $executablePath
+        if ($secondLaunchExitCode -ne 0) {
+            throw (
+                'Second launcher instance reported a startup error: ' +
+                $secondLaunchExitCode
+            )
+        }
+        if (-not $activationEvent.WaitOne(1000)) {
+            throw 'Second launcher instance did not signal the active instance.'
+        }
+    }
+    finally {
+        if ($ownsTestMutex) {
+            $testMutex.ReleaseMutex()
+        }
+        $testMutex.Dispose()
+        $activationEvent.Dispose()
+    }
 }
 finally {
     [Environment]::SetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_LAUNCHER_CHECK',
         $previousLauncherCheck,
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_GUI_CHECK',
+        $previousGuiCheck,
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+        $previousInstanceScope,
         $processEnvironment
     )
     if (Test-Path -LiteralPath $negativeTestRoot) {
@@ -264,6 +399,8 @@ if ($RequireArchive) {
                 Sort-Object
         )
         $expectedFiles = @(
+            'LICENSE'
+            'PRIVACY.md'
             'README.txt'
             'RemainingMarginFloat.exe'
             'RemainingMarginFloat.ps1'
@@ -274,7 +411,12 @@ if ($RequireArchive) {
         ) {
             throw "Unexpected final ZIP contents: $($actualFiles -join ', ')"
         }
-        foreach ($fileName in @('RemainingMarginFloat.exe', 'RemainingMarginFloat.ps1')) {
+        foreach ($fileName in @(
+            'LICENSE'
+            'PRIVACY.md'
+            'RemainingMarginFloat.exe'
+            'RemainingMarginFloat.ps1'
+        )) {
             $expandedHash = (Get-FileHash `
                 -LiteralPath (Join-Path $expandedPackageRoot $fileName) `
                 -Algorithm SHA256).Hash
@@ -304,7 +446,11 @@ if ($RequireArchive) {
     }
     Timestamped = $null -ne $signature.TimeStamperCertificate
     RuntimePolicyCheck = 'Passed'
+    RuntimeVersionCheck = 'Passed'
+    BundledComponentCheck = 'Passed'
     LauncherRuntimeCheck = 'Passed'
+    WpfEventCallbackCheck = 'Passed'
+    SecondLaunchActivationCheck = 'Passed'
     MissingScriptRejected = 'Passed'
     ModifiedScriptRejected = 'Passed'
     PackagedStartupCheck = 'Passed'

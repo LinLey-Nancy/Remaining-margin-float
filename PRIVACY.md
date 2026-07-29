@@ -11,8 +11,13 @@ Remaining Margin Float 是本地运行的开源桌面工具，不包含广告、
   Claude Code 会话中的 DeepSeek Token。
 - `%LOCALAPPDATA%\RemainingMarginFloat\settings.json`：保存界面位置、数据源和
   用户主动选择的功能开关。
+- `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`：保存最近 8 天
+  的脱敏趋势样本，只包含数据源、采样时间、百分比或余额、币种和可选重置时间。
 
 这些文件的原始内容不会发送给本项目维护者或项目自建服务。
+
+趋势历史不包含账号名称、邮箱、Token、API Key、访问令牌或原始会话内容。
+样本按约 5 分钟聚合，仅用于本机的 24 小时/7 天趋势、低余量提醒和耗尽预测。
 
 ## Codex 官方接口（默认关闭）
 

@@ -66,6 +66,30 @@ Assert-Diagnostic -Condition (
     [Math]::Abs([double]$deepSeek.PricingUsageCostCny - 9.025) -lt 0.0001
 ) -Message 'DeepSeek price calculation'
 
+$history = Invoke-JsonDiagnostic -Name 'CheckUsageHistory'
+Assert-Diagnostic -Condition ($history.Trend24Change -eq -20) `
+    -Message '24-hour history trend'
+Assert-Diagnostic -Condition ($history.Trend7Change -eq -20) `
+    -Message '7-day history trend'
+Assert-Diagnostic -Condition (
+    $history.DepletionStatus -eq 'Depleting' -and
+    [Math]::Abs([double]$history.DepletionHours - 6) -lt 0.01
+) -Message 'Depletion forecast'
+Assert-Diagnostic -Condition ([bool]$history.ResetBoundaryRespected) `
+    -Message 'Forecast reset boundary'
+Assert-Diagnostic -Condition ([bool]$history.ResetJumpStartsNewSegment) `
+    -Message 'Forecast reset segment'
+Assert-Diagnostic -Condition ([bool]$history.StableUsageDetected) `
+    -Message 'Stable usage forecast'
+Assert-Diagnostic -Condition ([bool]$history.LowThresholdCrossingDetected) `
+    -Message 'Low threshold crossing'
+Assert-Diagnostic -Condition ([bool]$history.RepeatedLowAlertSuppressed) `
+    -Message 'Repeated low alert suppression'
+Assert-Diagnostic -Condition ([bool]$history.PersistenceRoundTrip) `
+    -Message 'History persistence round trip'
+Assert-Diagnostic -Condition ([bool]$history.HistorySampleContainsNoAccountData) `
+    -Message 'History privacy fields'
+
 $placement = Invoke-JsonDiagnostic -Name 'CheckPlacement'
 Assert-Diagnostic -Condition (
     $placement.Expanded.Left -eq 1550 -and
@@ -94,6 +118,10 @@ Assert-Diagnostic -Condition (
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
+Assert-Diagnostic -Condition ([bool]$transitions.DeactivationCallbackObserved) `
+    -Message 'Window deactivation callback'
+Assert-Diagnostic -Condition ([bool]$transitions.ReentrantCallbackObserved) `
+    -Message 'Reentrant event callback'
 Assert-Diagnostic -Condition ([bool]$transitions.TaskViewHidden) `
     -Message 'Task view visibility'
 Assert-Diagnostic -Condition (
@@ -110,6 +138,43 @@ Assert-Diagnostic -Condition (
     $transitions.LowerClampedUsed -eq 100
 ) -Message 'Progress clamping'
 Assert-Diagnostic -Condition (
+    $transitions.CodexSettingsVisibility -eq 'Collapsed' -and
+    $transitions.DeepSeekSettingsVisibility -eq 'Visible'
+) -Message 'Provider settings visibility'
+Assert-Diagnostic -Condition (
+    $transitions.DeepSeekCompactValue -eq '72' -and
+    $transitions.DeepSeekCompactSuffix -eq '%' -and
+    -not [string]::IsNullOrWhiteSpace([string]$transitions.DeepSeekLabel) -and
+    [string]$transitions.DeepSeekBalanceText -match '86\.40$' -and
+    -not [string]::IsNullOrWhiteSpace([string]$transitions.DeepSeekMetricTitle) -and
+    [string]$transitions.DeepSeekMonthlyCostValue -match '2\.36$' -and
+    $transitions.DeepSeekTodayTokenValue -eq '382.6K' -and
+    $transitions.DeepSeekMonthlyTokenValue -eq '2.8M' -and
+    $transitions.DeepSeekProgressRemaining -eq 72 -and
+    $transitions.DeepSeekProgressUsed -eq 28
+) -Message 'DeepSeek budget UI'
+Assert-Diagnostic -Condition (
+    $transitions.DeepSeekBalanceCompactValue -eq '86.4' -and
+    $transitions.DeepSeekBalanceCompactSuffix -eq '' -and
+    -not [string]::IsNullOrWhiteSpace(
+        [string]$transitions.DeepSeekBalanceCompactLabel
+    ) -and
+    $transitions.DeepSeekNoBudgetProgressRemaining -eq 0 -and
+    $transitions.DeepSeekNoBudgetProgressUsed -eq 100
+) -Message 'DeepSeek balance-only UI'
+Assert-Diagnostic -Condition (
+    @($transitions.MetricValueFontFamilies).Count -eq 4 -and
+    @($transitions.MetricValueFontFamilies | Where-Object {
+        $_ -ne 'Segoe UI Variable Display'
+    }).Count -eq 0 -and
+    @($transitions.MetricValueFontSizes | Where-Object {
+        [double]$_ -ne 21
+    }).Count -eq 0 -and
+    @($transitions.MetricValueFontWeights | Where-Object {
+        $_ -ne 'SemiBold'
+    }).Count -eq 0
+) -Message 'Metric typography'
+Assert-Diagnostic -Condition (
     [bool]$transitions.ActivationRevealedEdgeDock -and
     [bool]$transitions.EdgeRailHitTest -and
     $transitions.EdgeRailAlpha -ge 8 -and
@@ -119,10 +184,23 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.EdgeDockAnchorStable -and
     $transitions.HiddenSurfaceAlpha -eq 0
 ) -Message 'Edge transition behavior'
+Assert-Diagnostic `
+    -Condition ([string]$transitions.Trend24Text -match '^24H') `
+    -Message '24-hour trend UI'
+Assert-Diagnostic `
+    -Condition ([string]$transitions.Trend7Text -match '^7D') `
+    -Message '7-day trend UI'
+Assert-Diagnostic `
+    -Condition (-not [string]::IsNullOrWhiteSpace([string]$transitions.PredictionText)) `
+    -Message 'Depletion forecast UI'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.LowAlertMenuChecked) `
+    -Message 'Low-alert menu UI'
 
 [pscustomobject]@{
     CodexRateLimitSelection = 'Passed'
     DeepSeekData = 'Passed'
+    UsageHistory = 'Passed'
     Placement = 'Passed'
     EdgeDocking = 'Passed'
     Startup = 'Passed'

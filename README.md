@@ -33,6 +33,9 @@
 - 按 DeepSeek V4 官方人民币价格估算本机本月累计花费
 - DeepSeek API Key 使用 Windows DPAPI 当前用户加密
 - 位置、贴边状态、置顶偏好和当前数据源自动保存在本机
+- 本地记录脱敏余量样本，在详情中显示 24 小时与 7 天趋势
+- 根据最近下降速度预测预计耗尽时间；Codex 会同时考虑额度重置时间
+- 余量首次降到 20% 或以下时通过通知区域提醒，可在右键菜单关闭
 
 ## 系统要求
 
@@ -73,23 +76,37 @@ powershell.exe -NoProfile -File .\Build-Package.ps1
 ```
 
 脚本会在 `dist` 中生成透明的便携目录和 ZIP。ZIP 内包含启动器、可审查的
-PowerShell 脚本和使用说明。启动器运行前会验证脚本 SHA-256，并在自身进程中
+PowerShell 脚本、使用说明、MIT 许可证和隐私说明。启动器运行前会验证脚本
+SHA-256，并在自身进程中
 托管 PowerShell；不会释放内嵌脚本、创建隐藏的 `powershell.exe` 子进程或使用
 `ExecutionPolicy Bypass`。
 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.3.0.zip
-Remaining-Margin-Float-v1.3.0.zip.sha256
+Remaining-Margin-Float-v1.4.0.zip
+Remaining-Margin-Float-v1.4.0.zip.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.3.0`）后，`Windows Release` 工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.4.0`）后，`Windows Release` 工作流会
 在 Windows Runner 上测试、构建、验证并生成 ZIP，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
 当前项目发布未签名的透明便携包，不要求代码签名。安全报告方式见
 [SECURITY.md](SECURITY.md)。
+
+## 源码结构
+
+运行入口是 `src\RemainingMarginFloat.ps1`，它按照 `src\Components.psd1`
+声明的顺序加载同一脚本作用域中的组件。Provider、基础设施、诊断与 UI 已分别
+放在对应目录，主窗口布局位于 `src\UI\MainWindow.xaml`。
+
+为了保持便携发布物简单且可审查，构建时会按照同一组件清单把源码和 XAML
+合并为 ZIP 内的单个 `RemainingMarginFloat.ps1`。源码模式与打包模式因此执行
+同一组组件，同时发布启动器仍只需要验证一个脚本的 SHA-256。
+
+组件职责、Provider 快照契约和维护约束见
+[ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## DeepSeek 配置
 
@@ -139,6 +156,11 @@ DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预�
 
 DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命中、缓存未命中和输出 Token 按当前官方人民币价格估算，仅代表本机可见调用，不等同于 DeepSeek 账户账单。账户级精确用量请在 DeepSeek Platform 的 Usage 页面按月导出。
 
+趋势历史保存在
+`%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`，只包含数据源、
+采样时间、百分比或余额、币种和可选的重置时间。应用按约 5 分钟聚合并只保留
+最近 8 天，不写入账号名称、邮箱、Token、API Key 或访问令牌。
+
 ## 常见问题
 
 ### 显示“等待数据”
@@ -151,6 +173,17 @@ ChatGPT。
 ### DeepSeek 显示“等待配置”
 
 先在“数据源”中切换到 DeepSeek，再通过自动打开的设置窗口填写 API Key；之后右键菜单会持续显示“DeepSeek 设置…”。也可以在启动程序前设置 `DEEPSEEK_API_KEY`。HTTP 401 表示密钥无效，需要重新配置。
+
+### 为什么暂时没有耗尽预测
+
+预测至少需要 3 个样本并覆盖 30 分钟。刚启用时会显示“积累 30 分钟后预测”；
+检测到 Codex 额度重置或 DeepSeek 充值后，会从新的下降段重新计算。
+
+### 如何关闭低余量提醒
+
+在悬浮窗或通知区域图标的右键菜单中取消“低余量提醒（≤20%）”。DeepSeek
+只有设置预算基准后才有可比较的百分比；未设置预算时只展示余额趋势，不触发
+百分比低余量提醒。
 
 ### DeepSeek 没有显示百分比
 

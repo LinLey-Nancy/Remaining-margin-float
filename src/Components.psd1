@@ -1,0 +1,19 @@
+@{
+    Components = @(
+        'App\Bootstrap.ps1'
+        'Core\WindowGeometry.ps1'
+        'Core\UsageSnapshot.ps1'
+        'Providers\CodexProvider.ps1'
+        'Infrastructure\LocalStorage.ps1'
+        'Core\UsageHistory.ps1'
+        'Providers\DeepSeekProvider.ps1'
+        'Diagnostics\DataDiagnostics.ps1'
+        'UI\WindowHost.ps1'
+        'Infrastructure\Startup.ps1'
+        'UI\WindowState.ps1'
+        'App\RefreshCoordinator.ps1'
+        'UI\Interaction.ps1'
+        'Diagnostics\VisualDiagnostics.ps1'
+        'UI\TrayHost.ps1'
+    )
+}

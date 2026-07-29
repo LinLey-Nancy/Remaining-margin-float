@@ -1,0 +1,476 @@
+﻿if ($CheckCodexRateLimitSelection) {
+    $stalePayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                used_percent = 0.0
+                window_minutes = 10080
+                resets_at = 1893456000
+            }
+            plan_type = 'pro'
+        }
+    }
+    $freshPayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                used_percent = 22.0
+                window_minutes = 10080
+                resets_at = 1893459600
+            }
+            plan_type = 'pro'
+        }
+    }
+    $incompletePayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                window_minutes = 10080
+                resets_at = 1893463200
+            }
+            plan_type = 'pro'
+        }
+    }
+    $selectionCandidates = @(
+        [pscustomobject]@{
+            RateLimitPayload = $stalePayload
+            RateLimitObservedAt = [DateTimeOffset]'2029-12-31T23:50:00Z'
+            FileModifiedAt = [DateTimeOffset]'2030-01-01T00:10:00Z'
+        },
+        [pscustomobject]@{
+            RateLimitPayload = $freshPayload
+            RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:00:00Z'
+            FileModifiedAt = [DateTimeOffset]'2030-01-01T00:05:00Z'
+        },
+        [pscustomobject]@{
+            RateLimitPayload = $incompletePayload
+            RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:01:00Z'
+            FileModifiedAt = [DateTimeOffset]'2030-01-01T00:11:00Z'
+        }
+    )
+    $selected = Select-CodexRateLimitSnapshot `
+        -Snapshots $selectionCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $emptySelection = Select-CodexRateLimitSnapshot -Snapshots @(
+        [pscustomobject]@{
+            RateLimitPayload = $incompletePayload
+            RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:01:00Z'
+        }
+    )
+    $replayedRateLimits = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $replayedRateLimits `
+        -Payload $freshPayload `
+        -ObservedAt ([DateTimeOffset]'2030-01-01T00:00:00Z')
+    foreach ($resetAt in (1894060920..1894061120 | Where-Object { ($_ % 10) -eq 0 })) {
+        $slidingResetPayload = [pscustomobject]@{
+            rate_limits = [pscustomobject]@{
+                primary = [pscustomobject]@{
+                    used_percent = 0.0
+                    window_minutes = 10080
+                    resets_at = $resetAt
+                }
+                plan_type = 'pro'
+            }
+        }
+        Add-CodexRateLimitSample `
+            -Candidates $replayedRateLimits `
+            -Payload $slidingResetPayload `
+            -ObservedAt ([DateTimeOffset]'2030-01-01T00:02:00Z')
+    }
+    $replayedSelection = Select-CodexStableRateLimitSample `
+        -Candidates $replayedRateLimits `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $crossFileSelection = Select-CodexRateLimitSnapshot `
+        -Snapshots @(
+            [pscustomobject]@{
+                RateLimitPayload = $freshPayload
+                RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:00:00Z'
+            },
+            [pscustomobject]@{
+                RateLimitPayload = $slidingResetPayload
+                RateLimitObservedAt = [DateTimeOffset]'2030-01-01T00:02:00Z'
+            }
+        ) `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $stableZeroRateLimits = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $stableZeroRateLimits `
+        -Payload $stalePayload `
+        -ObservedAt ([DateTimeOffset]'2029-12-31T23:45:00Z')
+    Add-CodexRateLimitSample `
+        -Candidates $stableZeroRateLimits `
+        -Payload $stalePayload `
+        -ObservedAt ([DateTimeOffset]'2029-12-31T23:50:00Z')
+    $stableZeroSelection = Select-CodexStableRateLimitSample `
+        -Candidates $stableZeroRateLimits
+    $singleZeroRateLimits = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $singleZeroRateLimits `
+        -Payload $stalePayload `
+        -ObservedAt ([DateTimeOffset]'2029-12-31T23:50:00Z')
+    $singleZeroSelection = Select-CodexStableRateLimitSample `
+        -Candidates $singleZeroRateLimits `
+        -Now ([DateTimeOffset]'2029-12-31T23:53:00Z')
+    $expiredPositiveCandidates = @{}
+    Add-CodexRateLimitSample `
+        -Candidates $expiredPositiveCandidates `
+        -Payload $freshPayload `
+        -ObservedAt ([DateTimeOffset]'2030-01-01T00:00:00Z')
+    Add-CodexRateLimitSample `
+        -Candidates $expiredPositiveCandidates `
+        -Payload $slidingResetPayload `
+        -ObservedAt ([DateTimeOffset]'2030-01-01T01:55:00Z')
+    $expiredPositiveSelection = Select-CodexStableRateLimitSample `
+        -Candidates $expiredPositiveCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T02:00:00Z')
+    $rootSessionMetadata = [pscustomobject]@{ source = 'vscode' }
+    $subagentSessionMetadata = [pscustomobject]@{
+        source = [pscustomobject]@{
+            subagent = [pscustomobject]@{ parent_thread_id = 'parent-session' }
+        }
+    }
+    $officialPayload = [pscustomobject]@{
+        plan_type = 'prolite'
+        rate_limit = [pscustomobject]@{
+            primary_window = [pscustomobject]@{
+                used_percent = 40.0
+                limit_window_seconds = 604800
+                reset_at = 1894060800
+            }
+        }
+        additional_rate_limits = @(
+            [pscustomobject]@{
+                limit_name = 'GPT-5.3-Codex-Spark'
+                rate_limit = [pscustomobject]@{
+                    primary_window = [pscustomobject]@{
+                        used_percent = 0.0
+                        limit_window_seconds = 604800
+                        reset_at = 1894665600
+                    }
+                }
+            }
+        )
+    }
+    $officialUsage = ConvertTo-CodexOfficialUsage `
+        -Payload $officialPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $officialQuotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $officialUsage `
+        -SessionSnapshots $selectionCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $localQuotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $null `
+        -SessionSnapshots $selectionCandidates `
+        -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $missingQuotaUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $null `
+        -SessionSnapshots @()
+    $selectedWindow = Get-CodexRateLimitWindow -Payload $selected.RateLimitPayload
+    [pscustomobject]@{
+        SelectedUsedPercent = [double]$selectedWindow.used_percent
+        SelectedResetAt = [long]$selectedWindow.resets_at
+        SelectedObservedAt = $selected.RateLimitObservedAt
+        NewestFileWasStale = $selectionCandidates[0].FileModifiedAt -gt $selectionCandidates[1].FileModifiedAt
+        IncompleteNewestWasIgnored = $selected.RateLimitPayload -eq $freshPayload
+        SlidingResetPlaceholdersIgnored = $replayedSelection.Payload -eq $freshPayload
+        ActivePositiveCycleProtectedAcrossFiles = (
+            $crossFileSelection.RateLimitPayload -eq $freshPayload
+        )
+        StableZeroSampleAccepted = $stableZeroSelection.Payload -eq $stalePayload
+        SingleZeroEventuallyAccepted = $singleZeroSelection.Payload -eq $stalePayload
+        ExpiredPositiveCanYieldToZero = (
+            $expiredPositiveSelection.Payload -eq $slidingResetPayload
+        )
+        RootSessionAccepted = Test-CodexRootSessionMetadata -Payload $rootSessionMetadata
+        SubagentSessionIgnored = -not (
+            Test-CodexRootSessionMetadata -Payload $subagentSessionMetadata
+        )
+        EmptySelectionHandled = $null -eq $emptySelection
+        OfficialPrimaryUsageSelected = (
+            $officialUsage.UsedPercent -eq 40 -and
+            $officialUsage.WindowMinutes -eq 10080 -and
+            $officialUsage.PlanType -eq 'prolite'
+        )
+        AdditionalModelLimitIgnored = $officialUsage.UsedPercent -ne 0
+        OfficialChannelPreferred = (
+            $officialQuotaUsage.Channel -eq 'Official' -and
+            $officialQuotaUsage.UsedPercent -eq 40
+        )
+        LocalChannelFallbackSelected = (
+            $localQuotaUsage.Channel -eq 'Local' -and
+            $localQuotaUsage.UsedPercent -eq 22 -and
+            $localQuotaUsage.PlanType -eq 'pro'
+        )
+        MissingChannelsRemainUnknown = $null -eq $missingQuotaUsage
+    } | ConvertTo-Json
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckDeepSeekData) {
+    $checkSnapshot = Get-DeepSeekDemoSnapshot
+    $testSecret = 'deepseek-test-key-1234'
+    $protectedSecret = Protect-LocalSecret -Value $testSecret
+    $roundTripSecret = Unprotect-LocalSecret -Value $protectedSecret
+    $testTimestamp = [DateTimeOffset]::Now
+    $duplicateEvents = @(
+        [pscustomobject]@{
+            MessageId = 'duplicate-message'
+            Timestamp = $testTimestamp.AddSeconds(-1)
+            Model = 'deepseek-v4-pro'
+            InputTokens = 10
+            OutputTokens = 2
+            CachedTokens = 20
+            CacheWriteTokens = 0
+            TotalTokens = 32
+        },
+        [pscustomobject]@{
+            MessageId = 'duplicate-message'
+            Timestamp = $testTimestamp
+            Model = 'deepseek-v4-pro'
+            InputTokens = 12
+            OutputTokens = 3
+            CachedTokens = 25
+            CacheWriteTokens = 0
+            TotalTokens = 40
+        }
+    )
+    $dedupedUsage = Measure-DeepSeekUsageEvents -Events $duplicateEvents
+    $parserEvent = ConvertFrom-DeepSeekUsageLine -Line (
+        '{"message":{"id":"parser-message","model":"deepseek-v4-pro","usage":' +
+        '{"input_tokens":100,"cache_creation_input_tokens":20,' +
+        '"cache_read_input_tokens":300,"output_tokens":4}},' +
+        '"uuid":"parser-uuid","timestamp":"' +
+        $testTimestamp.ToString('o', [Globalization.CultureInfo]::InvariantCulture) +
+        '"}'
+    )
+    $pricingUsage = Measure-DeepSeekUsageEvents -Events @(
+        [pscustomobject]@{
+            MessageId = 'pricing-message'
+            Timestamp = $testTimestamp
+            Model = 'deepseek-v4-pro'
+            InputTokens = 1000000
+            OutputTokens = 1000000
+            CachedTokens = 1000000
+            CacheWriteTokens = 0
+            TotalTokens = 3000000
+        }
+    )
+    $checkSnapshot | Add-Member -NotePropertyName SecureStorageRoundTrip -NotePropertyValue (
+        $roundTripSecret -eq $testSecret -and $protectedSecret -notmatch [regex]::Escape($testSecret)
+    )
+    $checkSnapshot | Add-Member -NotePropertyName DedupedUsageTokens -NotePropertyValue $dedupedUsage.TotalTokens
+    $checkSnapshot | Add-Member -NotePropertyName DedupedUsageMessages -NotePropertyValue $dedupedUsage.UniqueMessages
+    $checkSnapshot | Add-Member -NotePropertyName ParserUsageTokens -NotePropertyValue $parserEvent.TotalTokens
+    $checkSnapshot | Add-Member -NotePropertyName ParserUsageModel -NotePropertyValue $parserEvent.Model
+    $checkSnapshot | Add-Member -NotePropertyName PricingUsageTokens -NotePropertyValue $pricingUsage.TotalTokens
+    $checkSnapshot | Add-Member -NotePropertyName PricingUsageCostCny -NotePropertyValue $pricingUsage.EstimatedCostCny
+    $checkSnapshot | ConvertTo-Json -Depth 5
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckUsageHistory) {
+    $now = [DateTimeOffset]'2030-01-01T12:00:00Z'
+    function New-HistoryCheckSample {
+        param(
+            [double]$HoursAgo,
+            [double]$Value,
+            [string]$MetricType = 'Percent',
+            [string]$Unit = '%',
+            [string]$ResetAtUtc = ''
+        )
+
+        return [pscustomobject]@{
+            Version = 1
+            ProviderId = 'Codex'
+            ObservedAtUtc = $now.AddHours(-$HoursAgo)
+            MetricType = $MetricType
+            RemainingValue = $Value
+            Unit = $Unit
+            ResetAtUtc = $ResetAtUtc
+        }
+    }
+
+    $resetAt = $now.AddHours(12).ToString('o')
+    $depletingSamples = @(
+        (New-HistoryCheckSample -HoursAgo 2 -Value 80 -ResetAtUtc $resetAt),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 70 -ResetAtUtc $resetAt),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 60 -ResetAtUtc $resetAt)
+    )
+    $depletingInsights = Measure-UsageInsights `
+        -Samples $depletingSamples `
+        -CurrentSample $depletingSamples[-1] `
+        -PreviousSample $depletingSamples[-2] `
+        -Now $now
+
+    $beforeResetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 2 -Value 80 -ResetAtUtc $now.AddHours(4).ToString('o')),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 70 -ResetAtUtc $now.AddHours(4).ToString('o')),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 60 -ResetAtUtc $now.AddHours(4).ToString('o'))
+    )
+    $beforeResetForecast = Get-DepletionForecast `
+        -Samples $beforeResetSamples `
+        -CurrentSample $beforeResetSamples[-1] `
+        -Now $now
+
+    $resetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 3 -Value 10),
+        (New-HistoryCheckSample -HoursAgo 2 -Value 90),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 80),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 70)
+    )
+    $resetForecast = Get-DepletionForecast `
+        -Samples $resetSamples `
+        -CurrentSample $resetSamples[-1] `
+        -Now $now
+
+    $stableSamples = @(
+        (New-HistoryCheckSample -HoursAgo 2 -Value 60),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 60),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 60)
+    )
+    $stableForecast = Get-DepletionForecast `
+        -Samples $stableSamples `
+        -CurrentSample $stableSamples[-1] `
+        -Now $now
+
+    $lowSnapshot = [pscustomobject]@{
+        Available = $true
+        HasProgress = $true
+        RemainingPercent = 18
+    }
+    $highPreviousSample = New-HistoryCheckSample -HoursAgo 1 -Value 26
+    $lowPreviousSample = New-HistoryCheckSample -HoursAgo 1 -Value 19
+
+    $historyTestPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryDiagnostic.{0}.jsonl' -f $PID
+    )
+    $persistenceRoundTrip = $false
+    try {
+        Save-UsageHistory `
+            -Samples $depletingSamples `
+            -Path $historyTestPath `
+            -AllowDiagnosticWrite
+        # The second save exercises atomic replacement of an existing file.
+        Save-UsageHistory `
+            -Samples $depletingSamples `
+            -Path $historyTestPath `
+            -AllowDiagnosticWrite
+        $savedLines = @(Get-Content -LiteralPath $historyTestPath -Encoding UTF8)
+        $savedSample = $savedLines[0] | ConvertFrom-Json
+        $persistenceRoundTrip = (
+            $savedLines.Count -eq 3 -and
+            $savedSample.ProviderId -eq 'Codex' -and
+            $savedSample.MetricType -eq 'Percent' -and
+            $savedSample.PSObject.Properties.Name -notcontains 'AccountName' -and
+            $savedSample.PSObject.Properties.Name -notcontains 'ApiKey'
+        )
+    }
+    finally {
+        if (Test-Path -LiteralPath $historyTestPath) {
+            Remove-Item -LiteralPath $historyTestPath -Force
+        }
+    }
+
+    [pscustomobject]@{
+        Trend24Change = $depletingInsights.Trend24Hours.Change
+        Trend7Change = $depletingInsights.Trend7Days.Change
+        DepletionStatus = $depletingInsights.Forecast.Status
+        DepletionHours = [Math]::Round(
+            [double]$depletingInsights.Forecast.HoursToEmpty,
+            2
+        )
+        ResetBoundaryRespected = $beforeResetForecast.Status -eq 'BeyondReset'
+        ResetJumpStartsNewSegment = (
+            $resetForecast.Status -eq 'Depleting' -and
+            [Math]::Abs([double]$resetForecast.HoursToEmpty - 7) -lt 0.01
+        )
+        StableUsageDetected = $stableForecast.Status -eq 'Stable'
+        LowThresholdCrossingDetected = Test-LowRemainingAlertCondition `
+            -Snapshot $lowSnapshot `
+            -PreviousSample $highPreviousSample
+        RepeatedLowAlertSuppressed = -not (
+            Test-LowRemainingAlertCondition `
+                -Snapshot $lowSnapshot `
+                -PreviousSample $lowPreviousSample
+        )
+        PersistenceRoundTrip = $persistenceRoundTrip
+        HistorySampleContainsNoAccountData = (
+            $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountName' -and
+            $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountEmail' -and
+            $depletingSamples[-1].PSObject.Properties.Name -notcontains 'ApiKey'
+        )
+    } | ConvertTo-Json
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckDeepSeekUsage) {
+    Get-DeepSeekLocalUsage | ConvertTo-Json -Depth 5
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckData) {
+    Get-CodexUsageSnapshot | ConvertTo-Json -Depth 5
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckPlacement) {
+    $anchor = [pscustomobject]@{ Left = 1812.0; Top = 980.0 }
+    $expanded = Get-FittedPlacement `
+        -AnchorLeft $anchor.Left `
+        -AnchorTop $anchor.Top `
+        -TargetWidth $script:ExpandedWidth `
+        -TargetHeight $script:ExpandedHeight `
+        -WorkLeft 0 `
+        -WorkTop 0 `
+        -WorkRight 1920 `
+        -WorkBottom 1080
+    [pscustomobject]@{
+        Anchor = $anchor
+        Expanded = $expanded
+        Restored = $anchor
+    } | ConvertTo-Json -Depth 3
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckEdgeDocking) {
+    [pscustomobject]@{
+        LeftDetected = Get-EdgeDockSideForPosition `
+            -Left 8 `
+            -Width $script:CompactWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920 `
+            -SnapDistance $script:EdgeSnapDistance
+        RightDetected = Get-EdgeDockSideForPosition `
+            -Left (1920 - $script:CompactWidth - 9) `
+            -Width $script:CompactWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920 `
+            -SnapDistance $script:EdgeSnapDistance
+        CenterDetected = Get-EdgeDockSideForPosition `
+            -Left 900 `
+            -Width $script:CompactWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920 `
+            -SnapDistance $script:EdgeSnapDistance
+        LeftHidden = Get-EdgeDockPlacement `
+            -Side Left `
+            -Revealed $false `
+            -WindowWidth $script:CompactWidth `
+            -VisibleWidth $script:EdgeVisibleWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920
+        RightHidden = Get-EdgeDockPlacement `
+            -Side Right `
+            -Revealed $false `
+            -WindowWidth $script:CompactWidth `
+            -VisibleWidth $script:EdgeVisibleWidth `
+            -WorkLeft 0 `
+            -WorkRight 1920
+    } | ConvertTo-Json
+    $script:RmfStopLoading = $true
+    return
+}

@@ -15,10 +15,17 @@ $productName = "Remaining-Margin-Float-v$Version"
 $packageRoot = Join-Path $outputRoot $productName
 $executablePath = Join-Path $packageRoot 'RemainingMarginFloat.exe'
 $scriptPath = Join-Path $packageRoot 'RemainingMarginFloat.ps1'
+$licensePath = Join-Path $packageRoot 'LICENSE'
+$privacyPath = Join-Path $packageRoot 'PRIVACY.md'
 $archivePath = Join-Path $outputRoot "$productName.zip"
 $checksumPath = "$archivePath.sha256"
 
-foreach ($requiredPath in @($executablePath, $scriptPath)) {
+foreach ($requiredPath in @(
+    $executablePath
+    $scriptPath
+    $licensePath
+    $privacyPath
+)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Package input is missing: $requiredPath"
     }

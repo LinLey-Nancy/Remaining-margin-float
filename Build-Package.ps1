@@ -10,13 +10,80 @@ $projectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $versionFile = Join-Path $projectRoot 'VERSION'
 $appScript = Join-Path $projectRoot 'src\RemainingMarginFloat.ps1'
+$componentManifestPath = Join-Path $projectRoot 'src\Components.psd1'
+$mainWindowXamlPath = Join-Path $projectRoot 'src\UI\MainWindow.xaml'
+$licensePath = Join-Path $projectRoot 'LICENSE'
+$privacyPath = Join-Path $projectRoot 'PRIVACY.md'
 $version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
     throw "VERSION must use semantic versioning (for example, 1.2.3): $version"
 }
-if (-not (Test-Path -LiteralPath $appScript -PathType Leaf)) {
-    throw "Application script is missing: $appScript"
+foreach ($requiredSourcePath in @(
+    $appScript
+    $componentManifestPath
+    $mainWindowXamlPath
+    $licensePath
+    $privacyPath
+)) {
+    if (-not (Test-Path -LiteralPath $requiredSourcePath -PathType Leaf)) {
+        throw "Application source is missing: $requiredSourcePath"
+    }
+}
+
+function Get-BundledApplicationScript {
+    $sourceRoot = Join-Path $projectRoot 'src'
+    $entryLines = [IO.File]::ReadAllLines($appScript, [Text.Encoding]::UTF8)
+    $headerEnd = [Array]::IndexOf($entryLines, '# RMF_BUNDLE_HEADER_END')
+    if ($headerEnd -lt 0) {
+        throw 'Application entry script does not contain the bundle header marker.'
+    }
+
+    $manifest = Import-PowerShellDataFile -LiteralPath $componentManifestPath
+    $componentPaths = @($manifest.Components)
+    if ($componentPaths.Count -eq 0) {
+        throw 'Application component manifest is empty.'
+    }
+
+    $bundle = New-Object Text.StringBuilder
+    for ($lineIndex = 0; $lineIndex -le $headerEnd; $lineIndex++) {
+        [void]$bundle.AppendLine($entryLines[$lineIndex])
+    }
+
+    $xaml = [IO.File]::ReadAllText($mainWindowXamlPath, [Text.Encoding]::UTF8)
+    if ($xaml -match "(?m)^'@$") {
+        throw 'Main window XAML cannot be embedded safely because it contains a here-string terminator.'
+    }
+    [void]$bundle.AppendLine()
+    [void]$bundle.AppendLine('$script:RmfBundledXaml = @''')
+    [void]$bundle.Append($xaml.TrimEnd("`r", "`n"))
+    [void]$bundle.AppendLine()
+    [void]$bundle.AppendLine("'@")
+
+    foreach ($relativeComponentPath in $componentPaths) {
+        $componentPath = [IO.Path]::GetFullPath(
+            (Join-Path $sourceRoot $relativeComponentPath)
+        )
+        if (-not $componentPath.StartsWith(
+            $sourceRoot + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "Application component escapes the source directory: $relativeComponentPath"
+        }
+        if (-not (Test-Path -LiteralPath $componentPath -PathType Leaf)) {
+            throw "Application component is missing: $componentPath"
+        }
+
+        [void]$bundle.AppendLine()
+        [void]$bundle.AppendLine("# component: $relativeComponentPath")
+        [void]$bundle.Append(
+            [IO.File]::ReadAllText($componentPath, [Text.Encoding]::UTF8).
+                TrimEnd("`r", "`n")
+        )
+        [void]$bundle.AppendLine()
+    }
+
+    return $bundle.ToString()
 }
 
 $productName = "Remaining-Margin-Float-v$version"
@@ -24,6 +91,8 @@ $packageRoot = Join-Path $outputRoot $productName
 $executablePath = Join-Path $packageRoot 'RemainingMarginFloat.exe'
 $packagedScriptPath = Join-Path $packageRoot 'RemainingMarginFloat.ps1'
 $packageReadmePath = Join-Path $packageRoot 'README.txt'
+$packageLicensePath = Join-Path $packageRoot 'LICENSE'
+$packagePrivacyPath = Join-Path $packageRoot 'PRIVACY.md'
 $archivePath = Join-Path $outputRoot "$productName.zip"
 $archiveChecksumPath = "$archivePath.sha256"
 $buildRoot = Join-Path $outputRoot ".codex-margin-float-build-$PID"
@@ -84,7 +153,12 @@ try {
         $bitmap.Dispose()
     }
 
-    Copy-Item -LiteralPath $appScript -Destination $packagedScriptPath
+    $bundledApplicationScript = Get-BundledApplicationScript
+    [IO.File]::WriteAllText(
+        $packagedScriptPath,
+        $bundledApplicationScript,
+        (New-Object Text.UTF8Encoding($true))
+    )
     $scriptHash = (Get-FileHash -LiteralPath $packagedScriptPath -Algorithm SHA256).
         Hash.ToLowerInvariant()
     $assemblyVersion = "$version.0"
@@ -98,6 +172,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Windows;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Remaining Margin Float")]
@@ -120,6 +195,14 @@ internal static class Launcher
         bool launcherCheck = String.Equals(
             Environment.GetEnvironmentVariable(
                 "REMAINING_MARGIN_FLOAT_LAUNCHER_CHECK",
+                EnvironmentVariableTarget.Process
+            ),
+            "1",
+            StringComparison.Ordinal
+        );
+        bool guiCheck = String.Equals(
+            Environment.GetEnvironmentVariable(
+                "REMAINING_MARGIN_FLOAT_GUI_CHECK",
                 EnvironmentVariableTarget.Process
             ),
             "1",
@@ -151,6 +234,11 @@ internal static class Launcher
                 runspace.ThreadOptions = PSThreadOptions.UseCurrentThread;
                 runspace.Open();
                 runspace.SessionStateProxy.Path.SetLocation(applicationRoot);
+                runspace.SessionStateProxy.SetVariable("RmfHostRunspace", runspace);
+                runspace.SessionStateProxy.SetVariable(
+                    "RmfHostOwnsMessageLoop",
+                    !launcherCheck
+                );
 
                 using (PowerShell powerShell = PowerShell.Create())
                 {
@@ -172,6 +260,57 @@ internal static class Launcher
                         throw new InvalidOperationException(message);
                     }
                 }
+
+                object existingInstanceResult =
+                    runspace.SessionStateProxy.GetVariable(
+                        "RmfActivatedExistingInstance"
+                    );
+                bool activatedExistingInstance =
+                    existingInstanceResult is bool &&
+                    (bool)existingInstanceResult;
+
+                if (!launcherCheck && !activatedExistingInstance)
+                {
+                    Window applicationWindow =
+                        runspace.SessionStateProxy.GetVariable("window") as Window;
+                    if (applicationWindow == null)
+                    {
+                        throw new InvalidOperationException(
+                            "The application script did not create its main window."
+                        );
+                    }
+                    if (guiCheck)
+                    {
+                        bool guiCallbackObserved = false;
+                        System.Windows.Threading.DispatcherTimer guiCheckTimer =
+                            new System.Windows.Threading.DispatcherTimer();
+                        guiCheckTimer.Interval = TimeSpan.FromSeconds(2);
+                        guiCheckTimer.Tick += delegate(object sender, EventArgs e)
+                        {
+                            guiCheckTimer.Stop();
+                            object callbackResult =
+                                runspace.SessionStateProxy.GetVariable(
+                                    "RmfGuiCheckPassed"
+                                );
+                            guiCallbackObserved =
+                                callbackResult is bool &&
+                                (bool)callbackResult;
+                            applicationWindow.Close();
+                        };
+                        guiCheckTimer.Start();
+                        applicationWindow.ShowDialog();
+                        if (!guiCallbackObserved)
+                        {
+                            throw new InvalidOperationException(
+                                "The packaged GUI callback probe did not run."
+                            );
+                        }
+                    }
+                    else
+                    {
+                        applicationWindow.ShowDialog();
+                    }
+                }
             }
 
             Array.Clear(scriptBytes, 0, scriptBytes.Length);
@@ -179,11 +318,11 @@ internal static class Launcher
         }
         catch (Exception exception)
         {
-            if (launcherCheck)
+            if (launcherCheck || guiCheck)
             {
                 return 1;
             }
-            MessageBox.Show(
+            System.Windows.Forms.MessageBox.Show(
                 "Remaining Margin Float failed to start.\r\n\r\n" + exception.Message,
                 "Remaining Margin Float",
                 MessageBoxButtons.OK,
@@ -245,7 +384,15 @@ internal static class Launcher
 
     Add-Type -AssemblyName Microsoft.CSharp
     Add-Type -AssemblyName System.Management.Automation
+    Add-Type -AssemblyName WindowsBase
+    Add-Type -AssemblyName PresentationCore
+    Add-Type -AssemblyName PresentationFramework
+    Add-Type -AssemblyName System.Xaml
     $automationAssembly = [Management.Automation.PowerShell].Assembly.Location
+    $windowsBaseAssembly = [Windows.Threading.Dispatcher].Assembly.Location
+    $presentationCoreAssembly = [Windows.UIElement].Assembly.Location
+    $presentationFrameworkAssembly = [Windows.Window].Assembly.Location
+    $systemXamlAssembly = [System.Xaml.XamlReader].Assembly.Location
     $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
     $compilerParameters = New-Object System.CodeDom.Compiler.CompilerParameters
     $compilerParameters.GenerateExecutable = $true
@@ -258,6 +405,10 @@ internal static class Launcher
     )
     [void]$compilerParameters.ReferencedAssemblies.Add('System.dll')
     [void]$compilerParameters.ReferencedAssemblies.Add('System.Core.dll')
+    [void]$compilerParameters.ReferencedAssemblies.Add($windowsBaseAssembly)
+    [void]$compilerParameters.ReferencedAssemblies.Add($presentationCoreAssembly)
+    [void]$compilerParameters.ReferencedAssemblies.Add($presentationFrameworkAssembly)
+    [void]$compilerParameters.ReferencedAssemblies.Add($systemXamlAssembly)
     [void]$compilerParameters.ReferencedAssemblies.Add('System.Windows.Forms.dll')
     [void]$compilerParameters.ReferencedAssemblies.Add($automationAssembly)
 
@@ -286,10 +437,13 @@ Remaining Margin Float $version
 2. Run RemainingMarginFloat.exe.
 3. The launcher verifies the script SHA-256 before running it in-process.
 4. No PowerShell child process is created and no execution-policy bypass is used.
+5. LICENSE contains the MIT license; PRIVACY.md describes local data handling.
 
 Official releases:
 https://github.com/LinLey-Nancy/Remaining-margin-float/releases
 "@ | Set-Content -LiteralPath $packageReadmePath -Encoding UTF8
+    Copy-Item -LiteralPath $licensePath -Destination $packageLicensePath
+    Copy-Item -LiteralPath $privacyPath -Destination $packagePrivacyPath
 }
 finally {
     if (Test-Path -LiteralPath $buildRoot) {

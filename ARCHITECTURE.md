@@ -1,0 +1,73 @@
+# 架构说明
+
+Remaining Margin Float 保持 Windows PowerShell 5.1、WPF 和零运行时第三方依赖。
+源码按职责拆分，但所有组件仍在同一个脚本作用域中执行，以保持窗口状态、事件
+处理和异步刷新行为与原单文件版本一致。
+
+## 两种运行形态
+
+### 源码模式
+
+`src\RemainingMarginFloat.ps1` 是统一入口。它读取 `src\Components.psd1`，
+按照清单顺序点源各组件，并从 `src\UI\MainWindow.xaml` 加载窗口布局。
+
+### 发布模式
+
+`Build-Package.ps1` 使用同一个组件清单，将入口头部、XAML 和全部组件合并为
+一个带 UTF-8 BOM 的 `RemainingMarginFloat.ps1`。发布启动器验证这个脚本的
+SHA-256 后，在当前进程的 STA PowerShell Runspace 中初始化它。初始化管线
+结束后，C# 启动器接管 WPF `ShowDialog()` 消息循环，使 Runspace 在等待 UI
+事件时保持空闲。UI 的生产事件委托通过统一桥接器，在同一 STA 线程上创建短
+PowerShell 管线并串行执行。若事件在另一回调执行期间重入，桥接器会先排入
+WPF Dispatcher，待当前回调结束后继续执行。
+
+源码模式便于维护，发布模式则继续保持透明便携包：
+
+- `RemainingMarginFloat.exe`
+- `RemainingMarginFloat.ps1`
+- `README.txt`
+- `LICENSE`
+- `PRIVACY.md`
+
+## 组件职责
+
+| 目录 | 职责 |
+|---|---|
+| `App` | 应用初始化、Provider 刷新协调 |
+| `Core` | 用量快照契约、趋势历史、耗尽预测和窗口几何等核心逻辑 |
+| `Providers` | Codex 与 DeepSeek 数据读取、解析和快照生成 |
+| `Infrastructure` | 本地配置、DPAPI、开机启动和持久化 |
+| `UI` | WPF 窗口、状态渲染、交互、托盘与 XAML |
+| `Diagnostics` | 数据、窗口、视觉和发布所需的自诊断流程 |
+
+## Provider 契约
+
+Provider 最终向 UI 返回统一快照。`Core\UsageSnapshot.ps1` 在渲染前检查公共
+字段，至少包含：
+
+- `ProviderId`
+- `Available`
+- `HasProgress`
+- `RemainingPercent`
+- `WindowLabel`
+- `Plan`
+- `AccountName` / `AccountEmail`
+- `SampledAt`
+- `Status`
+- `Source`
+
+Provider 可以附加自己的余额、Token、缓存和重置字段，但 UI 的公共状态不应
+直接依赖 Provider 的网络响应结构。
+
+## 维护约束
+
+- 新组件必须登记在 `src\Components.psd1`，顺序即执行顺序。
+- 组件不得自行创建新的顶层 Runspace 或改变 STA 模式。
+- 打包宿主的 Runspace / 消息循环所有权注入和 UI 事件桥不得删除；生产 UI
+  的事件与 Dispatcher Action 都必须通过 `New-RmfEventHandler` /
+  `New-RmfAction` 注册。发布测试会实际触发窗口失焦与回调重入，防止
+  `ScriptBlockDelegateInvokedFromWrongThread` 和嵌套调用状态异常回归。
+- 诊断提前结束时使用 `RmfStopLoading` 控制流，不直接依赖点源脚本中的 `exit`。
+- XAML 仅在 `src\UI\MainWindow.xaml` 维护，构建时自动嵌入。
+- 发布包仍以最终合并脚本的 SHA-256 为信任边界。
+- 趋势历史只保存脱敏的归一化余量样本，保留期固定为 8 天。
