@@ -189,6 +189,28 @@ internal static class Launcher
     private const string ScriptFileName = "RemainingMarginFloat.ps1";
     private const string ScriptSha256 = "__SCRIPT_SHA256__";
 
+    private static void StopEventBridge(Runspace runspace)
+    {
+        try
+        {
+            object bridge =
+                runspace.SessionStateProxy.GetVariable("RunspaceEventBridge");
+            if (bridge == null)
+            {
+                return;
+            }
+            MethodInfo shutdown = bridge.GetType().GetMethod("Shutdown");
+            if (shutdown != null)
+            {
+                shutdown.Invoke(bridge, null);
+            }
+        }
+        catch
+        {
+            // The window is already closed; shutdown must remain best effort.
+        }
+    }
+
     [STAThread]
     private static int Main()
     {
@@ -282,9 +304,12 @@ internal static class Launcher
                     if (guiCheck)
                     {
                         bool guiCallbackObserved = false;
+                        bool refreshTimerObserved = false;
+                        bool refreshDataObserved = false;
+                        string refreshDataDetails = String.Empty;
                         System.Windows.Threading.DispatcherTimer guiCheckTimer =
                             new System.Windows.Threading.DispatcherTimer();
-                        guiCheckTimer.Interval = TimeSpan.FromSeconds(2);
+                        guiCheckTimer.Interval = TimeSpan.FromSeconds(7);
                         guiCheckTimer.Tick += delegate(object sender, EventArgs e)
                         {
                             guiCheckTimer.Stop();
@@ -295,14 +320,112 @@ internal static class Launcher
                             guiCallbackObserved =
                                 callbackResult is bool &&
                                 (bool)callbackResult;
+                            object refreshTimerResult =
+                                runspace.SessionStateProxy.GetVariable(
+                                    "RmfRefreshTimerProbePassed"
+                                );
+                            refreshTimerObserved =
+                                refreshTimerResult is bool &&
+                                (bool)refreshTimerResult;
+                            object refreshDataResult =
+                                runspace.SessionStateProxy.GetVariable(
+                                    "RmfRefreshDataProbePassed"
+                                );
+                            refreshDataObserved =
+                                refreshDataResult is bool &&
+                                (bool)refreshDataResult;
+                            object refreshDetailsResult =
+                                runspace.SessionStateProxy.GetVariable(
+                                    "RmfRefreshDataProbeDetails"
+                                );
+                            refreshDataDetails = refreshDetailsResult == null
+                                ? String.Empty
+                                : refreshDetailsResult.ToString();
+                            object bridgeResult =
+                                runspace.SessionStateProxy.GetVariable(
+                                    "RunspaceEventBridge"
+                                );
+                            string bridgeDetails = String.Empty;
+                            if (bridgeResult != null)
+                            {
+                                PropertyInfo failedCountProperty =
+                                    bridgeResult.GetType().GetProperty(
+                                        "FailedCallbackCount"
+                                    );
+                                PropertyInfo lastErrorProperty =
+                                    bridgeResult.GetType().GetProperty(
+                                        "LastCallbackError"
+                                    );
+                                bridgeDetails = String.Format(
+                                    "bridgeFailures={0}; bridgeError={1}",
+                                    failedCountProperty == null
+                                        ? "unknown"
+                                        : failedCountProperty.GetValue(
+                                            bridgeResult,
+                                            null
+                                        ),
+                                    lastErrorProperty == null
+                                        ? String.Empty
+                                        : lastErrorProperty.GetValue(
+                                            bridgeResult,
+                                            null
+                                        )
+                                );
+                            }
+                            object autoRefreshResult =
+                                runspace.SessionStateProxy.GetVariable(
+                                    "AutoRefreshText"
+                                );
+                            string autoRefreshDetails = String.Empty;
+                            if (autoRefreshResult != null)
+                            {
+                                PropertyInfo textProperty =
+                                    autoRefreshResult.GetType().GetProperty(
+                                        "Text"
+                                    );
+                                autoRefreshDetails = textProperty == null
+                                    ? String.Empty
+                                    : Convert.ToString(
+                                        textProperty.GetValue(
+                                            autoRefreshResult,
+                                            null
+                                        )
+                                    );
+                            }
+                            string guiResultPath =
+                                Environment.GetEnvironmentVariable(
+                                    "REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT",
+                                    EnvironmentVariableTarget.Process
+                                );
+                            if (!String.IsNullOrWhiteSpace(guiResultPath))
+                            {
+                                File.WriteAllText(
+                                    guiResultPath,
+                                    String.Format(
+                                        "callback={0}; timer={1}; data={2}; autoText={3}; {4}; {5}",
+                                        guiCallbackObserved,
+                                        refreshTimerObserved,
+                                        refreshDataObserved,
+                                        autoRefreshDetails,
+                                        bridgeDetails,
+                                        refreshDataDetails
+                                    )
+                                );
+                            }
                             applicationWindow.Close();
+                            StopEventBridge(runspace);
                         };
                         guiCheckTimer.Start();
                         applicationWindow.ShowDialog();
-                        if (!guiCallbackObserved)
+                        if (
+                            !guiCallbackObserved ||
+                            !refreshTimerObserved ||
+                            !refreshDataObserved
+                        )
                         {
                             throw new InvalidOperationException(
-                                "The packaged GUI callback probe did not run."
+                                "The packaged GUI callback, local refresh, or timer probe did not run. " +
+                                refreshDataDetails
                             );
                         }
                     }
@@ -310,6 +433,7 @@ internal static class Launcher
                     {
                         applicationWindow.ShowDialog();
                     }
+                    StopEventBridge(runspace);
                 }
             }
 

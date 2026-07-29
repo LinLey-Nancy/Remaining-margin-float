@@ -155,6 +155,10 @@ $previousInstanceScope = [Environment]::GetEnvironmentVariable(
     'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
     $processEnvironment
 )
+$previousGuiCheckResult = [Environment]::GetEnvironmentVariable(
+    'REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT',
+    $processEnvironment
+)
 $negativeTestRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'RemainingMarginFloat.ReleaseTest.{0}.{1}' -f $PID, [Guid]::NewGuid().ToString('N')
 )
@@ -192,9 +196,23 @@ try {
         '1',
         $processEnvironment
     )
+    $guiCheckResultPath = Join-Path $negativeTestRoot 'gui-check-result.txt'
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT',
+        $guiCheckResultPath,
+        $processEnvironment
+    )
     $guiCheckExitCode = Invoke-LauncherCheck -Path $executablePath
     if ($guiCheckExitCode -ne 0) {
-        throw "Packaged GUI callback check failed: $guiCheckExitCode"
+        $guiCheckDetails = if (Test-Path -LiteralPath $guiCheckResultPath) {
+            Get-Content -LiteralPath $guiCheckResultPath -Raw
+        } else {
+            'No GUI diagnostic result was written.'
+        }
+        throw (
+            "Packaged GUI callback check failed: $guiCheckExitCode`n" +
+            $guiCheckDetails
+        )
     }
 
     [Environment]::SetEnvironmentVariable(
@@ -260,6 +278,11 @@ finally {
     [Environment]::SetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
         $previousInstanceScope,
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT',
+        $previousGuiCheckResult,
         $processEnvironment
     )
     if (Test-Path -LiteralPath $negativeTestRoot) {
@@ -450,6 +473,7 @@ if ($RequireArchive) {
     BundledComponentCheck = 'Passed'
     LauncherRuntimeCheck = 'Passed'
     WpfEventCallbackCheck = 'Passed'
+    RefreshTimerCheck = 'Passed'
     SecondLaunchActivationCheck = 'Passed'
     MissingScriptRejected = 'Passed'
     ModifiedScriptRejected = 'Passed'

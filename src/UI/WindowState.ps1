@@ -927,8 +927,15 @@ function Update-UsageView {
         }
     }
 
-    $insights = Update-UsageHistory -Snapshot $Snapshot
-    Update-UsageInsightView -Insights $insights
-    Invoke-LowRemainingAlert -Snapshot $Snapshot -Insights $insights
-    $script:RefreshRemaining = $script:RefreshIntervalSeconds
+    try {
+        $insights = Update-UsageHistory -Snapshot $Snapshot
+        Update-UsageInsightView -Insights $insights
+        Invoke-LowRemainingAlert -Snapshot $Snapshot -Insights $insights
+    }
+    catch {
+        $Trend24Text.Text = '24 小时：暂不可用'
+        $Trend7Text.Text = '7 天：暂不可用'
+        $PredictionText.Text = '趋势暂不可用'
+    }
+    Reset-RefreshCountdown
 }

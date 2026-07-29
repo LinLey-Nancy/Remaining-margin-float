@@ -67,6 +67,14 @@ Provider 可以附加自己的余额、Token、缓存和重置字段，但 UI �
   的事件与 Dispatcher Action 都必须通过 `New-RmfEventHandler` /
   `New-RmfAction` 注册。发布测试会实际触发窗口失焦与回调重入，防止
   `ScriptBlockDelegateInvokedFromWrongThread` 和嵌套调用状态异常回归。
+- UI 事件桥必须在 Runspace 关闭前停止接收回调，并在单个回调失败时隔离异常，
+  不得把 PowerShell Runspace 异常传播成 WPF Dispatcher 的未处理异常。
+- 官方余量请求期间，1 秒刷新计时器仍须更新等待时间；发布测试必须实际观察
+  到计时器推进后才能通过。
+- 自动刷新使用绝对的 `NextRefreshAt` 截止时间计算剩余秒数，不依赖 Tick 次数
+  递减；任一刷新完成回调异常都必须解除忙碌态并重新安排下一次刷新。
+- Codex 会话读取只扫描有界文件尾和最近的额度候选，不得因尾部缺少
+  `token_count` 而回扫整个历史日志；今日 Token 汇总仍覆盖当天全部会话。
 - 诊断提前结束时使用 `RmfStopLoading` 控制流，不直接依赖点源脚本中的 `exit`。
 - XAML 仅在 `src\UI\MainWindow.xaml` 维护，构建时自动嵌入。
 - 发布包仍以最终合并脚本的 SHA-256 为信任边界。

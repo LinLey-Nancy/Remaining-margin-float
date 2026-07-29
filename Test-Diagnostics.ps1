@@ -197,6 +197,16 @@ Assert-Diagnostic `
     -Condition ([bool]$transitions.LowAlertMenuChecked) `
     -Message 'Low-alert menu UI'
 
+$refresh = Invoke-JsonDiagnostic -Name 'CheckRefreshCoordinator'
+Assert-Diagnostic -Condition ([bool]$refresh.ManualRefreshSucceeded) `
+    -Message 'Manual Codex refresh'
+Assert-Diagnostic -Condition ([bool]$refresh.AutomaticRefreshSucceeded) `
+    -Message 'Automatic Codex refresh at zero seconds'
+Assert-Diagnostic -Condition ([bool]$refresh.ZeroSecondStateRecovered) `
+    -Message 'Zero-second countdown recovery'
+Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
+    -Message 'Absolute refresh countdown advancement'
+
 [pscustomobject]@{
     CodexRateLimitSelection = 'Passed'
     DeepSeekData = 'Passed'
@@ -205,4 +215,5 @@ Assert-Diagnostic `
     EdgeDocking = 'Passed'
     Startup = 'Passed'
     Transitions = 'Passed'
+    RefreshCoordinator = 'Passed'
 }

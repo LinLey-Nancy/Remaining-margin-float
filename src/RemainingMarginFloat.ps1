@@ -8,6 +8,7 @@ param(
     [switch]$CheckEdgeDocking,
     [switch]$CheckStartup,
     [switch]$CheckTransitions,
+    [switch]$CheckRefreshCoordinator,
     [switch]$CaptureVisuals,
     [string]$CaptureDirectory = '',
     [switch]$Demo,
@@ -34,6 +35,7 @@ $isDiagnosticRun = (
     $CheckEdgeDocking -or
     $CheckStartup -or
     $CheckTransitions -or
+    $CheckRefreshCoordinator -or
     $CaptureVisuals -or
     $Demo -or
     $releaseGuiCheck
@@ -54,6 +56,9 @@ $script:RmfSourceRoot = [IO.Path]::GetDirectoryName($script:RmfEntryScriptPath)
 $script:RmfBundledXaml = $null
 $script:RmfStopLoading = $false
 $script:RmfGuiCheckPassed = $false
+$script:RmfRefreshTimerProbePassed = $false
+$script:RmfRefreshDataProbePassed = $false
+$script:RmfRefreshDataProbeDetails = ''
 $script:RmfActivatedExistingInstance = $false
 
 # RMF_BUNDLE_HEADER_END

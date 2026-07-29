@@ -90,7 +90,7 @@ function ConvertTo-CodexOfficialUsage {
 function Get-CodexHttpClient {
     if (-not $script:CodexHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
-        $client.Timeout = [TimeSpan]::FromSeconds(6)
+        $client.Timeout = [TimeSpan]::FromSeconds(12)
         $script:CodexHttpClient = $client
     }
     return $script:CodexHttpClient
@@ -496,7 +496,7 @@ function Read-SessionSnapshot {
             # Token counters are append-only and normally appear near the end.
             # Reading a bounded tail keeps the one-minute refresh responsive
             # even when an active session log grows to tens of megabytes.
-            $tailLimit = 512KB
+            $tailLimit = 64KB
             $startOffset = [Math]::Max(0L, $stream.Length - $tailLimit)
             [void]$stream.Seek($startOffset, [System.IO.SeekOrigin]::Begin)
             $byteCount = [int]($stream.Length - $startOffset)
@@ -549,41 +549,9 @@ function Read-SessionSnapshot {
                 $lastRateLimitPayload = $previousSnapshot.RateLimitPayload
                 $lastRateLimitObservedAt = $previousSnapshot.RateLimitObservedAt
             }
-            if (
-                $null -eq $lastPayload -and
-                $startOffset -gt 0
-            ) {
-                [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
-                $rateLimitCandidates = @{}
-                $reader = New-Object System.IO.StreamReader($stream)
-                try {
-                    while (($line = $reader.ReadLine()) -ne $null) {
-                        if ($line.IndexOf('"type":"token_count"', [StringComparison]::Ordinal) -lt 0) {
-                            continue
-                        }
-                        try {
-                            $event = $line | ConvertFrom-Json
-                            if ($event.type -eq 'event_msg' -and $event.payload.type -eq 'token_count') {
-                                $lastPayload = $event.payload
-                                $lastObservedAt = Get-CodexEventObservedAt -Event $event -Fallback $File.LastWriteTime
-                                Add-CodexRateLimitSample `
-                                    -Candidates $rateLimitCandidates `
-                                    -Payload $event.payload `
-                                    -ObservedAt $lastObservedAt
-                            }
-                        }
-                        catch {
-                            continue
-                        }
-                    }
-                }
-                finally {
-                    $reader.Dispose()
-                }
-            }
-
-            $stableRateLimit = Select-CodexStableRateLimitSample `
-                -Candidates $rateLimitCandidates
+            # Never fall back to scanning the entire log when the bounded tail
+            # has no token_count event. Older session files can be tens of
+            # megabytes, and a full scan would block the WPF refresh timer.
             if ($stableRateLimit) {
                 $lastRateLimitPayload = $stableRateLimit.Payload
                 $lastRateLimitObservedAt = $stableRateLimit.ObservedAt
@@ -712,14 +680,18 @@ function Get-CodexUsageSnapshot {
         $files = @(Get-ChildItem -LiteralPath $sessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending)
     }
-    $rootSessionFiles = @($files | Where-Object {
+    # Quota selection only needs the newest sessions. Checking root/subagent
+    # metadata for the entire archive makes the first UI refresh scale with
+    # years of historical files.
+    $quotaCandidateFiles = @($files | Select-Object -First 32)
+    $rootSessionFiles = @($quotaCandidateFiles | Where-Object {
         Test-CodexRootSessionFile -File $_
     })
 
     # File modification time is not the observation time: a parallel task can
     # keep appending unrelated events to an older session. Select token
     # snapshots by their token_count timestamps instead.
-    $recentSnapshots = @($rootSessionFiles | Select-Object -First 48 | ForEach-Object {
+    $recentSnapshots = @($rootSessionFiles | Select-Object -First 12 | ForEach-Object {
         Read-SessionSnapshot -File $_
     })
     $quotaUsage = Resolve-CodexQuotaUsage `

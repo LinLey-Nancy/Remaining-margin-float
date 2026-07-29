@@ -21,8 +21,8 @@ $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
 $script:IsRestoringSettings = $false
 
-$script:RefreshRemaining = $script:RefreshIntervalSeconds
 $script:IsRefreshing = $false
+Reset-RefreshCountdown
 $script:InitialRefreshQueued = $false
 $script:MouseDownPoint = $null
 $script:Dragging = $false

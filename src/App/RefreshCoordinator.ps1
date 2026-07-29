@@ -1,6 +1,19 @@
-﻿function Set-RefreshBusy {
+﻿function Reset-RefreshCountdown {
+    param([DateTimeOffset]$Now = [DateTimeOffset]::Now)
+
+    $script:RefreshRemaining = $script:RefreshIntervalSeconds
+    $script:NextRefreshAt = $Now.AddSeconds($script:RefreshIntervalSeconds)
+}
+
+function Set-RefreshBusy {
     param([bool]$Busy)
 
+    if ($Busy -and -not $script:IsRefreshing) {
+        $script:RefreshStartedAt = [DateTimeOffset]::Now
+    }
+    elseif (-not $Busy) {
+        $script:RefreshStartedAt = $null
+    }
     $script:IsRefreshing = $Busy
     $RefreshButton.IsEnabled = -not $Busy
     $RefreshButton.Content = if ($Busy) { '读取中…' } else { '立即刷新' }
@@ -25,7 +38,31 @@ function Cancel-CodexRefresh {
     }
     $script:CodexRequest = $null
     $script:CodexRequestTask = $null
+    $script:CodexRefreshAttempt = 0
+    $script:CodexRetryAfter = $null
     Set-RefreshBusy -Busy $false
+}
+
+function Start-CodexOfficialRequest {
+    $request = $null
+    try {
+        $request = New-CodexOfficialUsageRequest
+        $script:CodexRefreshAttempt++
+        $script:CodexRetryAfter = $null
+        $script:CodexRequest = $request
+        $script:CodexRequestTask = (Get-CodexHttpClient).SendAsync($request)
+        return $true
+    }
+    catch {
+        if ($request) { $request.Dispose() }
+        $script:CodexRequest = $null
+        $script:CodexRequestTask = $null
+        if ($script:ActiveProvider -eq 'Codex') {
+            $SourceText.Text = '官方接口请求未能启动，已保留本地数据 · ' +
+                $_.Exception.Message
+        }
+        return $false
+    }
 }
 
 function Start-CodexRefresh {
@@ -56,22 +93,28 @@ function Start-CodexRefresh {
         return
     }
 
-    $request = $null
-    try {
-        $request = New-CodexOfficialUsageRequest
-        $script:CodexRequest = $request
-        $script:CodexRequestTask = (Get-CodexHttpClient).SendAsync($request)
-    }
-    catch {
-        if ($request) { $request.Dispose() }
-        $script:CodexRequest = $null
-        $script:CodexRequestTask = $null
+    $script:CodexRefreshAttempt = 0
+    if (-not (Start-CodexOfficialRequest)) {
         Set-RefreshBusy -Busy $false
     }
 }
 
 function Complete-CodexRefresh {
-    if (-not $script:CodexRequestTask -or -not $script:CodexRequestTask.IsCompleted) {
+    if (-not $script:CodexRequestTask) {
+        if (
+            $script:CodexRetryAfter -and
+            [DateTimeOffset]::Now -ge $script:CodexRetryAfter
+        ) {
+            $script:CodexRetryAfter = $null
+            if (-not (Start-CodexOfficialRequest)) {
+                $script:CodexRefreshAttempt = 0
+                Set-RefreshBusy -Busy $false
+                Reset-RefreshCountdown
+            }
+        }
+        return
+    }
+    if (-not $script:CodexRequestTask.IsCompleted) {
         return
     }
 
@@ -80,6 +123,9 @@ function Complete-CodexRefresh {
     $script:CodexRequestTask = $null
     $script:CodexRequest = $null
     $response = $null
+    $statusCode = 0
+    $retryStarted = $false
+    $failureMessage = ''
     try {
         if ($task.IsCanceled) { throw '官方用量请求超时。' }
         if ($task.IsFaulted) {
@@ -87,9 +133,10 @@ function Complete-CodexRefresh {
         }
 
         $response = $task.GetAwaiter().GetResult()
+        $statusCode = [int]$response.StatusCode
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode) {
-            throw ('官方用量接口返回状态码 {0}。' -f [int]$response.StatusCode)
+            throw ('官方用量接口返回状态码 {0}。' -f $statusCode)
         }
 
         $payload = $body | ConvertFrom-Json
@@ -108,7 +155,39 @@ function Complete-CodexRefresh {
         }
     }
     catch {
+        $failureMessage = $_.Exception.Message
+        $transientFailure = (
+            $task.IsCanceled -or
+            $task.IsFaulted -or
+            $statusCode -in @(408, 425, 429, 500, 502, 503, 504)
+        )
         if (
+            $transientFailure -and
+            $script:CodexRefreshAttempt -lt $script:CodexRefreshMaxAttempts -and
+            $script:CodexOfficialAccessEnabled -and
+            $script:ActiveProvider -eq 'Codex' -and
+            -not $script:IsClosing
+        ) {
+            $retryDelaySeconds = 1.0
+            if (
+                $response -and
+                $response.Headers.RetryAfter -and
+                $response.Headers.RetryAfter.Delta
+            ) {
+                $retryDelaySeconds = [Math]::Min(
+                    30,
+                    [Math]::Max(
+                        1,
+                        $response.Headers.RetryAfter.Delta.Value.TotalSeconds
+                    )
+                )
+            }
+            $script:CodexRetryAfter =
+                [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+            $retryStarted = $true
+        }
+        if (
+            -not $retryStarted -and
             $script:CodexOfficialUsageCache -and
             ([DateTimeOffset]::Now - $script:CodexOfficialUsageCache.SampledAt).TotalMinutes -lt 10 -and
             $script:ActiveProvider -eq 'Codex'
@@ -128,12 +207,20 @@ function Complete-CodexRefresh {
                     -SkipOfficialRequest
             )
         }
+        elseif (-not $retryStarted -and $script:ActiveProvider -eq 'Codex') {
+            $SourceText.Text = '官方接口刷新失败，已保留本地数据 · ' +
+                $failureMessage
+        }
     }
     finally {
         if ($response) { $response.Dispose() }
         if ($request) { $request.Dispose() }
-        Set-RefreshBusy -Busy $false
-        $script:RefreshRemaining = $script:RefreshIntervalSeconds
+        if (-not $retryStarted) {
+            $script:CodexRefreshAttempt = 0
+            $script:CodexRetryAfter = $null
+            Set-RefreshBusy -Busy $false
+            Reset-RefreshCountdown
+        }
     }
 }
 
@@ -264,7 +351,7 @@ function Complete-DeepSeekRefresh {
         if ($response) { $response.Dispose() }
         if ($request) { $request.Dispose() }
         Set-RefreshBusy -Busy $false
-        $script:RefreshRemaining = $script:RefreshIntervalSeconds
+        Reset-RefreshCountdown
     }
 }
 
@@ -315,7 +402,7 @@ function Set-ActiveProvider {
         if ($script:DeepSeekRequestTask) {
             Cancel-DeepSeekRefresh
         }
-        if ($script:CodexRequestTask) {
+        if ($script:CodexRequestTask -or $script:CodexRetryAfter) {
             Cancel-CodexRefresh
         }
     }
@@ -349,7 +436,10 @@ function Set-CodexOfficialAccess {
         }
     }
 
-    if (-not $Enabled -and $script:CodexRequestTask) {
+    if (
+        -not $Enabled -and
+        ($script:CodexRequestTask -or $script:CodexRetryAfter)
+    ) {
         Cancel-CodexRefresh
     }
     $script:CodexOfficialAccessEnabled = $Enabled
@@ -514,13 +604,13 @@ function Show-DeepSeekSettings {
 
 function Invoke-Refresh {
     if ($script:IsRefreshing) { return }
-    Set-RefreshBusy -Busy $true
-    if ($script:ActiveProvider -eq 'DeepSeek') {
-        Start-DeepSeekRefresh
-        return
-    }
-
     try {
+        Set-RefreshBusy -Busy $true
+        if ($script:ActiveProvider -eq 'DeepSeek') {
+            Start-DeepSeekRefresh
+            return
+        }
+
         Update-UsageView -Snapshot (
             Get-CodexUsageSnapshot `
                 -OfficialUsageOverride $null `
@@ -529,8 +619,105 @@ function Invoke-Refresh {
         Start-CodexRefresh
     }
     catch {
-        $WindowLabel.Text = '读取失败'
+        if (-not $script:LastSnapshot) {
+            $WindowLabel.Text = '读取失败'
+            $ExpandedWindowLabel.Text = '读取失败'
+            $RemainingValue.Text = '--'
+            $CompactSuffix.Text = ''
+        }
         $SourceText.Text = '无法读取本地用量：' + $_.Exception.Message
         Set-RefreshBusy -Busy $false
+        Reset-RefreshCountdown
     }
+}
+
+function Reset-FailedRefreshOperation {
+    param([string]$Message)
+
+    if ($script:CodexRequest) {
+        try { $script:CodexRequest.Dispose() } catch {}
+    }
+    $script:CodexRequest = $null
+    $script:CodexRequestTask = $null
+    $script:CodexRetryAfter = $null
+    $script:CodexRefreshAttempt = 0
+
+    if ($script:DeepSeekRequest) {
+        try { $script:DeepSeekRequest.Dispose() } catch {}
+    }
+    $script:DeepSeekRequest = $null
+    $script:DeepSeekRequestTask = $null
+
+    try {
+        Set-RefreshBusy -Busy $false
+    }
+    catch {
+        $script:IsRefreshing = $false
+        $script:RefreshStartedAt = $null
+    }
+    Reset-RefreshCountdown
+    if ($SourceText) {
+        $SourceText.Text = '刷新异常，已保留上次数据 · ' + $Message
+    }
+}
+
+function Set-AutoRefreshStatusText {
+    if ($script:IsRefreshing) {
+        $elapsedSeconds = if ($script:RefreshStartedAt) {
+            [Math]::Max(
+                0,
+                [Math]::Floor(
+                    ([DateTimeOffset]::Now - $script:RefreshStartedAt).TotalSeconds
+                )
+            )
+        }
+        else { 0 }
+        $AutoRefreshText.Text = '正在刷新 · 已等待 {0} 秒' -f $elapsedSeconds
+        if ($releaseGuiCheck -and $elapsedSeconds -ge 1) {
+            $script:RmfRefreshTimerProbePassed = $true
+        }
+        return
+    }
+
+    $AutoRefreshText.Text = '{0} 秒后自动刷新' -f [Math]::Max(
+        0,
+        $script:RefreshRemaining
+    )
+}
+
+function Invoke-RefreshTimerTick {
+    try {
+        Complete-CodexRefresh
+        Complete-DeepSeekRefresh
+    }
+    catch {
+        Reset-FailedRefreshOperation -Message $_.Exception.Message
+    }
+
+    if ($script:IsRefreshing) {
+        Set-AutoRefreshStatusText
+        return
+    }
+
+    $now = [DateTimeOffset]::Now
+    if (-not $script:NextRefreshAt) {
+        Reset-RefreshCountdown -Now $now
+    }
+    $script:RefreshRemaining = [Math]::Max(
+        0,
+        [Math]::Ceiling(($script:NextRefreshAt - $now).TotalSeconds)
+    )
+    if ($script:RefreshRemaining -le 0) {
+        Invoke-Refresh
+        if (
+            -not $script:IsRefreshing -and
+            (
+                -not $script:NextRefreshAt -or
+                $script:NextRefreshAt -le [DateTimeOffset]::Now
+            )
+        ) {
+            Reset-RefreshCountdown
+        }
+    }
+    Set-AutoRefreshStatusText
 }

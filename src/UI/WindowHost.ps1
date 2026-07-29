@@ -35,6 +35,9 @@ public sealed class RemainingMarginRunspaceEventBridge
     private PowerShell activePowerShell;
     private bool invoking;
     private bool drainScheduled;
+    private bool acceptingCallbacks = true;
+    private int failedCallbackCount;
+    private string lastCallbackError = String.Empty;
 
     public RemainingMarginRunspaceEventBridge(Runspace runspace)
     {
@@ -44,21 +47,69 @@ public sealed class RemainingMarginRunspaceEventBridge
 
     private void Invoke(ScriptBlock callback, params object[] arguments)
     {
-        if (invoking)
+        if (!acceptingCallbacks || callback == null)
         {
-            if (dispatcher.CheckAccess() && activePowerShell != null)
+            return;
+        }
+        if (!dispatcher.CheckAccess())
+        {
+            try
             {
-                InvokeNested(callback, arguments);
-                return;
+                dispatcher.BeginInvoke(
+                    DispatcherPriority.Normal,
+                    new Action(delegate { Invoke(callback, arguments); })
+                );
             }
-            pendingCallbacks.Enqueue(
-                new PendingCallback(callback, arguments)
-            );
-            ScheduleDrain();
+            catch (Exception exception)
+            {
+                RecordFailure(exception);
+            }
             return;
         }
 
-        InvokeNow(callback, arguments);
+        try
+        {
+            if (runspace.RunspaceStateInfo.State != RunspaceState.Opened)
+            {
+                Shutdown();
+                return;
+            }
+            if (invoking)
+            {
+                if (activePowerShell != null)
+                {
+                    InvokeNested(callback, arguments);
+                    return;
+                }
+                pendingCallbacks.Enqueue(
+                    new PendingCallback(callback, arguments)
+                );
+                ScheduleDrain();
+                return;
+            }
+            if (runspace.RunspaceAvailability != RunspaceAvailability.Available)
+            {
+                pendingCallbacks.Enqueue(
+                    new PendingCallback(callback, arguments)
+                );
+                ScheduleDrain();
+                return;
+            }
+
+            InvokeNow(callback, arguments);
+        }
+        catch (Exception exception)
+        {
+            RecordFailure(exception);
+        }
+    }
+
+    private void RecordFailure(Exception exception)
+    {
+        failedCallbackCount++;
+        lastCallbackError = exception == null
+            ? "Unknown UI callback error."
+            : exception.GetBaseException().Message;
     }
 
     private static void ConfigureCallback(
@@ -147,29 +198,84 @@ public sealed class RemainingMarginRunspaceEventBridge
 
     private void ScheduleDrain()
     {
-        if (drainScheduled || pendingCallbacks.Count == 0)
+        if (
+            !acceptingCallbacks ||
+            drainScheduled ||
+            pendingCallbacks.Count == 0
+        )
         {
             return;
         }
 
         drainScheduled = true;
         dispatcher.BeginInvoke(
-            DispatcherPriority.Normal,
+            DispatcherPriority.ContextIdle,
             new Action(Drain)
         );
     }
 
     private void Drain()
     {
+        try
+        {
+            DrainCore();
+        }
+        catch (Exception exception)
+        {
+            RecordFailure(exception);
+            Shutdown();
+        }
+    }
+
+    private void DrainCore()
+    {
         drainScheduled = false;
+        if (!acceptingCallbacks)
+        {
+            pendingCallbacks.Clear();
+            return;
+        }
+        if (runspace.RunspaceStateInfo.State != RunspaceState.Opened)
+        {
+            Shutdown();
+            return;
+        }
         if (invoking || pendingCallbacks.Count == 0)
+        {
+            ScheduleDrain();
+            return;
+        }
+        if (runspace.RunspaceAvailability != RunspaceAvailability.Available)
         {
             ScheduleDrain();
             return;
         }
 
         PendingCallback pending = pendingCallbacks.Dequeue();
-        InvokeNow(pending.Callback, pending.Arguments);
+        try
+        {
+            InvokeNow(pending.Callback, pending.Arguments);
+        }
+        catch (Exception exception)
+        {
+            RecordFailure(exception);
+        }
+    }
+
+    public int FailedCallbackCount
+    {
+        get { return failedCallbackCount; }
+    }
+
+    public string LastCallbackError
+    {
+        get { return lastCallbackError; }
+    }
+
+    public void Shutdown()
+    {
+        acceptingCallbacks = false;
+        pendingCallbacks.Clear();
     }
 
     public EventHandler Event(ScriptBlock callback)
@@ -326,6 +432,17 @@ function New-RmfAction {
         return $script:RunspaceEventBridge.Action($Callback)
     }
     return [Action]$Callback
+}
+
+function Stop-RmfEventBridge {
+    if ($script:RunspaceEventBridge) {
+        $script:RunspaceEventBridge.Shutdown()
+    }
+}
+
+function Get-RmfEventBridgeFailureCount {
+    if (-not $script:RunspaceEventBridge) { return 0 }
+    return [int]$script:RunspaceEventBridge.FailedCallbackCount
 }
 if ($Demo) {
     # Make visual QA builds discoverable to Windows automation tools.

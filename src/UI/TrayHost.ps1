@@ -141,15 +141,7 @@ Sync-LowAlertMenuState
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
 $timer.Add_Tick((New-RmfEventHandler -Kind Event -Callback {
-    Complete-CodexRefresh
-    Complete-DeepSeekRefresh
-    if (-not $script:IsRefreshing) {
-        $script:RefreshRemaining--
-        if ($script:RefreshRemaining -le 0) {
-            Invoke-Refresh
-        }
-    }
-    $AutoRefreshText.Text = '{0} 秒后自动刷新' -f [Math]::Max(0, $script:RefreshRemaining)
+    Invoke-RefreshTimerTick
 }))
 $timer.Start()
 
@@ -167,6 +159,25 @@ if ($releaseGuiCheck) {
         -Kind Event `
         -Callback {
             $script:RmfGuiCheckPassed = $true
+            $savedOfficialAccess = $script:CodexOfficialAccessEnabled
+            try {
+                $script:CodexOfficialAccessEnabled = $false
+                Invoke-Refresh
+                $script:RmfRefreshDataProbePassed = (
+                    $script:LastSnapshot -and
+                    [string]$WindowLabel.Text -ne '读取失败'
+                )
+                $script:RmfRefreshDataProbeDetails = (
+                    'label={0}; source={1}; bridgeFailures={2}' -f
+                    [string]$WindowLabel.Text,
+                    [string]$SourceText.Text,
+                    (Get-RmfEventBridgeFailureCount)
+                )
+            }
+            finally {
+                $script:CodexOfficialAccessEnabled = $savedOfficialAccess
+            }
+            Set-RefreshBusy -Busy $true
         }
     $window.Dispatcher.BeginInvoke(
         [Windows.Threading.DispatcherPriority]::Background,
@@ -177,6 +188,69 @@ if ($releaseGuiCheck) {
             )
         })
     ) | Out-Null
+}
+
+if ($CheckRefreshCoordinator) {
+    $savedOfficialAccess = $script:CodexOfficialAccessEnabled
+    try {
+        $script:ActiveProvider = 'Codex'
+        $script:CodexOfficialAccessEnabled = $false
+        $script:IsRefreshing = $false
+
+        $manualStopwatch = [Diagnostics.Stopwatch]::StartNew()
+        Invoke-Refresh
+        $manualStopwatch.Stop()
+        $manualLabel = [string]$WindowLabel.Text
+        $manualSource = [string]$SourceText.Text
+        $manualRemaining = [int]$script:RefreshRemaining
+
+        $script:NextRefreshAt = [DateTimeOffset]::Now.AddSeconds(-1)
+        $script:RefreshRemaining = 0
+        Invoke-RefreshTimerTick
+        $automaticLabel = [string]$WindowLabel.Text
+        $automaticRemaining = [int]$script:RefreshRemaining
+        $automaticText = [string]$AutoRefreshText.Text
+
+        $script:NextRefreshAt = [DateTimeOffset]::Now.AddSeconds(3)
+        Invoke-RefreshTimerTick
+        $countdownBefore = [int]$script:RefreshRemaining
+        Start-Sleep -Milliseconds 1100
+        Invoke-RefreshTimerTick
+        $countdownAfter = [int]$script:RefreshRemaining
+
+        [pscustomobject]@{
+            ManualRefreshSucceeded = (
+                $script:LastSnapshot -and
+                $manualLabel -ne '读取失败'
+            )
+            AutomaticRefreshSucceeded = (
+                $script:LastSnapshot -and
+                $automaticLabel -ne '读取失败'
+            )
+            ZeroSecondStateRecovered = (
+                $automaticRemaining -gt 0 -and
+                $automaticText -notlike '0 秒*'
+            )
+            CountdownAdvanced = $countdownAfter -lt $countdownBefore
+            ManualLabel = $manualLabel
+            ManualSource = $manualSource
+            ManualRemaining = $manualRemaining
+            ManualElapsedMs = $manualStopwatch.ElapsedMilliseconds
+            AutomaticLabel = $automaticLabel
+            AutomaticRemaining = $automaticRemaining
+            AutomaticText = $automaticText
+            CountdownBefore = $countdownBefore
+            CountdownAfter = $countdownAfter
+        } | ConvertTo-Json
+    }
+    finally {
+        $script:CodexOfficialAccessEnabled = $savedOfficialAccess
+        $timer.Stop()
+        $activationTimer.Stop()
+        $window.Close()
+    }
+    $script:RmfStopLoading = $true
+    return
 }
 
 $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
@@ -190,7 +264,7 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         $script:DeepSeekHttpClient.Dispose()
         $script:DeepSeekHttpClient = $null
     }
-    if ($script:CodexRequestTask) {
+    if ($script:CodexRequestTask -or $script:CodexRetryAfter) {
         Cancel-CodexRefresh
     }
     if ($script:CodexHttpClient) {
@@ -223,6 +297,7 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         try { $script:AppMutex.ReleaseMutex() } catch {}
         $script:AppMutex.Dispose()
     }
+    Stop-RmfEventBridge
 }))
 
 $embeddedHostOwnsMessageLoop = Get-Variable `
