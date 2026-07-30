@@ -64,7 +64,7 @@ jobs:
         shell: powershell
         run: |
           $compiler = & .\Install-InnoSetupCompiler.ps1
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compiler)) {
+          if (-not (Test-Path -LiteralPath $compiler)) {
             throw "Could not prepare Inno Setup compiler: $compiler"
           }
           "INNO_SETUP_COMPILER=$compiler" | Out-File `
