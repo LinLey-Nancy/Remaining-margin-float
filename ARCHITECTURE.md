@@ -34,7 +34,7 @@ WPF Dispatcher，待当前回调结束后继续执行。
 | 目录 | 职责 |
 |---|---|
 | `App` | 应用初始化、Provider 刷新协调 |
-| `Core` | 用量快照契约、趋势历史、耗尽预测和窗口几何等核心逻辑 |
+| `Core` | 用量快照契约、Provider 价格目录、趋势历史、耗尽预测和窗口几何等核心逻辑 |
 | `Providers` | Codex 与 DeepSeek 数据读取、解析和快照生成 |
 | `Infrastructure` | 本地配置、DPAPI、开机启动和持久化 |
 | `UI` | WPF 窗口、状态渲染、交互、托盘与 XAML |
@@ -59,6 +59,16 @@ Provider 最终向 UI 返回统一快照。`Core\UsageSnapshot.ps1` 在渲染前
 Provider 可以附加自己的余额、Token、缓存和重置字段，但 UI 的公共状态不应
 直接依赖 Provider 的网络响应结构。
 
+## 应用状态
+
+跨组件状态仍由统一脚本作用域持有，以兼容 Windows PowerShell 5.1 和发布宿主。
+刷新生命周期已经收敛到 `$script:AppContext.Refresh`：忙碌状态、绝对刷新截止
+时间、Codex 请求与重试、DeepSeek 请求都由同一个上下文管理。新增刷新状态时
+应优先扩展该上下文，不再增加平行的顶层 `$script:` 变量。
+
+Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样例回归；价格
+常量集中在 `Core\ProviderCatalog.ps1`，修改价格时必须同步调整契约断言。
+
 ## 维护约束
 
 - 新组件必须登记在 `src\Components.psd1`，顺序即执行顺序。
@@ -79,3 +89,5 @@ Provider 可以附加自己的余额、Token、缓存和重置字段，但 UI �
 - XAML 仅在 `src\UI\MainWindow.xaml` 维护，构建时自动嵌入。
 - 发布包仍以最终合并脚本的 SHA-256 为信任边界。
 - 趋势历史只保存脱敏的归一化余量样本，保留期固定为 8 天。
+- 普通 `push` 与 `pull_request` 通过 Windows CI 执行语法解析、源码诊断、
+  打包和真实运行策略检查；标签发布继续由独立发布工作流负责。

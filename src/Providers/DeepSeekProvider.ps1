@@ -141,17 +141,17 @@ function Read-DeepSeekLatestUsageFile {
 function Get-DeepSeekEstimatedEventCostCny {
     param($Event)
 
-    $isPro = [string]$Event.Model -match '(?i)(v4-pro|opus)'
-    $cacheHitPrice = if ($isPro) { 0.025 } else { 0.02 }
-    $cacheMissPrice = if ($isPro) { 3.0 } else { 1.0 }
-    $outputPrice = if ($isPro) { 6.0 } else { 2.0 }
+    $catalog = Get-DeepSeekPricingCatalog
+    $pricing = Get-DeepSeekPricingTier `
+        -Model ([string]$Event.Model) `
+        -Catalog $catalog
     $cacheMissTokens = $Event.InputTokens + $Event.CacheWriteTokens
 
     return (
-        ($Event.CachedTokens * $cacheHitPrice) +
-        ($cacheMissTokens * $cacheMissPrice) +
-        ($Event.OutputTokens * $outputPrice)
-    ) / 1000000
+        ($Event.CachedTokens * $pricing.CacheHit) +
+        ($cacheMissTokens * $pricing.CacheMiss) +
+        ($Event.OutputTokens * $pricing.Output)
+    ) / $catalog.TokensPerUnit
 }
 
 function Measure-DeepSeekUsageEvents {

@@ -3,6 +3,7 @@
         'App\Bootstrap.ps1'
         'Core\WindowGeometry.ps1'
         'Core\UsageSnapshot.ps1'
+        'Core\ProviderCatalog.ps1'
         'Providers\CodexProvider.ps1'
         'Infrastructure\LocalStorage.ps1'
         'Core\UsageHistory.ps1'

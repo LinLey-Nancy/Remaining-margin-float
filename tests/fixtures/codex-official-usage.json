@@ -1,0 +1,22 @@
+{
+  "plan_type": "prolite",
+  "rate_limit": {
+    "primary_window": {
+      "used_percent": 37,
+      "limit_window_seconds": 604800,
+      "reset_at": 1894060800
+    }
+  },
+  "additional_rate_limits": [
+    {
+      "limit_name": "fixture-secondary-model",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 0,
+          "limit_window_seconds": 604800,
+          "reset_at": 1894665600
+        }
+      }
+    }
+  ]
+}

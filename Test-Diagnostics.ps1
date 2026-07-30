@@ -52,6 +52,27 @@ Assert-Diagnostic -Condition ($codex.SelectedUsedPercent -eq 22) `
 Assert-Diagnostic -Condition ($codex.SelectedResetAt -eq 1893459600) `
     -Message 'Codex selected reset timestamp'
 
+$contracts = Invoke-JsonDiagnostic -Name 'CheckProviderContracts'
+Assert-Diagnostic -Condition (
+    [Math]::Abs([double]$contracts.CodexUsedPercent - 37) -lt 0.0001 -and
+    $contracts.CodexWindowMinutes -eq 10080 -and
+    $contracts.CodexPlan -eq 'prolite'
+) -Message 'Codex official response contract fixture'
+Assert-Diagnostic -Condition (
+    $contracts.DeepSeekEventCount -eq 2 -and
+    $contracts.DeepSeekPrimaryTokens -eq 3000000 -and
+    [Math]::Abs([double]$contracts.DeepSeekPrimaryCostCny - 9.025) -lt 0.0001
+) -Message 'DeepSeek log and pricing contract fixture'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.DeepSeekAvailable -and
+    [Math]::Abs([double]$contracts.DeepSeekBalance - 86.4) -lt 0.0001 -and
+    $contracts.DeepSeekBudgetPercent -eq 72
+) -Message 'DeepSeek balance response contract fixture'
+Assert-Diagnostic -Condition (
+    $contracts.PricingSchemaVersion -eq 1 -and
+    $contracts.PricingCurrency -eq 'CNY'
+) -Message 'DeepSeek versioned pricing catalog'
+
 $deepSeek = Invoke-JsonDiagnostic -Name 'CheckDeepSeekData'
 Assert-Diagnostic -Condition ([bool]$deepSeek.Available) -Message 'DeepSeek availability'
 Assert-Diagnostic -Condition ([bool]$deepSeek.SecureStorageRoundTrip) `
@@ -221,6 +242,7 @@ Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
 
 [pscustomobject]@{
     CodexRateLimitSelection = 'Passed'
+    ProviderContracts = 'Passed'
     DeepSeekData = 'Passed'
     UsageHistory = 'Passed'
     Placement = 'Passed'

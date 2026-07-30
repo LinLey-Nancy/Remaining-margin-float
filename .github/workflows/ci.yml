@@ -1,0 +1,62 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Parse PowerShell sources
+        shell: powershell
+        run: |
+          $parseFailures = @()
+          foreach ($path in @(git ls-files '*.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $path),
+              [ref]$tokens,
+              [ref]$parseErrors
+            )
+            foreach ($parseError in @($parseErrors)) {
+              $parseFailures += '{0}:{1}:{2}: {3}' -f `
+                $path,
+                $parseError.Extent.StartLineNumber,
+                $parseError.Extent.StartColumnNumber,
+                $parseError.Message
+            }
+          }
+          if ($parseFailures.Count -gt 0) {
+            throw ($parseFailures -join [Environment]::NewLine)
+          }
+
+      - name: Run application diagnostics
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-Diagnostics.ps1
+
+      - name: Build transparent release directory
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Build-Package.ps1 -SkipArchive
+
+      - name: Check packaged runtime behavior
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-Release.ps1

@@ -21,7 +21,7 @@ $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
 $script:IsRestoringSettings = $false
 
-$script:IsRefreshing = $false
+$script:AppContext.Refresh.IsBusy = $false
 Reset-RefreshCountdown
 $script:InitialRefreshQueued = $false
 $script:MouseDownPoint = $null

@@ -1,62 +1,65 @@
 ﻿function Reset-RefreshCountdown {
     param([DateTimeOffset]$Now = [DateTimeOffset]::Now)
 
-    $script:RefreshRemaining = $script:RefreshIntervalSeconds
-    $script:NextRefreshAt = $Now.AddSeconds($script:RefreshIntervalSeconds)
+    $script:AppContext.Refresh.RemainingSeconds = $script:RefreshIntervalSeconds
+    $script:AppContext.Refresh.NextAt =
+        $Now.AddSeconds($script:RefreshIntervalSeconds)
 }
 
 function Set-RefreshBusy {
     param([bool]$Busy)
 
-    if ($Busy -and -not $script:IsRefreshing) {
-        $script:RefreshStartedAt = [DateTimeOffset]::Now
+    if ($Busy -and -not $script:AppContext.Refresh.IsBusy) {
+        $script:AppContext.Refresh.StartedAt = [DateTimeOffset]::Now
     }
     elseif (-not $Busy) {
-        $script:RefreshStartedAt = $null
+        $script:AppContext.Refresh.StartedAt = $null
     }
-    $script:IsRefreshing = $Busy
+    $script:AppContext.Refresh.IsBusy = $Busy
     $RefreshButton.IsEnabled = -not $Busy
     $RefreshButton.Content = if ($Busy) { '读取中…' } else { '立即刷新' }
 }
 
 function Cancel-CodexRefresh {
-    if ($script:CodexRequestTask -and -not $script:CodexRequestTask.IsCompleted) {
+    $codex = $script:AppContext.Refresh.Codex
+    if ($codex.RequestTask -and -not $codex.RequestTask.IsCompleted) {
         if ($script:CodexHttpClient) {
             $script:CodexHttpClient.CancelPendingRequests()
         }
     }
     elseif (
-        $script:CodexRequestTask -and
-        -not $script:CodexRequestTask.IsCanceled -and
-        -not $script:CodexRequestTask.IsFaulted
+        $codex.RequestTask -and
+        -not $codex.RequestTask.IsCanceled -and
+        -not $codex.RequestTask.IsFaulted
     ) {
-        $abandonedResponse = $script:CodexRequestTask.GetAwaiter().GetResult()
+        $abandonedResponse = $codex.RequestTask.GetAwaiter().GetResult()
         if ($abandonedResponse) { $abandonedResponse.Dispose() }
     }
-    if ($script:CodexRequest) {
-        $script:CodexRequest.Dispose()
+    if ($codex.Request) {
+        $codex.Request.Dispose()
     }
-    $script:CodexRequest = $null
-    $script:CodexRequestTask = $null
-    $script:CodexRefreshAttempt = 0
-    $script:CodexRetryAfter = $null
+    $codex.Request = $null
+    $codex.RequestTask = $null
+    $codex.Attempt = 0
+    $codex.RetryAfter = $null
     Set-RefreshBusy -Busy $false
 }
 
 function Start-CodexOfficialRequest {
     $request = $null
+    $codex = $script:AppContext.Refresh.Codex
     try {
         $request = New-CodexOfficialUsageRequest
-        $script:CodexRefreshAttempt++
-        $script:CodexRetryAfter = $null
-        $script:CodexRequest = $request
-        $script:CodexRequestTask = (Get-CodexHttpClient).SendAsync($request)
+        $codex.Attempt++
+        $codex.RetryAfter = $null
+        $codex.Request = $request
+        $codex.RequestTask = (Get-CodexHttpClient).SendAsync($request)
         return $true
     }
     catch {
         if ($request) { $request.Dispose() }
-        $script:CodexRequest = $null
-        $script:CodexRequestTask = $null
+        $codex.Request = $null
+        $codex.RequestTask = $null
         if ($script:ActiveProvider -eq 'Codex') {
             $SourceText.Text = '官方接口请求未能启动，已保留本地数据 · ' +
                 $_.Exception.Message
@@ -93,35 +96,36 @@ function Start-CodexRefresh {
         return
     }
 
-    $script:CodexRefreshAttempt = 0
+    $script:AppContext.Refresh.Codex.Attempt = 0
     if (-not (Start-CodexOfficialRequest)) {
         Set-RefreshBusy -Busy $false
     }
 }
 
 function Complete-CodexRefresh {
-    if (-not $script:CodexRequestTask) {
+    $codex = $script:AppContext.Refresh.Codex
+    if (-not $codex.RequestTask) {
         if (
-            $script:CodexRetryAfter -and
-            [DateTimeOffset]::Now -ge $script:CodexRetryAfter
+            $codex.RetryAfter -and
+            [DateTimeOffset]::Now -ge $codex.RetryAfter
         ) {
-            $script:CodexRetryAfter = $null
+            $codex.RetryAfter = $null
             if (-not (Start-CodexOfficialRequest)) {
-                $script:CodexRefreshAttempt = 0
+                $codex.Attempt = 0
                 Set-RefreshBusy -Busy $false
                 Reset-RefreshCountdown
             }
         }
         return
     }
-    if (-not $script:CodexRequestTask.IsCompleted) {
+    if (-not $codex.RequestTask.IsCompleted) {
         return
     }
 
-    $task = $script:CodexRequestTask
-    $request = $script:CodexRequest
-    $script:CodexRequestTask = $null
-    $script:CodexRequest = $null
+    $task = $codex.RequestTask
+    $request = $codex.Request
+    $codex.RequestTask = $null
+    $codex.Request = $null
     $response = $null
     $statusCode = 0
     $retryStarted = $false
@@ -163,7 +167,7 @@ function Complete-CodexRefresh {
         )
         if (
             $transientFailure -and
-            $script:CodexRefreshAttempt -lt $script:CodexRefreshMaxAttempts -and
+            $codex.Attempt -lt $codex.MaxAttempts -and
             $script:CodexOfficialAccessEnabled -and
             $script:ActiveProvider -eq 'Codex' -and
             -not $script:IsClosing
@@ -182,7 +186,7 @@ function Complete-CodexRefresh {
                     )
                 )
             }
-            $script:CodexRetryAfter =
+            $codex.RetryAfter =
                 [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
             $retryStarted = $true
         }
@@ -216,8 +220,8 @@ function Complete-CodexRefresh {
         if ($response) { $response.Dispose() }
         if ($request) { $request.Dispose() }
         if (-not $retryStarted) {
-            $script:CodexRefreshAttempt = 0
-            $script:CodexRetryAfter = $null
+            $codex.Attempt = 0
+            $codex.RetryAfter = $null
             Set-RefreshBusy -Busy $false
             Reset-RefreshCountdown
         }
@@ -235,24 +239,25 @@ function Get-DeepSeekHttpClient {
 }
 
 function Cancel-DeepSeekRefresh {
-    if ($script:DeepSeekRequestTask -and -not $script:DeepSeekRequestTask.IsCompleted) {
+    $deepSeek = $script:AppContext.Refresh.DeepSeek
+    if ($deepSeek.RequestTask -and -not $deepSeek.RequestTask.IsCompleted) {
         if ($script:DeepSeekHttpClient) {
             $script:DeepSeekHttpClient.CancelPendingRequests()
         }
     }
     elseif (
-        $script:DeepSeekRequestTask -and
-        -not $script:DeepSeekRequestTask.IsCanceled -and
-        -not $script:DeepSeekRequestTask.IsFaulted
+        $deepSeek.RequestTask -and
+        -not $deepSeek.RequestTask.IsCanceled -and
+        -not $deepSeek.RequestTask.IsFaulted
     ) {
-        $abandonedResponse = $script:DeepSeekRequestTask.GetAwaiter().GetResult()
+        $abandonedResponse = $deepSeek.RequestTask.GetAwaiter().GetResult()
         if ($abandonedResponse) { $abandonedResponse.Dispose() }
     }
-    if ($script:DeepSeekRequest) {
-        $script:DeepSeekRequest.Dispose()
+    if ($deepSeek.Request) {
+        $deepSeek.Request.Dispose()
     }
-    $script:DeepSeekRequest = $null
-    $script:DeepSeekRequestTask = $null
+    $deepSeek.Request = $null
+    $deepSeek.RequestTask = $null
     Set-RefreshBusy -Busy $false
 }
 
@@ -282,27 +287,29 @@ function Start-DeepSeekRefresh {
             'Bearer',
             $credential.ApiKey
         )
-        $script:DeepSeekRequest = $request
-        $script:DeepSeekRequestTask = (Get-DeepSeekHttpClient).SendAsync($request)
+        $script:AppContext.Refresh.DeepSeek.Request = $request
+        $script:AppContext.Refresh.DeepSeek.RequestTask =
+            (Get-DeepSeekHttpClient).SendAsync($request)
     }
     catch {
         if ($request) { $request.Dispose() }
-        $script:DeepSeekRequest = $null
-        $script:DeepSeekRequestTask = $null
+        $script:AppContext.Refresh.DeepSeek.Request = $null
+        $script:AppContext.Refresh.DeepSeek.RequestTask = $null
         Set-RefreshBusy -Busy $false
         $SourceText.Text = 'DeepSeek 请求未能启动：' + $_.Exception.Message
     }
 }
 
 function Complete-DeepSeekRefresh {
-    if (-not $script:DeepSeekRequestTask -or -not $script:DeepSeekRequestTask.IsCompleted) {
+    $deepSeek = $script:AppContext.Refresh.DeepSeek
+    if (-not $deepSeek.RequestTask -or -not $deepSeek.RequestTask.IsCompleted) {
         return
     }
 
-    $task = $script:DeepSeekRequestTask
-    $request = $script:DeepSeekRequest
-    $script:DeepSeekRequestTask = $null
-    $script:DeepSeekRequest = $null
+    $task = $deepSeek.RequestTask
+    $request = $deepSeek.Request
+    $deepSeek.RequestTask = $null
+    $deepSeek.Request = $null
     $response = $null
     try {
         if ($task.IsCanceled) { throw 'DeepSeek 请求超时，请稍后重试。' }
@@ -399,10 +406,13 @@ function Set-ActiveProvider {
     )
 
     if ($script:ActiveProvider -ne $Provider) {
-        if ($script:DeepSeekRequestTask) {
+        if ($script:AppContext.Refresh.DeepSeek.RequestTask) {
             Cancel-DeepSeekRefresh
         }
-        if ($script:CodexRequestTask -or $script:CodexRetryAfter) {
+        if (
+            $script:AppContext.Refresh.Codex.RequestTask -or
+            $script:AppContext.Refresh.Codex.RetryAfter
+        ) {
             Cancel-CodexRefresh
         }
     }
@@ -438,7 +448,10 @@ function Set-CodexOfficialAccess {
 
     if (
         -not $Enabled -and
-        ($script:CodexRequestTask -or $script:CodexRetryAfter)
+        (
+            $script:AppContext.Refresh.Codex.RequestTask -or
+            $script:AppContext.Refresh.Codex.RetryAfter
+        )
     ) {
         Cancel-CodexRefresh
     }
@@ -603,7 +616,7 @@ function Show-DeepSeekSettings {
 }
 
 function Invoke-Refresh {
-    if ($script:IsRefreshing) { return }
+    if ($script:AppContext.Refresh.IsBusy) { return }
     try {
         Set-RefreshBusy -Busy $true
         if ($script:ActiveProvider -eq 'DeepSeek') {
@@ -634,26 +647,28 @@ function Invoke-Refresh {
 function Reset-FailedRefreshOperation {
     param([string]$Message)
 
-    if ($script:CodexRequest) {
-        try { $script:CodexRequest.Dispose() } catch {}
+    $codex = $script:AppContext.Refresh.Codex
+    $deepSeek = $script:AppContext.Refresh.DeepSeek
+    if ($codex.Request) {
+        try { $codex.Request.Dispose() } catch {}
     }
-    $script:CodexRequest = $null
-    $script:CodexRequestTask = $null
-    $script:CodexRetryAfter = $null
-    $script:CodexRefreshAttempt = 0
+    $codex.Request = $null
+    $codex.RequestTask = $null
+    $codex.RetryAfter = $null
+    $codex.Attempt = 0
 
-    if ($script:DeepSeekRequest) {
-        try { $script:DeepSeekRequest.Dispose() } catch {}
+    if ($deepSeek.Request) {
+        try { $deepSeek.Request.Dispose() } catch {}
     }
-    $script:DeepSeekRequest = $null
-    $script:DeepSeekRequestTask = $null
+    $deepSeek.Request = $null
+    $deepSeek.RequestTask = $null
 
     try {
         Set-RefreshBusy -Busy $false
     }
     catch {
-        $script:IsRefreshing = $false
-        $script:RefreshStartedAt = $null
+        $script:AppContext.Refresh.IsBusy = $false
+        $script:AppContext.Refresh.StartedAt = $null
     }
     Reset-RefreshCountdown
     if ($SourceText) {
@@ -662,12 +677,15 @@ function Reset-FailedRefreshOperation {
 }
 
 function Set-AutoRefreshStatusText {
-    if ($script:IsRefreshing) {
-        $elapsedSeconds = if ($script:RefreshStartedAt) {
+    if ($script:AppContext.Refresh.IsBusy) {
+        $elapsedSeconds = if ($script:AppContext.Refresh.StartedAt) {
             [Math]::Max(
                 0,
                 [Math]::Floor(
-                    ([DateTimeOffset]::Now - $script:RefreshStartedAt).TotalSeconds
+                    (
+                        [DateTimeOffset]::Now -
+                        $script:AppContext.Refresh.StartedAt
+                    ).TotalSeconds
                 )
             )
         }
@@ -681,7 +699,7 @@ function Set-AutoRefreshStatusText {
 
     $AutoRefreshText.Text = '{0} 秒后自动刷新' -f [Math]::Max(
         0,
-        $script:RefreshRemaining
+        $script:AppContext.Refresh.RemainingSeconds
     )
 }
 
@@ -694,26 +712,28 @@ function Invoke-RefreshTimerTick {
         Reset-FailedRefreshOperation -Message $_.Exception.Message
     }
 
-    if ($script:IsRefreshing) {
+    if ($script:AppContext.Refresh.IsBusy) {
         Set-AutoRefreshStatusText
         return
     }
 
     $now = [DateTimeOffset]::Now
-    if (-not $script:NextRefreshAt) {
+    if (-not $script:AppContext.Refresh.NextAt) {
         Reset-RefreshCountdown -Now $now
     }
-    $script:RefreshRemaining = [Math]::Max(
+    $script:AppContext.Refresh.RemainingSeconds = [Math]::Max(
         0,
-        [Math]::Ceiling(($script:NextRefreshAt - $now).TotalSeconds)
+        [Math]::Ceiling(
+            ($script:AppContext.Refresh.NextAt - $now).TotalSeconds
+        )
     )
-    if ($script:RefreshRemaining -le 0) {
+    if ($script:AppContext.Refresh.RemainingSeconds -le 0) {
         Invoke-Refresh
         if (
-            -not $script:IsRefreshing -and
+            -not $script:AppContext.Refresh.IsBusy -and
             (
-                -not $script:NextRefreshAt -or
-                $script:NextRefreshAt -le [DateTimeOffset]::Now
+                -not $script:AppContext.Refresh.NextAt -or
+                $script:AppContext.Refresh.NextAt -le [DateTimeOffset]::Now
             )
         ) {
             Reset-RefreshCountdown

@@ -195,28 +195,33 @@ if ($CheckRefreshCoordinator) {
     try {
         $script:ActiveProvider = 'Codex'
         $script:CodexOfficialAccessEnabled = $false
-        $script:IsRefreshing = $false
+        $script:AppContext.Refresh.IsBusy = $false
 
         $manualStopwatch = [Diagnostics.Stopwatch]::StartNew()
         Invoke-Refresh
         $manualStopwatch.Stop()
         $manualLabel = [string]$WindowLabel.Text
         $manualSource = [string]$SourceText.Text
-        $manualRemaining = [int]$script:RefreshRemaining
+        $manualRemaining = [int]$script:AppContext.Refresh.RemainingSeconds
 
-        $script:NextRefreshAt = [DateTimeOffset]::Now.AddSeconds(-1)
-        $script:RefreshRemaining = 0
+        $script:AppContext.Refresh.NextAt =
+            [DateTimeOffset]::Now.AddSeconds(-1)
+        $script:AppContext.Refresh.RemainingSeconds = 0
         Invoke-RefreshTimerTick
         $automaticLabel = [string]$WindowLabel.Text
-        $automaticRemaining = [int]$script:RefreshRemaining
+        $automaticRemaining =
+            [int]$script:AppContext.Refresh.RemainingSeconds
         $automaticText = [string]$AutoRefreshText.Text
 
-        $script:NextRefreshAt = [DateTimeOffset]::Now.AddSeconds(3)
+        $script:AppContext.Refresh.NextAt =
+            [DateTimeOffset]::Now.AddSeconds(3)
         Invoke-RefreshTimerTick
-        $countdownBefore = [int]$script:RefreshRemaining
+        $countdownBefore =
+            [int]$script:AppContext.Refresh.RemainingSeconds
         Start-Sleep -Milliseconds 1100
         Invoke-RefreshTimerTick
-        $countdownAfter = [int]$script:RefreshRemaining
+        $countdownAfter =
+            [int]$script:AppContext.Refresh.RemainingSeconds
 
         [pscustomobject]@{
             ManualRefreshSucceeded = (
@@ -264,7 +269,10 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         $script:DeepSeekHttpClient.Dispose()
         $script:DeepSeekHttpClient = $null
     }
-    if ($script:CodexRequestTask -or $script:CodexRetryAfter) {
+    if (
+        $script:AppContext.Refresh.Codex.RequestTask -or
+        $script:AppContext.Refresh.Codex.RetryAfter
+    ) {
         Cancel-CodexRefresh
     }
     if ($script:CodexHttpClient) {
@@ -272,9 +280,9 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         $script:CodexHttpClient.Dispose()
         $script:CodexHttpClient = $null
     }
-    if ($script:DeepSeekRequest) {
-        $script:DeepSeekRequest.Dispose()
-        $script:DeepSeekRequest = $null
+    if ($script:AppContext.Refresh.DeepSeek.Request) {
+        $script:AppContext.Refresh.DeepSeek.Request.Dispose()
+        $script:AppContext.Refresh.DeepSeek.Request = $null
     }
     Save-Settings
     if ($script:TrayNotifyIcon) {

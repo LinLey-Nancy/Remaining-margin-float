@@ -205,6 +205,94 @@
     return
 }
 
+if ($CheckProviderContracts) {
+    $fixtureRoot = [Environment]::GetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_FIXTURE_ROOT',
+        [EnvironmentVariableTarget]::Process
+    )
+    if ([string]::IsNullOrWhiteSpace($fixtureRoot)) {
+        $fixtureRoot = [IO.Path]::GetFullPath(
+            (Join-Path $script:RmfSourceRoot '..\tests\fixtures')
+        )
+    }
+
+    $codexFixturePath = Join-Path $fixtureRoot 'codex-official-usage.json'
+    $deepSeekBalanceFixturePath = Join-Path $fixtureRoot 'deepseek-balance.json'
+    $deepSeekUsageFixturePath = Join-Path $fixtureRoot 'deepseek-usage.jsonl'
+    foreach ($fixturePath in @(
+        $codexFixturePath
+        $deepSeekBalanceFixturePath
+        $deepSeekUsageFixturePath
+    )) {
+        if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
+            throw "Provider contract fixture is missing: $fixturePath"
+        }
+    }
+
+    $codexPayload = Get-Content -LiteralPath $codexFixturePath -Raw -Encoding UTF8 |
+        ConvertFrom-Json
+    $codexUsage = ConvertTo-CodexOfficialUsage `
+        -Payload $codexPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+
+    $deepSeekEvents = @([DeepSeekLogScanner]::ReadFile($deepSeekUsageFixturePath))
+    $deepSeekPrimaryEvent = $deepSeekEvents |
+        Where-Object { $_.MessageId -eq 'fixture-message' } |
+        Select-Object -First 1
+    $deepSeekPrimaryCost = Get-DeepSeekEstimatedEventCostCny `
+        -Event $deepSeekPrimaryEvent
+    $deepSeekAggregate = Measure-DeepSeekUsageEvents `
+        -Events $deepSeekEvents `
+        -StartDate ([datetime]'2030-01-01') `
+        -EndDate ([datetime]'2030-01-02')
+    $deepSeekBalance = Get-Content `
+        -LiteralPath $deepSeekBalanceFixturePath `
+        -Raw `
+        -Encoding UTF8 |
+        ConvertFrom-Json
+    $fixtureLocalUsage = [pscustomobject]@{
+        TodayTokens = $deepSeekAggregate.TotalTokens
+        MonthlyTokens = $deepSeekAggregate.TotalTokens
+        MonthlyEstimatedCostCny = $deepSeekAggregate.EstimatedCostCny
+        LastTurnTokens = $deepSeekPrimaryEvent.TotalTokens
+        LastInputTokens = (
+            $deepSeekPrimaryEvent.InputTokens +
+            $deepSeekPrimaryEvent.CachedTokens +
+            $deepSeekPrimaryEvent.CacheWriteTokens
+        )
+        LastOutputTokens = $deepSeekPrimaryEvent.OutputTokens
+        LastCachedTokens = $deepSeekPrimaryEvent.CachedTokens
+        CacheHitPercent = 50.0
+        Model = $deepSeekPrimaryEvent.Model
+        SampledAt = $deepSeekPrimaryEvent.Timestamp.LocalDateTime
+    }
+    $deepSeekSnapshot = ConvertTo-DeepSeekSnapshot `
+        -BalancePayload $deepSeekBalance `
+        -LocalUsage $fixtureLocalUsage `
+        -Budget 120 `
+        -KeyHint '1234' `
+        -CredentialSource '契约样例' `
+        -SampledAt ([datetime]'2030-01-01T12:00:00')
+    Assert-UsageSnapshotContract -Snapshot $deepSeekSnapshot
+    $pricingCatalog = Get-DeepSeekPricingCatalog
+
+    [pscustomobject]@{
+        CodexUsedPercent = $codexUsage.UsedPercent
+        CodexWindowMinutes = $codexUsage.WindowMinutes
+        CodexPlan = $codexUsage.PlanType
+        DeepSeekEventCount = $deepSeekEvents.Count
+        DeepSeekPrimaryTokens = $deepSeekPrimaryEvent.TotalTokens
+        DeepSeekPrimaryCostCny = $deepSeekPrimaryCost
+        DeepSeekAvailable = $deepSeekSnapshot.Available
+        DeepSeekBalance = $deepSeekSnapshot.TotalBalance
+        DeepSeekBudgetPercent = $deepSeekSnapshot.BudgetPercent
+        PricingSchemaVersion = $pricingCatalog.SchemaVersion
+        PricingCurrency = $pricingCatalog.Currency
+    } | ConvertTo-Json
+    $script:RmfStopLoading = $true
+    return
+}
+
 if ($CheckDeepSeekData) {
     $checkSnapshot = Get-DeepSeekDemoSnapshot
     $testSecret = 'deepseek-test-key-1234'

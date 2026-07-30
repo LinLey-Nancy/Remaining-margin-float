@@ -205,14 +205,7 @@ $script:DeepSeekUsageCache = @{}
 $script:DeepSeekLatestUsageCache = @{}
 $script:CodexHttpClient = $null
 $script:CodexOfficialUsageCache = $null
-$script:CodexRequest = $null
-$script:CodexRequestTask = $null
-$script:CodexRefreshAttempt = 0
-$script:CodexRefreshMaxAttempts = 2
-$script:CodexRetryAfter = $null
 $script:DeepSeekHttpClient = $null
-$script:DeepSeekRequest = $null
-$script:DeepSeekRequestTask = $null
 $script:LastDeepSeekSnapshot = $null
 $script:UsageHistoryCache = $null
 $script:LowRemainingThreshold = 20.0
@@ -242,5 +235,22 @@ $script:EdgeRevealTimer = $null
 $script:CurrentHoverBorderColor = '#C4D0C6'
 $script:CurrentSurfaceBorderColor = '#E1E3DE'
 $script:IsRestoringSettings = $false
-$script:RefreshStartedAt = $null
-$script:NextRefreshAt = $null
+$script:AppContext = [pscustomobject]@{
+    Refresh = [pscustomobject]@{
+        IsBusy = $false
+        StartedAt = $null
+        RemainingSeconds = $script:RefreshIntervalSeconds
+        NextAt = $null
+        Codex = [pscustomobject]@{
+            Request = $null
+            RequestTask = $null
+            Attempt = 0
+            MaxAttempts = 2
+            RetryAfter = $null
+        }
+        DeepSeek = [pscustomobject]@{
+            Request = $null
+            RequestTask = $null
+        }
+    }
+}
