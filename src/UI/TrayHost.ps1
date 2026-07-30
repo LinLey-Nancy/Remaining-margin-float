@@ -81,6 +81,32 @@ $script:TrayEdgeDockItem.ToolTipText = '拖到屏幕左侧或右侧后，自动�
 $script:TrayEdgeDockItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Set-EdgeDockEnabled -Enabled $script:TrayEdgeDockItem.Checked
 }))
+$trayDataItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayDataItem.Text = '数据与诊断'
+$trayDiagnosticsItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayDiagnosticsItem.Text = '查看脱敏诊断…'
+$trayDiagnosticsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Show-ExistingWindow
+    Show-RuntimeDiagnostics
+}))
+$trayExportHistoryItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayExportHistoryItem.Text = '导出使用记录…'
+$trayExportHistoryItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Show-ExistingWindow
+    Show-UsageHistoryExportDialog
+}))
+$trayImportHistoryItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayImportHistoryItem.Text = '导入使用记录…'
+$trayImportHistoryItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Show-ExistingWindow
+    Show-UsageHistoryImportDialog
+}))
+[void]$trayDataItem.DropDownItems.Add($trayDiagnosticsItem)
+[void]$trayDataItem.DropDownItems.Add(
+    (New-Object System.Windows.Forms.ToolStripSeparator)
+)
+[void]$trayDataItem.DropDownItems.Add($trayExportHistoryItem)
+[void]$trayDataItem.DropDownItems.Add($trayImportHistoryItem)
 $trayStartupItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayStartupItem.Text = '设置开机启动'
 $trayStartupClickHandler = {
@@ -126,6 +152,7 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)
 [void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)
+[void]$script:TrayMenu.Items.Add($trayDataItem)
 [void]$script:TrayMenu.Items.Add($trayStartupItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)

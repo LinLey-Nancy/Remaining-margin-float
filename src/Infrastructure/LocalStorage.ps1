@@ -8,7 +8,11 @@
     # from the previous application name. The legacy directory remains intact.
     $legacyDirectory = Join-Path $env:LOCALAPPDATA 'CodexMarginFloat'
     if (Test-Path -LiteralPath $legacyDirectory) {
-        foreach ($fileName in @('deepseek.json', 'settings.json')) {
+        foreach ($fileName in @(
+            'deepseek.json'
+            'settings.json'
+            'usage-history.jsonl'
+        )) {
             $legacyPath = Join-Path $legacyDirectory $fileName
             $newPath = Join-Path $directory $fileName
             if (

@@ -2,10 +2,151 @@
     return Join-Path (Get-AppDataDirectory) 'usage-history.jsonl'
 }
 
+function Get-UsageHistoryCalendarMetadata {
+    param(
+        [DateTimeOffset]$ObservedAt,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
+    )
+
+    $localObservedAt = [TimeZoneInfo]::ConvertTime(
+        $ObservedAt.ToUniversalTime(),
+        $TimeZone
+    )
+    return [pscustomobject]@{
+        LocalDate = $localObservedAt.ToString(
+            'yyyy-MM-dd',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        TimeZoneId = $TimeZone.Id
+        UtcOffsetMinutes = [int][Math]::Round(
+            $localObservedAt.Offset.TotalMinutes
+        )
+    }
+}
+
+function ConvertFrom-UsageHistoryRecord {
+    param(
+        $Saved,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
+    )
+
+    if (-not $Saved) { return $null }
+    $providerId = [string]$Saved.ProviderId
+    $metricType = [string]$Saved.MetricType
+    if (
+        $providerId -notin @('Codex', 'DeepSeek') -or
+        $metricType -notin @('Percent', 'Balance')
+    ) {
+        return $null
+    }
+
+    $observedAt = [DateTimeOffset]::Parse(
+        [string]$Saved.ObservedAtUtc,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+    ).ToUniversalTime()
+    $remainingValue = [double]$Saved.RemainingValue
+    if (
+        [double]::IsNaN($remainingValue) -or
+        [double]::IsInfinity($remainingValue) -or
+        $remainingValue -lt 0 -or
+        ($metricType -eq 'Percent' -and $remainingValue -gt 100)
+    ) {
+        return $null
+    }
+
+    $resetAtUtc = ''
+    if (
+        $Saved.PSObject.Properties['ResetAtUtc'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$Saved.ResetAtUtc)
+    ) {
+        try {
+            $resetAtUtc = [DateTimeOffset]::Parse(
+                [string]$Saved.ResetAtUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime().ToString(
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+        catch {
+            $resetAtUtc = ''
+        }
+    }
+
+    $calendar = Get-UsageHistoryCalendarMetadata `
+        -ObservedAt $observedAt `
+        -TimeZone $TimeZone
+    return [pscustomobject]@{
+        Version = 2
+        ProviderId = $providerId
+        ObservedAtUtc = $observedAt
+        LocalDate = $calendar.LocalDate
+        TimeZoneId = $calendar.TimeZoneId
+        UtcOffsetMinutes = $calendar.UtcOffsetMinutes
+        MetricType = $metricType
+        RemainingValue = [Math]::Round($remainingValue, 4)
+        Unit = [string]$Saved.Unit
+        ResetAtUtc = $resetAtUtc
+    }
+}
+
+function Select-UsageHistoryRetentionWindow {
+    param(
+        [object[]]$Samples,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
+    )
+
+    $localNow = [TimeZoneInfo]::ConvertTime(
+        $Now.ToUniversalTime(),
+        $TimeZone
+    )
+    $earliestLocalDate = $localNow.Date.AddDays(-7)
+    $deduplicated = @{}
+    foreach ($sample in @($Samples | Sort-Object ObservedAtUtc)) {
+        if (-not $sample) { continue }
+        $observedAt = ([DateTimeOffset]$sample.ObservedAtUtc).ToUniversalTime()
+        $localObservedAt = [TimeZoneInfo]::ConvertTime($observedAt, $TimeZone)
+        if ($localObservedAt.Date -lt $earliestLocalDate) { continue }
+
+        $calendar = Get-UsageHistoryCalendarMetadata `
+            -ObservedAt $observedAt `
+            -TimeZone $TimeZone
+        $normalized = [pscustomobject]@{
+            Version = 2
+            ProviderId = [string]$sample.ProviderId
+            ObservedAtUtc = $observedAt
+            LocalDate = $calendar.LocalDate
+            TimeZoneId = $calendar.TimeZoneId
+            UtcOffsetMinutes = $calendar.UtcOffsetMinutes
+            MetricType = [string]$sample.MetricType
+            RemainingValue = [Math]::Round(
+                [double]$sample.RemainingValue,
+                4
+            )
+            Unit = [string]$sample.Unit
+            ResetAtUtc = [string]$sample.ResetAtUtc
+        }
+        $key = '{0}|{1}|{2}|{3}' -f
+            $normalized.ProviderId,
+            $normalized.MetricType,
+            $normalized.Unit,
+            $normalized.ObservedAtUtc.ToString(
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+        $deduplicated[$key] = $normalized
+    }
+    return @($deduplicated.Values | Sort-Object ObservedAtUtc)
+}
+
 function ConvertTo-UsageHistorySample {
     param(
         $Snapshot,
-        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now
+        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
     )
 
     if (-not $Snapshot -or -not [bool]$Snapshot.Available) {
@@ -54,10 +195,16 @@ function ConvertTo-UsageHistorySample {
         }
     }
 
+    $calendar = Get-UsageHistoryCalendarMetadata `
+        -ObservedAt $ObservedAt `
+        -TimeZone $TimeZone
     return [pscustomobject]@{
-        Version = 1
+        Version = 2
         ProviderId = [string]$Snapshot.ProviderId
         ObservedAtUtc = $ObservedAt.ToUniversalTime()
+        LocalDate = $calendar.LocalDate
+        TimeZoneId = $calendar.TimeZoneId
+        UtcOffsetMinutes = $calendar.UtcOffsetMinutes
         MetricType = $metricType
         RemainingValue = [Math]::Round($remainingValue, 4)
         Unit = $unit
@@ -66,43 +213,43 @@ function ConvertTo-UsageHistorySample {
 }
 
 function Read-UsageHistory {
-    if ($null -ne $script:UsageHistoryCache) {
+    param(
+        [string]$Path = '',
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local,
+        [switch]$BypassCache
+    )
+
+    $usesDefaultPath = [string]::IsNullOrWhiteSpace($Path)
+    if (
+        $usesDefaultPath -and
+        -not $BypassCache -and
+        $null -ne $script:UsageHistoryCache
+    ) {
         return @($script:UsageHistoryCache)
     }
 
     $items = New-Object Collections.Generic.List[object]
-    $path = Get-UsageHistoryPath
+    if ($usesDefaultPath) {
+        $Path = Get-UsageHistoryPath
+    }
+    $path = [IO.Path]::GetFullPath($Path)
     if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $historyFile = Get-Item -LiteralPath $path
+        if ($historyFile.Length -gt 16MB) {
+            throw '使用记录文件超过 16 MB 安全上限。'
+        }
         foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8)) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line.Length -gt 65536) {
+                throw '使用记录包含超过 64 KB 的异常记录。'
+            }
             try {
                 $saved = $line | ConvertFrom-Json
-                $providerId = [string]$saved.ProviderId
-                $metricType = [string]$saved.MetricType
-                $observedAt = [DateTimeOffset]::Parse(
-                    [string]$saved.ObservedAtUtc,
-                    [Globalization.CultureInfo]::InvariantCulture,
-                    [Globalization.DateTimeStyles]::RoundtripKind
-                )
-                if (
-                    $providerId -notin @('Codex', 'DeepSeek') -or
-                    $metricType -notin @('Percent', 'Balance')
-                ) {
-                    continue
-                }
-                $items.Add([pscustomobject]@{
-                    Version = 1
-                    ProviderId = $providerId
-                    ObservedAtUtc = $observedAt.ToUniversalTime()
-                    MetricType = $metricType
-                    RemainingValue = [double]$saved.RemainingValue
-                    Unit = [string]$saved.Unit
-                    ResetAtUtc = if ($saved.PSObject.Properties['ResetAtUtc']) {
-                        [string]$saved.ResetAtUtc
-                    } else {
-                        ''
-                    }
-                })
+                $sample = ConvertFrom-UsageHistoryRecord `
+                    -Saved $saved `
+                    -TimeZone $TimeZone
+                if ($sample) { $items.Add($sample) }
             }
             catch {
                 # A damaged history line is ignored without discarding valid samples.
@@ -110,20 +257,25 @@ function Read-UsageHistory {
         }
     }
 
-    $cutoff = [DateTimeOffset]::UtcNow.AddDays(-8)
-    $script:UsageHistoryCache = @(
-        $items |
-            Where-Object { $_.ObservedAtUtc -ge $cutoff } |
-            Sort-Object ObservedAtUtc
+    $history = @(
+        Select-UsageHistoryRetentionWindow `
+            -Samples $items `
+            -Now $Now `
+            -TimeZone $TimeZone
     )
-    return @($script:UsageHistoryCache)
+    if ($usesDefaultPath) {
+        $script:UsageHistoryCache = $history
+    }
+    return $history
 }
 
 function Save-UsageHistory {
     param(
         [object[]]$Samples,
         [string]$Path = '',
-        [switch]$AllowDiagnosticWrite
+        [switch]$AllowDiagnosticWrite,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
     )
 
     if ($isDiagnosticRun -and -not $AllowDiagnosticWrite) { return }
@@ -132,6 +284,16 @@ function Save-UsageHistory {
         $Path = Get-UsageHistoryPath
     }
     $path = [IO.Path]::GetFullPath($Path)
+    $parentDirectory = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $parentDirectory -PathType Container)) {
+        New-Item -Path $parentDirectory -ItemType Directory -Force | Out-Null
+    }
+    $retainedSamples = @(
+        Select-UsageHistoryRetentionWindow `
+            -Samples $Samples `
+            -Now $Now `
+            -TimeZone $TimeZone
+    )
     $temporaryPath = '{0}.tmp.{1}.{2}' -f
         $path,
         $PID,
@@ -141,13 +303,19 @@ function Save-UsageHistory {
         $PID,
         [Guid]::NewGuid().ToString('N')
     $lines = @(
-        $Samples | Sort-Object ObservedAtUtc | ForEach-Object {
+        $retainedSamples | Sort-Object ObservedAtUtc | ForEach-Object {
+            $calendar = Get-UsageHistoryCalendarMetadata `
+                -ObservedAt ([DateTimeOffset]$_.ObservedAtUtc) `
+                -TimeZone $TimeZone
             [ordered]@{
-                v = 1
+                v = 2
                 ProviderId = [string]$_.ProviderId
                 ObservedAtUtc = ([DateTimeOffset]$_.ObservedAtUtc).
                     ToUniversalTime().
                     ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+                LocalDate = $calendar.LocalDate
+                TimeZoneId = $calendar.TimeZoneId
+                UtcOffsetMinutes = $calendar.UtcOffsetMinutes
                 MetricType = [string]$_.MetricType
                 RemainingValue = [Math]::Round([double]$_.RemainingValue, 4)
                 Unit = [string]$_.Unit
@@ -179,6 +347,104 @@ function Save-UsageHistory {
     }
 }
 
+function Export-UsageHistory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $samples = @(Read-UsageHistory -Now $Now)
+    Save-UsageHistory `
+        -Samples $samples `
+        -Path $Path `
+        -Now $Now `
+        -AllowDiagnosticWrite
+    return [pscustomobject]@{
+        Path = [IO.Path]::GetFullPath($Path)
+        SampleCount = $samples.Count
+        FirstObservedAtUtc = if ($samples.Count -gt 0) {
+            $samples[0].ObservedAtUtc
+        } else { $null }
+        LastObservedAtUtc = if ($samples.Count -gt 0) {
+            $samples[-1].ObservedAtUtc
+        } else { $null }
+    }
+}
+
+function Import-UsageHistory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+        [string]$DestinationPath = '',
+        [switch]$AllowDiagnosticWrite
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw '找不到要导入的使用记录文件。'
+    }
+    $imported = @(
+        Read-UsageHistory `
+            -Path $Path `
+            -Now $Now `
+            -BypassCache
+    )
+    if ($imported.Count -eq 0) {
+        throw '导入文件中没有近 7 日内的有效使用记录。'
+    }
+    $usesDefaultDestination =
+        [string]::IsNullOrWhiteSpace($DestinationPath)
+    $existing = @(
+        if ($usesDefaultDestination) {
+            Read-UsageHistory -Now $Now
+        } else {
+            Read-UsageHistory `
+                -Path $DestinationPath `
+                -Now $Now `
+                -BypassCache
+        }
+    )
+    $merged = @(
+        Select-UsageHistoryRetentionWindow `
+            -Samples @($existing + $imported) `
+            -Now $Now
+    )
+    Save-UsageHistory `
+        -Samples $merged `
+        -Path $DestinationPath `
+        -Now $Now `
+        -AllowDiagnosticWrite:$AllowDiagnosticWrite
+    if ($usesDefaultDestination) {
+        $script:UsageHistoryCache = $merged
+    }
+    return [pscustomobject]@{
+        ImportedCount = $imported.Count
+        PreviousCount = $existing.Count
+        TotalCount = $merged.Count
+    }
+}
+
+function Get-UsageHistorySummary {
+    param([DateTimeOffset]$Now = [DateTimeOffset]::Now)
+
+    $path = Get-UsageHistoryPath
+    $samples = @(Read-UsageHistory -Now $Now)
+    return [pscustomobject]@{
+        Path = $path
+        Exists = Test-Path -LiteralPath $path -PathType Leaf
+        SampleCount = $samples.Count
+        FirstLocalDate = if ($samples.Count -gt 0) {
+            [string]$samples[0].LocalDate
+        } else { '' }
+        LastLocalDate = if ($samples.Count -gt 0) {
+            [string]$samples[-1].LocalDate
+        } else { '' }
+        TimeZoneId = [TimeZoneInfo]::Local.Id
+        Providers = @($samples.ProviderId | Sort-Object -Unique)
+    }
+}
+
 function Add-UsageHistorySample {
     param(
         $Snapshot,
@@ -188,7 +454,11 @@ function Add-UsageHistorySample {
     $currentSample = ConvertTo-UsageHistorySample `
         -Snapshot $Snapshot `
         -ObservedAt $ObservedAt
-    $history = @(Read-UsageHistory)
+    $history = if ($isDiagnosticRun -and $null -eq $script:UsageHistoryCache) {
+        @()
+    } else {
+        @(Read-UsageHistory)
+    }
     if (-not $currentSample) {
         return [pscustomobject]@{
             Samples = $history
@@ -202,7 +472,8 @@ function Add-UsageHistorySample {
         $history | Where-Object {
             $_.ProviderId -eq $currentSample.ProviderId -and
             $_.MetricType -eq $currentSample.MetricType -and
-            $_.Unit -eq $currentSample.Unit
+            $_.Unit -eq $currentSample.Unit -and
+            $_.ObservedAtUtc -le $currentSample.ObservedAtUtc.AddMinutes(5)
         } | Sort-Object ObservedAtUtc
     )
     $previousSample = $matchingSamples | Select-Object -Last 1
@@ -250,18 +521,30 @@ function Add-UsageHistorySample {
     }
 
     if ($changed) {
-        $cutoff = $ObservedAt.ToUniversalTime().AddDays(-8)
         $history = @(
-            $history |
-                Where-Object { $_.ObservedAtUtc -ge $cutoff } |
-                Sort-Object ObservedAtUtc
+            Select-UsageHistoryRetentionWindow `
+                -Samples $history `
+                -Now $ObservedAt
         )
-        $script:UsageHistoryCache = $history
         try {
-            Save-UsageHistory -Samples $history
+            Save-UsageHistory -Samples $history -Now $ObservedAt
+            $script:UsageHistoryCache = $history
+            $script:LastUsageHistoryError = ''
+            if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+                Set-RuntimeDiagnosticStatus `
+                    -Area 'History' `
+                    -Status 'Healthy' `
+                    -Message '使用历史已保存'
+            }
         }
         catch {
-            # Trend persistence is optional and must not break a refresh.
+            $script:LastUsageHistoryError = $_.Exception.Message
+            if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+                Set-RuntimeDiagnosticStatus `
+                    -Area 'History' `
+                    -Status 'Error' `
+                    -Message $_.Exception.Message
+            }
         }
     }
 
@@ -296,7 +579,8 @@ function Get-UsageTrend {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
             $_.Unit -eq $CurrentSample.Unit -and
-            $_.ObservedAtUtc -ge $cutoff
+            $_.ObservedAtUtc -ge $cutoff -and
+            $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
         } | Sort-Object ObservedAtUtc
     )
     if ($series.Count -lt 2) {
@@ -359,7 +643,8 @@ function Get-DepletionForecast {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
             $_.Unit -eq $CurrentSample.Unit -and
-            $_.ObservedAtUtc -ge $Now.ToUniversalTime().AddDays(-7)
+            $_.ObservedAtUtc -ge $Now.ToUniversalTime().AddDays(-7) -and
+            $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
         } | Sort-Object ObservedAtUtc
     )
     $recent = @(

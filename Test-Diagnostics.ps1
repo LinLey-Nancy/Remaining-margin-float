@@ -190,6 +190,22 @@ Assert-Diagnostic -Condition (
 ) -Message 'Custom low alert threshold crossing'
 Assert-Diagnostic -Condition ([bool]$history.PersistenceRoundTrip) `
     -Message 'History persistence round trip'
+Assert-Diagnostic -Condition ([bool]$history.RestartReloadRoundTrip) `
+    -Message 'History restart reload round trip'
+Assert-Diagnostic -Condition ([bool]$history.LegacyHistoryMigration) `
+    -Message 'Legacy history schema migration'
+Assert-Diagnostic -Condition ([bool]$history.CalendarDateAligned) `
+    -Message 'History local calendar date alignment'
+Assert-Diagnostic -Condition ([bool]$history.ImportMergeRoundTrip) `
+    -Message 'History import merge round trip'
+Assert-Diagnostic -Condition ([bool]$history.InvalidImportRejected) `
+    -Message 'Invalid history import rejection'
+Assert-Diagnostic -Condition ([bool]$history.OversizedImportRejected) `
+    -Message 'Oversized history import rejection'
+Assert-Diagnostic -Condition ([bool]$history.FutureSampleExcluded) `
+    -Message 'Future clock-skew sample exclusion'
+Assert-Diagnostic -Condition ([bool]$history.DiagnosticRedaction) `
+    -Message 'Runtime diagnostic redaction'
 Assert-Diagnostic -Condition ([bool]$history.HistorySampleContainsNoAccountData) `
     -Message 'History privacy fields'
 
@@ -206,7 +222,7 @@ Assert-Diagnostic -Condition (
     $edge.LeftDetected -eq 'Left' -and
     $edge.RightDetected -eq 'Right' -and
     $null -eq $edge.CenterDetected -and
-    $edge.LeftHidden -eq -82 -and
+    $edge.LeftHidden -eq -66 -and
     $edge.RightHidden -eq 1906
 ) -Message 'Edge docking geometry'
 
@@ -230,6 +246,10 @@ Assert-Diagnostic -Condition ([bool]$transitions.TaskViewHidden) `
 Assert-Diagnostic -Condition (
     $transitions.ExpandedWidth -eq 370 -and
     $transitions.ExpandedHeight -eq 500 -and
+    $transitions.ReopenedWidth -eq 370 -and
+    $transitions.ReopenedHeight -eq 500 -and
+    $transitions.InactiveWidth -eq 80 -and
+    $transitions.InactiveHeight -eq 80 -and
     $transitions.ExpandedVisibility -eq 'Visible' -and
     $transitions.ReopenedVisibility -eq 'Visible' -and
     $transitions.InactiveVisibility -eq 'Collapsed'

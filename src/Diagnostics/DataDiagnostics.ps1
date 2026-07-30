@@ -772,30 +772,194 @@ if ($CheckUsageHistory) {
     $historyTestPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.HistoryDiagnostic.{0}.jsonl' -f $PID
     )
+    $historyImportPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryImportDiagnostic.{0}.jsonl' -f $PID
+    )
+    $legacyHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryLegacyDiagnostic.{0}.jsonl' -f $PID
+    )
+    $invalidHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryInvalidDiagnostic.{0}.jsonl' -f $PID
+    )
+    $oversizedHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryOversizedDiagnostic.{0}.jsonl' -f $PID
+    )
+    $calendarTimeZone = [TimeZoneInfo]::CreateCustomTimeZone(
+        'RMF Diagnostic UTC+08',
+        [TimeSpan]::FromHours(8),
+        'RMF Diagnostic UTC+08',
+        'RMF Diagnostic UTC+08'
+    )
     $persistenceRoundTrip = $false
+    $restartReloadRoundTrip = $false
+    $legacyMigration = $false
+    $calendarDateAligned = $false
+    $importMergeRoundTrip = $false
+    $invalidImportRejected = $false
+    $oversizedImportRejected = $false
+    $futureSampleExcluded = $false
+    $diagnosticRedaction = $false
     try {
         Save-UsageHistory `
             -Samples $depletingSamples `
             -Path $historyTestPath `
+            -Now $now `
+            -TimeZone $calendarTimeZone `
             -AllowDiagnosticWrite
         # The second save exercises atomic replacement of an existing file.
         Save-UsageHistory `
             -Samples $depletingSamples `
             -Path $historyTestPath `
+            -Now $now `
+            -TimeZone $calendarTimeZone `
             -AllowDiagnosticWrite
         $savedLines = @(Get-Content -LiteralPath $historyTestPath -Encoding UTF8)
         $savedSample = $savedLines[0] | ConvertFrom-Json
         $persistenceRoundTrip = (
             $savedLines.Count -eq 3 -and
+            $savedSample.v -eq 2 -and
             $savedSample.ProviderId -eq 'Codex' -and
             $savedSample.MetricType -eq 'Percent' -and
+            $savedSample.PSObject.Properties.Name -contains 'LocalDate' -and
+            $savedSample.TimeZoneId -eq $calendarTimeZone.Id -and
             $savedSample.PSObject.Properties.Name -notcontains 'AccountName' -and
             $savedSample.PSObject.Properties.Name -notcontains 'ApiKey'
         )
+
+        $script:UsageHistoryCache = $null
+        $reloaded = @(
+            Read-UsageHistory `
+                -Path $historyTestPath `
+                -Now $now `
+                -TimeZone $calendarTimeZone `
+                -BypassCache
+        )
+        $restartReloadRoundTrip = (
+            $reloaded.Count -eq 3 -and
+            $reloaded[0].Version -eq 2 -and
+            $reloaded[-1].RemainingValue -eq 60
+        )
+
+        $calendarRecord = [ordered]@{
+            v = 1
+            ProviderId = 'Codex'
+            ObservedAtUtc = '2029-12-31T16:30:00.0000000+00:00'
+            MetricType = 'Percent'
+            RemainingValue = 50
+            Unit = '%'
+            ResetAtUtc = ''
+        } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText(
+            $legacyHistoryPath,
+            $calendarRecord,
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $legacyReloaded = @(
+            Read-UsageHistory `
+                -Path $legacyHistoryPath `
+                -Now $now `
+                -TimeZone $calendarTimeZone `
+                -BypassCache
+        )
+        $legacyMigration = (
+            $legacyReloaded.Count -eq 1 -and
+            $legacyReloaded[0].Version -eq 2
+        )
+        $calendarDateAligned = (
+            $legacyReloaded.Count -eq 1 -and
+            $legacyReloaded[0].LocalDate -eq '2030-01-01' -and
+            $legacyReloaded[0].UtcOffsetMinutes -eq 480
+        )
+
+        $importResult = Import-UsageHistory `
+            -Path $historyTestPath `
+            -DestinationPath $historyImportPath `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $importedReload = @(
+            Read-UsageHistory `
+                -Path $historyImportPath `
+                -Now $now `
+                -BypassCache
+        )
+        $importMergeRoundTrip = (
+            $importResult.ImportedCount -eq 3 -and
+            $importResult.TotalCount -eq 3 -and
+            $importedReload.Count -eq 3
+        )
+
+        [IO.File]::WriteAllText(
+            $invalidHistoryPath,
+            '{"not":"a usage sample"}',
+            (New-Object Text.UTF8Encoding($false))
+        )
+        try {
+            Import-UsageHistory `
+                -Path $invalidHistoryPath `
+                -DestinationPath $historyImportPath `
+                -Now $now `
+                -AllowDiagnosticWrite | Out-Null
+        }
+        catch {
+            $invalidImportRejected = $true
+        }
+
+        $oversizedStream = [IO.File]::OpenWrite($oversizedHistoryPath)
+        try {
+            $oversizedStream.SetLength(16MB + 1)
+        }
+        finally {
+            $oversizedStream.Dispose()
+        }
+        try {
+            Import-UsageHistory `
+                -Path $oversizedHistoryPath `
+                -DestinationPath $historyImportPath `
+                -Now $now `
+                -AllowDiagnosticWrite | Out-Null
+        }
+        catch {
+            $oversizedImportRejected = $true
+        }
+
+        $futureSample = New-HistoryCheckSample -HoursAgo -24 -Value 1
+        $futureTrend = Get-UsageTrend `
+            -Samples @($depletingSamples + $futureSample) `
+            -CurrentSample $depletingSamples[-1] `
+            -Hours (24 * 7) `
+            -Now $now
+        $futureSampleExcluded = (
+            $futureTrend.Change -eq -20 -and
+            $futureTrend.Samples.Count -eq 3
+        )
+
+        $sensitiveDiagnosticText = (
+            '{0}\private user@example.com sk-1234567890abcdef ' +
+            'api_key=diagnostic-secret Bearer abcdefghijklmnop ' +
+            'Authorization: Bearer authorization-secret'
+        ) -f $env:USERPROFILE
+        $redactedDiagnosticText =
+            Protect-RuntimeDiagnosticText -Text $sensitiveDiagnosticText
+        $diagnosticRedaction = (
+            $redactedDiagnosticText -notmatch [regex]::Escape($env:USERPROFILE) -and
+            $redactedDiagnosticText -notmatch 'user@example.com' -and
+            $redactedDiagnosticText -notmatch 'sk-1234567890abcdef' -and
+            $redactedDiagnosticText -notmatch 'diagnostic-secret' -and
+            $redactedDiagnosticText -notmatch 'abcdefghijklmnop' -and
+            $redactedDiagnosticText -notmatch 'authorization-secret'
+        )
     }
     finally {
-        if (Test-Path -LiteralPath $historyTestPath) {
-            Remove-Item -LiteralPath $historyTestPath -Force
+        foreach ($testPath in @(
+            $historyTestPath
+            $historyImportPath
+            $legacyHistoryPath
+            $invalidHistoryPath
+            $oversizedHistoryPath
+        )) {
+            if (Test-Path -LiteralPath $testPath) {
+                Remove-Item -LiteralPath $testPath -Force
+            }
         }
     }
 
@@ -827,6 +991,14 @@ if ($CheckUsageHistory) {
                 -PreviousSample $customThresholdPreviousSample `
                 -Threshold 35
         PersistenceRoundTrip = $persistenceRoundTrip
+        RestartReloadRoundTrip = $restartReloadRoundTrip
+        LegacyHistoryMigration = $legacyMigration
+        CalendarDateAligned = $calendarDateAligned
+        ImportMergeRoundTrip = $importMergeRoundTrip
+        InvalidImportRejected = $invalidImportRejected
+        OversizedImportRejected = $oversizedImportRejected
+        FutureSampleExcluded = $futureSampleExcluded
+        DiagnosticRedaction = $diagnosticRedaction
         HistorySampleContainsNoAccountData = (
             $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountName' -and
             $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountEmail' -and

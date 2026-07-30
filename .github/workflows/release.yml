@@ -86,7 +86,7 @@ jobs:
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
           $archive = ".\dist\Remaining-Margin-Float-v$version.zip"
           $checksum = "$archive.sha256"
-          $releaseTitle = "Remaining Margin Float $env:GITHUB_REF_NAME"
+          $releaseTitle = $env:GITHUB_REF_NAME
           $legacyExecutable = "Remaining-Margin-Float-v$version.exe"
           $legacyChecksum = "$legacyExecutable.sha256"
 
@@ -152,5 +152,22 @@ jobs:
           foreach ($legacyAsset in @($legacyExecutable, $legacyChecksum)) {
             if ($legacyAsset -in $finalAssetNames) {
               throw "Legacy release asset is still present: $legacyAsset"
+            }
+          }
+
+          $releaseTags = @(
+            gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
+              --jq '.[].tag_name'
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not list repository releases."
+          }
+          foreach ($releaseTag in $releaseTags) {
+            if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+              continue
+            }
+            gh release edit $releaseTag --title $releaseTag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not normalize release title: $releaseTag"
             }
           }

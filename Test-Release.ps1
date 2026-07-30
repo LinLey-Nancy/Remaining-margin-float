@@ -84,6 +84,19 @@ foreach ($runtimeVersionMatch in $runtimeVersionMatches) {
     }
 }
 
+$releaseWorkflowPath = Join-Path $PSScriptRoot '.github\workflows\release.yml'
+$releaseWorkflowText = Get-Content -LiteralPath $releaseWorkflowPath -Raw
+if (
+    $releaseWorkflowText -notmatch
+        '\$releaseTitle\s*=\s*\$env:GITHUB_REF_NAME' -or
+    $releaseWorkflowText -notmatch
+        'gh release edit \$releaseTag --title \$releaseTag' -or
+    $releaseWorkflowText -match
+        '\$releaseTitle\s*=\s*"Remaining Margin Float'
+) {
+    throw 'GitHub Release titles must be normalized to the version tag only.'
+}
+
 $componentManifest = Import-PowerShellDataFile -LiteralPath $componentManifestPath
 $componentPaths = @($componentManifest.Components)
 $packagedScriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8

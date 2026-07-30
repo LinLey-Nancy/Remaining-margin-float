@@ -60,6 +60,14 @@ function Start-CodexOfficialRequest {
         if ($request) { $request.Dispose() }
         $codex.Request = $null
         $codex.RequestTask = $null
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Codex' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
         if ($script:ActiveProvider -eq 'Codex') {
             $SourceText.Text = '官方接口请求未能启动，已保留本地数据 · ' +
                 $_.Exception.Message
@@ -157,9 +165,21 @@ function Complete-CodexRefresh {
                     -SkipOfficialRequest
             )
         }
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Healthy' `
+            -Message 'Codex 官方用量刷新成功'
     }
     catch {
         $failureMessage = $_.Exception.Message
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Codex' `
+            -Status 'Degraded' `
+            -Message $failureMessage
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Degraded' `
+            -Message $failureMessage
         $transientFailure = (
             $task.IsCanceled -or
             $task.IsFaulted -or
@@ -232,7 +252,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.5.0')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.6.0')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -295,6 +315,14 @@ function Start-DeepSeekRefresh {
         if ($request) { $request.Dispose() }
         $script:AppContext.Refresh.DeepSeek.Request = $null
         $script:AppContext.Refresh.DeepSeek.RequestTask = $null
+        Set-RuntimeDiagnosticStatus `
+            -Area 'DeepSeek' `
+            -Status 'Error' `
+            -Message $_.Exception.Message
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Error' `
+            -Message $_.Exception.Message
         Set-RefreshBusy -Busy $false
         $SourceText.Text = 'DeepSeek 请求未能启动：' + $_.Exception.Message
     }
@@ -344,8 +372,20 @@ function Complete-DeepSeekRefresh {
         if ($script:ActiveProvider -eq 'DeepSeek') {
             Update-UsageView -Snapshot $snapshot
         }
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Healthy' `
+            -Message 'DeepSeek 余额刷新成功'
     }
     catch {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'DeepSeek' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
         if ($script:LastDeepSeekSnapshot -and $script:ActiveProvider -eq 'DeepSeek') {
             Update-UsageView -Snapshot $script:LastDeepSeekSnapshot
             $SourceText.Text = '刷新失败，显示上次数据 · ' + $_.Exception.Message
@@ -618,6 +658,10 @@ function Show-DeepSeekSettings {
 function Invoke-Refresh {
     if ($script:AppContext.Refresh.IsBusy) { return }
     try {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Running' `
+            -Message '正在刷新'
         Set-RefreshBusy -Busy $true
         if ($script:ActiveProvider -eq 'DeepSeek') {
             Start-DeepSeekRefresh
@@ -629,9 +673,17 @@ function Invoke-Refresh {
                 -OfficialUsageOverride $null `
                 -SkipOfficialRequest
         )
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Healthy' `
+            -Message '本地用量读取成功'
         Start-CodexRefresh
     }
     catch {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Error' `
+            -Message $_.Exception.Message
         if (-not $script:LastSnapshot) {
             $WindowLabel.Text = '读取失败'
             $ExpandedWindowLabel.Text = '读取失败'
@@ -671,6 +723,10 @@ function Reset-FailedRefreshOperation {
         $script:AppContext.Refresh.StartedAt = $null
     }
     Reset-RefreshCountdown
+    Set-RuntimeDiagnosticStatus `
+        -Area 'Refresh' `
+        -Status 'Error' `
+        -Message $Message
     if ($SourceText) {
         $SourceText.Text = '刷新异常，已保留上次数据 · ' + $Message
     }

@@ -179,8 +179,9 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:CompactWidth = 96.0
-$script:CompactHeight = 88.0
+$script:AppVersion = '1.6.0'
+$script:CompactWidth = 80.0
+$script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
 $script:EdgeSnapDistance = 20.0
 $script:EdgeRevealDurationMs = 190
@@ -211,6 +212,7 @@ $script:CodexOfficialUsageCache = $null
 $script:DeepSeekHttpClient = $null
 $script:LastDeepSeekSnapshot = $null
 $script:UsageHistoryCache = $null
+$script:LastUsageHistoryError = ''
 $script:LowRemainingThreshold = 20.0
 $script:LowRemainingAlertsEnabled = $true
 $script:LowAlertActive = @{}

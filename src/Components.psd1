@@ -7,6 +7,7 @@
         'Providers\CodexProvider.ps1'
         'Infrastructure\LocalStorage.ps1'
         'Core\UsageHistory.ps1'
+        'Diagnostics\RuntimeDiagnostics.ps1'
         'Providers\DeepSeekProvider.ps1'
         'Diagnostics\DataDiagnostics.ps1'
         'UI\WindowHost.ps1'

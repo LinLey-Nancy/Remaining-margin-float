@@ -494,8 +494,8 @@ function Set-ExpandedState {
         $ResetSummaryPanel.Visibility = 'Collapsed'
         $ExpandedWindowLabel.Visibility = 'Collapsed'
         $WindowLabel.Visibility = 'Visible'
-        $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 7)
-        $CompactProgressRow.Height = New-Object Windows.GridLength(14)
+        $CompactHit.Padding = New-Object Windows.Thickness(7, 5, 7, 5)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(12)
         $window.Width = $targetWidth
         $window.Height = $targetHeight
         if ($null -ne $script:CompactAnchorLeft) {
@@ -1072,6 +1072,17 @@ function Update-UsageView {
 
     Assert-UsageSnapshotContract -Snapshot $Snapshot
     $script:LastSnapshot = $Snapshot
+    if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+        Set-RuntimeDiagnosticStatus `
+            -Area ([string]$Snapshot.ProviderId) `
+            -Status $(if ([bool]$Snapshot.Available) { 'Healthy' } else { 'Error' }) `
+            -Message $(if ([bool]$Snapshot.Available) {
+                [string]$Snapshot.Source
+            } else {
+                [string]$Snapshot.Status
+            }) `
+            -ObservedAt ([DateTimeOffset]$Snapshot.SampledAt)
+    }
     $WindowLabel.Text = $Snapshot.WindowLabel
     $ExpandedWindowLabel.Text = $Snapshot.WindowLabel
     $DetailsResetDate.Text = $Snapshot.ResetDate
@@ -1093,8 +1104,8 @@ function Update-UsageView {
         $CompactProgressRow.Height = New-Object Windows.GridLength(19)
     }
     else {
-        $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 7)
-        $CompactProgressRow.Height = New-Object Windows.GridLength(14)
+        $CompactHit.Padding = New-Object Windows.Thickness(7, 5, 7, 5)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(12)
     }
 
     if ($Snapshot.ProviderId -eq 'DeepSeek') {
@@ -1189,6 +1200,13 @@ function Update-UsageView {
         Invoke-LowRemainingAlert -Snapshot $Snapshot -Insights $insights
     }
     catch {
+        $script:LastUsageHistoryError = $_.Exception.Message
+        if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+            Set-RuntimeDiagnosticStatus `
+                -Area 'History' `
+                -Status 'Error' `
+                -Message $_.Exception.Message
+        }
         $Trend24Text.Text = '24 小时：暂不可用'
         $Trend7Text.Text = '7 天：暂不可用'
         $PredictionText.Text = '趋势暂不可用'

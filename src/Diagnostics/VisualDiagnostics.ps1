@@ -608,6 +608,7 @@ if ($CheckTransitions) {
         Trend24Text = $Trend24Text.Text
         Trend7Text = $Trend7Text.Text
         PredictionText = $PredictionText.Text
+        UsageHistoryError = $script:LastUsageHistoryError
         LowAlertMenuChecked = [bool]$script:LowAlertsMenuItem.IsChecked
         LowAlertThresholdMenuText = $lowAlertThresholdMenuText
         LowAlertThresholdPersisted = (

@@ -2,11 +2,11 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Remaining Margin Float"
-    Width="96"
-    Height="88"
-    MinWidth="96"
+    Width="80"
+    Height="80"
+    MinWidth="80"
     MaxWidth="370"
-    MinHeight="88"
+    MinHeight="80"
     MaxHeight="500"
     WindowStyle="None"
     ResizeMode="NoResize"
@@ -132,7 +132,7 @@
 
             <Grid>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="77"/>
+                    <RowDefinition Height="69"/>
                     <RowDefinition Height="1"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
@@ -140,14 +140,14 @@
                 <Border x:Name="CompactHit"
                         Grid.Row="0"
                         Style="{StaticResource CompactHitStyle}"
-                        Padding="9,7,9,7"
+                        Padding="7,5,7,5"
                         Cursor="Hand"
                         ToolTip="拖动移动 · 单击查看详情"
                         Focusable="True">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
-                            <RowDefinition x:Name="CompactProgressRow" Height="14"/>
+                            <RowDefinition x:Name="CompactProgressRow" Height="12"/>
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -158,16 +158,16 @@
                                            VerticalAlignment="Bottom"
                                            Foreground="{DynamicResource Sage}"
                                            FontFamily="Segoe UI Variable Text"
-                                           FontSize="9.5"
+                                           FontSize="9"
                                            FontWeight="SemiBold"/>
                                 <TextBlock x:Name="RemainingValue"
                                            Text="--"
                                            Foreground="{DynamicResource StatusStrong}"
                                            FontFamily="Segoe UI Variable Display"
-                                           FontSize="26"
+                                           FontSize="23"
                                            FontWeight="SemiBold"
                                            FontStretch="SemiCondensed"
-                                           LineHeight="29"
+                                           LineHeight="26"
                                            Typography.NumeralAlignment="Tabular"/>
                                 <TextBlock x:Name="CompactSuffix"
                                            Text="%"
@@ -175,7 +175,7 @@
                                            VerticalAlignment="Bottom"
                                            Foreground="{DynamicResource Sage}"
                                            FontFamily="Segoe UI Variable Text"
-                                           FontSize="9.5"
+                                           FontSize="9"
                                            FontWeight="SemiBold"/>
                             </StackPanel>
                             <TextBlock x:Name="WindowLabel"
@@ -184,7 +184,7 @@
                                        Text="Codex 余量"
                                        Foreground="{StaticResource TextSecondary}"
                                        FontFamily="Microsoft YaHei UI"
-                                       FontSize="9.5"/>
+                                       FontSize="9"/>
                         </StackPanel>
 
                         <Grid Grid.Row="1" VerticalAlignment="Stretch">

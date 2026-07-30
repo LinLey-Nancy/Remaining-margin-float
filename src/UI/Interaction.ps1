@@ -296,6 +296,27 @@ $script:EdgeDockMenuItem.ToolTip = '拖到屏幕左侧或右侧后，自动收�
 $script:EdgeDockMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Set-EdgeDockEnabled -Enabled $script:EdgeDockMenuItem.IsChecked
 }))
+$dataMenu = New-Object Windows.Controls.MenuItem
+$dataMenu.Header = '数据与诊断'
+$diagnosticsMenuItem = New-Object Windows.Controls.MenuItem
+$diagnosticsMenuItem.Header = '查看脱敏诊断…'
+$diagnosticsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    Show-RuntimeDiagnostics
+}))
+$exportHistoryMenuItem = New-Object Windows.Controls.MenuItem
+$exportHistoryMenuItem.Header = '导出使用记录…'
+$exportHistoryMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    Show-UsageHistoryExportDialog
+}))
+$importHistoryMenuItem = New-Object Windows.Controls.MenuItem
+$importHistoryMenuItem.Header = '导入使用记录…'
+$importHistoryMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    Show-UsageHistoryImportDialog
+}))
+[void]$dataMenu.Items.Add($diagnosticsMenuItem)
+[void]$dataMenu.Items.Add((New-Object Windows.Controls.Separator))
+[void]$dataMenu.Items.Add($exportHistoryMenuItem)
+[void]$dataMenu.Items.Add($importHistoryMenuItem)
 $startupMenu = New-Object Windows.Controls.MenuItem
 $startupMenu.Header = '设置开机启动'
 $startupClickHandler = {
@@ -360,6 +381,7 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$contextMenu.Items.Add($script:LowAlertsMenuItem)
 [void]$contextMenu.Items.Add($script:LowAlertThresholdMenuItem)
 [void]$contextMenu.Items.Add($script:EdgeDockMenuItem)
+[void]$contextMenu.Items.Add($dataMenu)
 [void]$contextMenu.Items.Add($startupMenu)
 [void]$contextMenu.Items.Add($resetPositionMenu)
 [void]$contextMenu.Items.Add($separator)
