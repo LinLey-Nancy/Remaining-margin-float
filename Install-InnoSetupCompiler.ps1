@@ -6,6 +6,9 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $innoVersion = '6.7.3'
+$expectedInstallerSha256 = (
+    '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+)
 $downloadUri = (
     'https://github.com/jrsoftware/issrc/releases/download/' +
     "is-6_7_3/innosetup-$innoVersion.exe"
@@ -22,6 +25,7 @@ if ([string]::IsNullOrWhiteSpace($DestinationDirectory)) {
 }
 $installRoot = [IO.Path]::GetFullPath($DestinationDirectory)
 $compilerPath = Join-Path $installRoot 'ISCC.exe'
+$versionMarkerPath = Join-Path $installRoot '.rmf-inno-version'
 
 function Assert-InnoAuthenticodePublisher {
     param([string]$Path)
@@ -40,8 +44,46 @@ function Assert-InnoAuthenticodePublisher {
     }
 }
 
+function Assert-InnoVersionMetadata {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    $allowedVersions = @($innoVersion, "$innoVersion.0")
+    $reportedVersions = @(
+        @(
+            ([string]$versionInfo.FileVersion).Trim()
+            ([string]$versionInfo.ProductVersion).Trim()
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    $matchingVersions = @(
+        $reportedVersions |
+            Where-Object { $allowedVersions -contains $_ }
+    )
+    if (
+        $reportedVersions.Count -eq 0 -or
+        $matchingVersions.Count -eq 0
+    ) {
+        throw (
+            "Unexpected $Label version metadata: " +
+            ($reportedVersions -join ', ')
+        )
+    }
+}
+
 if (Test-Path -LiteralPath $compilerPath -PathType Leaf) {
     Assert-InnoAuthenticodePublisher -Path $compilerPath
+    $cachedVersion = if (Test-Path -LiteralPath $versionMarkerPath -PathType Leaf) {
+        (Get-Content -LiteralPath $versionMarkerPath -Raw).Trim()
+    }
+    else {
+        ''
+    }
+    if ($cachedVersion -ne $innoVersion) {
+        throw "Cached Inno Setup compiler version is not trusted: $cachedVersion"
+    }
     Write-Output $compilerPath
     return
 }
@@ -60,11 +102,15 @@ try {
         -OutFile $downloadPath
 
     Assert-InnoAuthenticodePublisher -Path $downloadPath
-    $downloadVersion = (
-        [Diagnostics.FileVersionInfo]::GetVersionInfo($downloadPath).FileVersion
-    ).Trim()
-    if ($downloadVersion -ne "$innoVersion.0") {
-        throw "Unexpected Inno Setup installer version: $downloadVersion"
+    Assert-InnoVersionMetadata -Path $downloadPath -Label 'Inno Setup installer'
+    $downloadHash = (
+        Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256
+    ).Hash
+    if (-not $downloadHash.Equals(
+        $expectedInstallerSha256,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Unexpected Inno Setup installer SHA-256: $downloadHash"
     }
 
     New-Item -Path $installRoot -ItemType Directory -Force | Out-Null
@@ -88,6 +134,10 @@ try {
         throw "Inno Setup compiler was not installed at $compilerPath"
     }
     Assert-InnoAuthenticodePublisher -Path $compilerPath
+    Set-Content `
+        -LiteralPath $versionMarkerPath `
+        -Value $innoVersion `
+        -Encoding ASCII
 }
 finally {
     if (Test-Path -LiteralPath $downloadPath) {
