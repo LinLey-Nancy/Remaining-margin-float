@@ -78,19 +78,19 @@ Assert-Diagnostic -Condition (
     $performance.MeasurementCount -eq 3 -and
     [double]$performance.ColdReadMs -ge 0 -and
     [double]$performance.WarmReadMs -ge 0
-) -Message 'Codex 本地刷新性能基线'
+) -Message 'Codex local refresh performance baseline'
 Assert-Diagnostic -Condition (
     $performance.DeepSeekMeasurementCount -eq 3 -and
     [double]$performance.DeepSeekColdReadMs -ge 0 -and
     [double]$performance.DeepSeekWarmReadMs -ge 0
-) -Message 'DeepSeek 本地刷新性能基线'
+) -Message 'DeepSeek local refresh performance baseline'
 Assert-Diagnostic -Condition (
     $performance.TailSyntheticFileBytes -eq 8MB -and
     $performance.HeadSyntheticFileBytes -eq 8MB -and
     [bool]$performance.TailOnlyPayloadSelected -and
     [bool]$performance.HeadOnlyPayloadIgnored -and
     [bool]$performance.HeadOnlyRateLimitIgnored
-) -Message 'Codex 会话有界尾部读取回归'
+) -Message 'Codex bounded session tail regression'
 
 $deepSeek = Invoke-JsonDiagnostic -Name 'CheckDeepSeekData'
 Assert-Diagnostic -Condition ([bool]$deepSeek.Available) -Message 'DeepSeek availability'
@@ -260,20 +260,20 @@ Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
     -Message 'Absolute refresh countdown advancement'
 
 [pscustomobject]@{
-    CodexRateLimitSelection = '通过'
-    ProviderContracts = '通过'
+    CodexRateLimitSelection = 'Passed'
+    ProviderContracts = 'Passed'
     RefreshPerformance = (
-        '通过 · Codex {0}/{1} ms · DeepSeek {2}/{3} ms' -f
+        'Passed - Codex {0}/{1} ms - DeepSeek {2}/{3} ms' -f
             $performance.ColdReadMs,
             $performance.WarmReadMs,
             $performance.DeepSeekColdReadMs,
             $performance.DeepSeekWarmReadMs
     )
-    DeepSeekData = '通过'
-    UsageHistory = '通过'
-    Placement = '通过'
-    EdgeDocking = '通过'
-    Startup = '通过'
-    Transitions = '通过'
-    RefreshCoordinator = '通过'
+    DeepSeekData = 'Passed'
+    UsageHistory = 'Passed'
+    Placement = 'Passed'
+    EdgeDocking = 'Passed'
+    Startup = 'Passed'
+    Transitions = 'Passed'
+    RefreshCoordinator = 'Passed'
 }
