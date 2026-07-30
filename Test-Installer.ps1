@@ -70,7 +70,11 @@ $taskQueryTool = Join-Path $env:SystemRoot 'System32\schtasks.exe'
 if (Test-Path -LiteralPath $taskQueryTool -PathType Leaf) {
     $taskQueryProcess = Start-Process `
         -FilePath $taskQueryTool `
-        -ArgumentList @('/Query', '/TN', $startupTaskName) `
+        -ArgumentList @(
+            '/Query'
+            '/TN'
+            ('"{0}"' -f $startupTaskName)
+        ) `
         -WindowStyle Hidden `
         -Wait `
         -PassThru
