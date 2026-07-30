@@ -84,11 +84,11 @@ SHA-256，并在自身进程中
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.4.2.zip
-Remaining-Margin-Float-v1.4.2.zip.sha256
+Remaining-Margin-Float-v1.4.3.zip
+Remaining-Margin-Float-v1.4.3.zip.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.4.2`）后，`Windows 发布`工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.4.3`）后，`Windows 发布`工作流会
 在 Windows Runner 上测试、构建、验证并生成 ZIP，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
