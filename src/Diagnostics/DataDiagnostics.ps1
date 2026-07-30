@@ -313,20 +313,24 @@ if ($CheckRefreshPerformance) {
         2
     )
     $sessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
-    $sessionFiles = if (Test-Path -LiteralPath $sessionsRoot) {
-        @(Get-ChildItem `
-            -LiteralPath $sessionsRoot `
-            -Recurse `
-            -File `
-            -Filter '*.jsonl' `
-            -ErrorAction SilentlyContinue)
+    $sessionFiles = @(
+        if (Test-Path -LiteralPath $sessionsRoot) {
+            Get-ChildItem `
+                -LiteralPath $sessionsRoot `
+                -Recurse `
+                -File `
+                -Filter '*.jsonl' `
+                -ErrorAction SilentlyContinue
+        }
+    )
+    $sessionBytes = if ($sessionFiles.Count -gt 0) {
+        [double]((
+            $sessionFiles | Measure-Object -Property Length -Sum
+        ).Sum)
     }
     else {
-        @()
+        0.0
     }
-    $sessionBytes = [double]((
-        $sessionFiles | Measure-Object -Property Length -Sum
-    ).Sum)
 
     $deepSeekMeasurements = New-Object System.Collections.ArrayList
     for ($measurementIndex = 0; $measurementIndex -lt 3; $measurementIndex++) {
@@ -346,20 +350,24 @@ if ($CheckRefreshPerformance) {
         2
     )
     $deepSeekProjectsRoot = Join-Path $env:USERPROFILE '.claude\projects'
-    $deepSeekFiles = if (Test-Path -LiteralPath $deepSeekProjectsRoot) {
-        @(Get-ChildItem `
-            -LiteralPath $deepSeekProjectsRoot `
-            -Recurse `
-            -File `
-            -Filter '*.jsonl' `
-            -ErrorAction SilentlyContinue)
+    $deepSeekFiles = @(
+        if (Test-Path -LiteralPath $deepSeekProjectsRoot) {
+            Get-ChildItem `
+                -LiteralPath $deepSeekProjectsRoot `
+                -Recurse `
+                -File `
+                -Filter '*.jsonl' `
+                -ErrorAction SilentlyContinue
+        }
+    )
+    $deepSeekBytes = if ($deepSeekFiles.Count -gt 0) {
+        [double]((
+            $deepSeekFiles | Measure-Object -Property Length -Sum
+        ).Sum)
     }
     else {
-        @()
+        0.0
     }
-    $deepSeekBytes = [double]((
-        $deepSeekFiles | Measure-Object -Property Length -Sum
-    ).Sum)
 
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     $syntheticRoot = [IO.Path]::GetFullPath(
