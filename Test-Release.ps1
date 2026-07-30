@@ -106,10 +106,10 @@ if (
 $installerScriptPath = Join-Path $PSScriptRoot 'installer\RemainingMarginFloat.iss'
 $installerScriptText = Get-Content -LiteralPath $installerScriptPath -Raw
 foreach ($requiredInstallerPattern in @(
-    '(?m)^\[UninstallRun\]$'
+    '(?m)^\[UninstallRun\]\r?$'
     'schtasks\.exe.*Remaining Margin Float'
     'reg\.exe.*RemainingMarginFloat'
-    '(?m)^\[UninstallDelete\]$'
+    '(?m)^\[UninstallDelete\]\r?$'
     'Remaining Margin Float\.lnk'
 )) {
     if ($installerScriptText -notmatch $requiredInstallerPattern) {
