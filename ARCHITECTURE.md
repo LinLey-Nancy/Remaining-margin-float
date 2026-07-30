@@ -89,5 +89,8 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 - XAML 仅在 `src\UI\MainWindow.xaml` 维护，构建时自动嵌入。
 - 发布包仍以最终合并脚本的 SHA-256 为信任边界。
 - 趋势历史只保存脱敏的归一化余量样本，保留期固定为 8 天。
-- 普通 `push` 与 `pull_request` 通过 Windows CI 执行语法解析、源码诊断、
+- 普通 `push` 与 `pull_request` 通过 Windows 持续集成执行语法解析、源码诊断、
   打包和真实运行策略检查；标签发布继续由独立发布工作流负责。
+- `CheckRefreshPerformance` 使用真实本地 Codex 与 DeepSeek 日志记录冷启动、
+  热读取耗时，并用 8 MB 合成日志验证 Codex 会话读取始终限制在文件尾部；
+  该诊断只在开发和 CI 主动调用时运行，不改变生产刷新流程，也不保存用户数据。

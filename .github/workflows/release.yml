@@ -1,4 +1,4 @@
-name: Windows Release
+name: Windows 发布
 
 on:
   push:
@@ -16,10 +16,10 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: 检出源码
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Verify release version
+      - name: 验证发布版本
         shell: powershell
         run: |
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
@@ -27,27 +27,27 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version."
           }
 
-      - name: Run application diagnostics
+      - name: 运行应用诊断
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Diagnostics.ps1
 
-      - name: Build transparent release directory
+      - name: 构建透明发布目录
         shell: powershell
         run: powershell.exe -NoProfile -File .\Build-Package.ps1 -SkipArchive
 
-      - name: Check release behavior policy
+      - name: 检查发布行为策略
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Release.ps1
 
-      - name: Finalize archive and checksum
+      - name: 生成归档与校验值
         shell: powershell
         run: powershell.exe -NoProfile -File .\Finalize-Package.ps1
 
-      - name: Verify final archive
+      - name: 验证最终归档
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Release.ps1 -RequireArchive
 
-      - name: Upload final workflow artifact
+      - name: 上传工作流产物
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Remaining-Margin-Float-${{ github.run_id }}-${{ github.run_attempt }}
@@ -56,7 +56,7 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      - name: Create or update GitHub Release
+      - name: 创建或更新 GitHub Release
         if: github.ref_type == 'tag'
         shell: powershell
         env:

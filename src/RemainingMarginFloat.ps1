@@ -4,6 +4,7 @@ param(
     [switch]$CheckDeepSeekUsage,
     [switch]$CheckUsageHistory,
     [switch]$CheckProviderContracts,
+    [switch]$CheckRefreshPerformance,
     [switch]$CheckCodexRateLimitSelection,
     [switch]$CheckPlacement,
     [switch]$CheckEdgeDocking,
@@ -32,6 +33,7 @@ $isDiagnosticRun = (
     $CheckDeepSeekUsage -or
     $CheckUsageHistory -or
     $CheckProviderContracts -or
+    $CheckRefreshPerformance -or
     $CheckCodexRateLimitSelection -or
     $CheckPlacement -or
     $CheckEdgeDocking -or

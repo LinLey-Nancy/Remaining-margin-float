@@ -1,4 +1,4 @@
-name: Windows CI
+name: Windows 持续集成
 
 on:
   push:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: 检出源码
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Parse PowerShell sources
+      - name: 解析 PowerShell 源码
         shell: powershell
         run: |
           $parseFailures = @()
@@ -49,14 +49,14 @@ jobs:
             throw ($parseFailures -join [Environment]::NewLine)
           }
 
-      - name: Run application diagnostics
+      - name: 运行应用诊断
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Diagnostics.ps1
 
-      - name: Build transparent release directory
+      - name: 构建透明发布目录
         shell: powershell
         run: powershell.exe -NoProfile -File .\Build-Package.ps1 -SkipArchive
 
-      - name: Check packaged runtime behavior
+      - name: 检查打包运行行为
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Release.ps1

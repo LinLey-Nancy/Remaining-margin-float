@@ -225,7 +225,7 @@ if ($CheckProviderContracts) {
         $deepSeekUsageFixturePath
     )) {
         if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
-            throw "Provider contract fixture is missing: $fixturePath"
+            throw "缺少 Provider 契约样例：$fixturePath"
         }
     }
 
@@ -288,6 +288,243 @@ if ($CheckProviderContracts) {
         DeepSeekBudgetPercent = $deepSeekSnapshot.BudgetPercent
         PricingSchemaVersion = $pricingCatalog.SchemaVersion
         PricingCurrency = $pricingCatalog.Currency
+    } | ConvertTo-Json
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckRefreshPerformance) {
+    $refreshMeasurements = New-Object System.Collections.ArrayList
+    for ($measurementIndex = 0; $measurementIndex -lt 3; $measurementIndex++) {
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        [void](Get-CodexUsageSnapshot -SkipOfficialRequest)
+        $stopwatch.Stop()
+        [void]$refreshMeasurements.Add(
+            [Math]::Round($stopwatch.Elapsed.TotalMilliseconds, 2)
+        )
+    }
+
+    $coldReadMs = [double]$refreshMeasurements[0]
+    $warmReadMs = [Math]::Round(
+        (
+            [double]$refreshMeasurements[1] +
+            [double]$refreshMeasurements[2]
+        ) / 2,
+        2
+    )
+    $sessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
+    $sessionFiles = if (Test-Path -LiteralPath $sessionsRoot) {
+        @(Get-ChildItem `
+            -LiteralPath $sessionsRoot `
+            -Recurse `
+            -File `
+            -Filter '*.jsonl' `
+            -ErrorAction SilentlyContinue)
+    }
+    else {
+        @()
+    }
+    $sessionBytes = [double]((
+        $sessionFiles | Measure-Object -Property Length -Sum
+    ).Sum)
+
+    $deepSeekMeasurements = New-Object System.Collections.ArrayList
+    for ($measurementIndex = 0; $measurementIndex -lt 3; $measurementIndex++) {
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        [void](Get-DeepSeekLocalUsage)
+        $stopwatch.Stop()
+        [void]$deepSeekMeasurements.Add(
+            [Math]::Round($stopwatch.Elapsed.TotalMilliseconds, 2)
+        )
+    }
+    $deepSeekColdReadMs = [double]$deepSeekMeasurements[0]
+    $deepSeekWarmReadMs = [Math]::Round(
+        (
+            [double]$deepSeekMeasurements[1] +
+            [double]$deepSeekMeasurements[2]
+        ) / 2,
+        2
+    )
+    $deepSeekProjectsRoot = Join-Path $env:USERPROFILE '.claude\projects'
+    $deepSeekFiles = if (Test-Path -LiteralPath $deepSeekProjectsRoot) {
+        @(Get-ChildItem `
+            -LiteralPath $deepSeekProjectsRoot `
+            -Recurse `
+            -File `
+            -Filter '*.jsonl' `
+            -ErrorAction SilentlyContinue)
+    }
+    else {
+        @()
+    }
+    $deepSeekBytes = [double]((
+        $deepSeekFiles | Measure-Object -Property Length -Sum
+    ).Sum)
+
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $syntheticRoot = [IO.Path]::GetFullPath(
+        (Join-Path $tempRoot (
+            'RemainingMarginFloat.PerformanceDiagnostic.{0}.{1}' -f
+                $PID,
+                [Guid]::NewGuid().ToString('N')
+        ))
+    )
+    if (-not $syntheticRoot.StartsWith(
+        $tempRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw '性能诊断临时目录超出了系统临时目录。'
+    }
+
+    $syntheticFileBytes = 8MB
+    $tailSessionPath = Join-Path $syntheticRoot 'tail-event.jsonl'
+    $headSessionPath = Join-Path $syntheticRoot 'head-only-event.jsonl'
+    $headLine = (
+        '{"timestamp":"2030-01-01T00:00:00Z","type":"event_msg",' +
+        '"payload":{"type":"token_count","info":{"total_token_usage":' +
+        '{"total_tokens":111}},"rate_limits":{"primary":' +
+        '{"used_percent":11,"window_minutes":10080,' +
+        '"resets_at":1893456000},"plan_type":"pro"}}}'
+    )
+    $tailLine = (
+        '{"timestamp":"2030-01-01T00:05:00Z","type":"event_msg",' +
+        '"payload":{"type":"token_count","info":{"total_token_usage":' +
+        '{"total_tokens":222}},"rate_limits":{"primary":' +
+        '{"used_percent":22,"window_minutes":10080,' +
+        '"resets_at":1893459600},"plan_type":"pro"}}}'
+    )
+    $utf8 = New-Object Text.UTF8Encoding($false)
+
+    function New-SyntheticCodexSessionFile {
+        param(
+            [string]$Path,
+            [bool]$IncludeTailEvent
+        )
+
+        $headBytes = $utf8.GetBytes($headLine + "`n")
+        $tailBytes = $utf8.GetBytes($tailLine)
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        try {
+            $stream.Write($headBytes, 0, $headBytes.Length)
+            if ($IncludeTailEvent) {
+                $tailOffset =
+                    $syntheticFileBytes - $tailBytes.Length - 1
+                $stream.SetLength($tailOffset)
+                $stream.Position = $tailOffset
+                $stream.WriteByte(10)
+                $stream.Write($tailBytes, 0, $tailBytes.Length)
+            }
+            else {
+                $stream.SetLength($syntheticFileBytes)
+            }
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+
+    $tailOnlyPayloadSelected = $false
+    $headOnlyPayloadIgnored = $false
+    $headOnlyRateLimitIgnored = $false
+    $tailSyntheticFileBytes = 0
+    $headSyntheticFileBytes = 0
+    $syntheticReadMs = 0.0
+    try {
+        [void](New-Item -ItemType Directory -Path $syntheticRoot)
+        New-SyntheticCodexSessionFile `
+            -Path $tailSessionPath `
+            -IncludeTailEvent $true
+        New-SyntheticCodexSessionFile `
+            -Path $headSessionPath `
+            -IncludeTailEvent $false
+
+        $tailSessionFile = Get-Item -LiteralPath $tailSessionPath
+        $headSessionFile = Get-Item -LiteralPath $headSessionPath
+        $tailSyntheticFileBytes = $tailSessionFile.Length
+        $headSyntheticFileBytes = $headSessionFile.Length
+
+        $syntheticStopwatch = [Diagnostics.Stopwatch]::StartNew()
+        $tailSnapshot = Read-SessionSnapshot `
+            -File $tailSessionFile
+        $headSnapshot = Read-SessionSnapshot `
+            -File $headSessionFile
+        $syntheticStopwatch.Stop()
+        $syntheticReadMs = [Math]::Round(
+            $syntheticStopwatch.Elapsed.TotalMilliseconds,
+            2
+        )
+        $tailUsage = Get-ObjectPropertyValue `
+            -Object (Get-ObjectPropertyValue `
+                -Object $tailSnapshot.Payload `
+                -Name 'info') `
+            -Name 'total_token_usage'
+        $tailOnlyPayloadSelected = (
+            [double](Get-ObjectPropertyValue `
+                -Object $tailUsage `
+                -Name 'total_tokens' `
+                -Default 0) -eq 222
+        )
+        $headOnlyPayloadIgnored = $null -eq $headSnapshot.Payload
+        $headOnlyRateLimitIgnored = (
+            $null -eq $headSnapshot.RateLimitPayload
+        )
+    }
+    finally {
+        if (
+            (Test-Path -LiteralPath $syntheticRoot) -and
+            $syntheticRoot.StartsWith(
+                $tempRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            Remove-Item -LiteralPath $syntheticRoot -Recurse -Force
+        }
+    }
+
+    [pscustomobject]@{
+        MeasurementCount = $refreshMeasurements.Count
+        ColdReadMs = $coldReadMs
+        WarmReadMs = $warmReadMs
+        WarmImprovementPercent = if ($coldReadMs -gt 0) {
+            [Math]::Round(
+                (($coldReadMs - $warmReadMs) / $coldReadMs) * 100,
+                1
+            )
+        }
+        else {
+            0
+        }
+        SessionFileCount = $sessionFiles.Count
+        SessionBytes = $sessionBytes
+        DeepSeekMeasurementCount = $deepSeekMeasurements.Count
+        DeepSeekColdReadMs = $deepSeekColdReadMs
+        DeepSeekWarmReadMs = $deepSeekWarmReadMs
+        DeepSeekWarmImprovementPercent = if ($deepSeekColdReadMs -gt 0) {
+            [Math]::Round(
+                (
+                    ($deepSeekColdReadMs - $deepSeekWarmReadMs) /
+                    $deepSeekColdReadMs
+                ) * 100,
+                1
+            )
+        }
+        else {
+            0
+        }
+        DeepSeekFileCount = $deepSeekFiles.Count
+        DeepSeekBytes = $deepSeekBytes
+        SyntheticFileBytes = $tailSyntheticFileBytes
+        TailSyntheticFileBytes = $tailSyntheticFileBytes
+        HeadSyntheticFileBytes = $headSyntheticFileBytes
+        SyntheticReadMs = $syntheticReadMs
+        TailOnlyPayloadSelected = $tailOnlyPayloadSelected
+        HeadOnlyPayloadIgnored = $headOnlyPayloadIgnored
+        HeadOnlyRateLimitIgnored = $headOnlyRateLimitIgnored
     } | ConvertTo-Json
     $script:RmfStopLoading = $true
     return
