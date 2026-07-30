@@ -530,6 +530,47 @@ function Test-LowRemainingAlertCondition {
     return $true
 }
 
+function ConvertTo-LowRemainingThreshold {
+    param(
+        $Value,
+        [double]$Fallback = 20.0,
+        [switch]$Strict
+    )
+
+    $parsedValue = 0.0
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $parsed = [double]::TryParse(
+        $text.Trim(),
+        [Globalization.NumberStyles]::Number,
+        [Globalization.CultureInfo]::CurrentCulture,
+        [ref]$parsedValue
+    )
+    if (-not $parsed) {
+        $parsed = [double]::TryParse(
+            $text.Trim(),
+            [Globalization.NumberStyles]::Number,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsedValue
+        )
+    }
+
+    $isValid = (
+        $parsed -and
+        -not [double]::IsNaN($parsedValue) -and
+        -not [double]::IsInfinity($parsedValue) -and
+        $parsedValue -ge 1 -and
+        $parsedValue -le 99 -and
+        $parsedValue -eq [Math]::Round($parsedValue)
+    )
+    if ($isValid) {
+        return [double][Math]::Round($parsedValue)
+    }
+    if ($Strict) {
+        throw '提醒阈值需要是 1 到 99 之间的整数。'
+    }
+    return $Fallback
+}
+
 function Update-UsageHistory {
     param(
         $Snapshot,

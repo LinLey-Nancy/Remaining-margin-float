@@ -506,6 +506,16 @@ if ($CheckTransitions) {
         throw 'Existing-instance activation did not reveal the edge-docked window.'
     }
     Clear-EdgeDock
+    [void](Set-LowRemainingThreshold -Threshold 35)
+    $lowAlertThresholdMenuText = [string]$script:LowAlertsMenuItem.Header
+    $lowAlertSettingsSnapshot = Get-AppSettingsSnapshot
+    $lowAlertThresholdDialog = New-LowRemainingAlertSettingsDialog
+    $lowAlertThresholdDialogReady = (
+        $null -ne $lowAlertThresholdDialog.FindName('ThresholdBox') -and
+        $null -ne $lowAlertThresholdDialog.FindName('SaveButton') -and
+        $null -ne $lowAlertThresholdDialog.FindName('ErrorText')
+    )
+    $lowAlertThresholdDialog.Close()
 
     $result = [pscustomobject]@{
         ExpandedWidth = $expandedWidth
@@ -599,6 +609,16 @@ if ($CheckTransitions) {
         Trend7Text = $Trend7Text.Text
         PredictionText = $PredictionText.Text
         LowAlertMenuChecked = [bool]$script:LowAlertsMenuItem.IsChecked
+        LowAlertThresholdMenuText = $lowAlertThresholdMenuText
+        LowAlertThresholdPersisted = (
+            [double]$lowAlertSettingsSnapshot.LowRemainingThreshold -eq 35
+        )
+        LowAlertThresholdInvalidFallback = (
+            (ConvertTo-LowRemainingThreshold `
+                -Value 'invalid' `
+                -Fallback 20) -eq 20
+        )
+        LowAlertThresholdDialogReady = $lowAlertThresholdDialogReady
         Width = $window.Width
         Height = $window.Height
         DetailsVisibility = [string]$DetailsPanel.Visibility

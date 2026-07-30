@@ -275,12 +275,19 @@ $topmostMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Save-Settings
 }))
 $script:LowAlertsMenuItem = New-Object Windows.Controls.MenuItem
-$script:LowAlertsMenuItem.Header = '低余量提醒（≤20%）'
+$script:LowAlertsMenuItem.Header = Get-LowRemainingAlertMenuText
 $script:LowAlertsMenuItem.IsCheckable = $true
 $script:LowAlertsMenuItem.IsChecked = $script:LowRemainingAlertsEnabled
 $script:LowAlertsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Set-LowRemainingAlertsEnabled -Enabled $script:LowAlertsMenuItem.IsChecked
 }))
+$script:LowAlertThresholdMenuItem = New-Object Windows.Controls.MenuItem
+$script:LowAlertThresholdMenuItem.Header = '提醒阈值…'
+$script:LowAlertThresholdMenuItem.Add_Click((
+    New-RmfEventHandler -Kind Routed -Callback {
+        [void](Show-LowRemainingAlertSettings)
+    }
+))
 $script:EdgeDockMenuItem = New-Object Windows.Controls.MenuItem
 $script:EdgeDockMenuItem.Header = '贴边隐藏'
 $script:EdgeDockMenuItem.IsCheckable = $true
@@ -351,6 +358,7 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
 [void]$contextMenu.Items.Add($topmostMenu)
 [void]$contextMenu.Items.Add($script:LowAlertsMenuItem)
+[void]$contextMenu.Items.Add($script:LowAlertThresholdMenuItem)
 [void]$contextMenu.Items.Add($script:EdgeDockMenuItem)
 [void]$contextMenu.Items.Add($startupMenu)
 [void]$contextMenu.Items.Add($resetPositionMenu)

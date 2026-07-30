@@ -442,6 +442,14 @@ if ($CheckRefreshPerformance) {
     $tailSyntheticFileBytes = 0
     $headSyntheticFileBytes = 0
     $syntheticReadMs = 0.0
+    $deepSeekAggregateCacheHit = $false
+    $deepSeekAggregateCacheInvalidated = $false
+    $previousUserProfile = $env:USERPROFILE
+    $previousDeepSeekUsageCache = $script:DeepSeekUsageCache
+    $previousDeepSeekLatestUsageCache = $script:DeepSeekLatestUsageCache
+    $previousDeepSeekAggregateUsageCache = $script:DeepSeekAggregateUsageCache
+    $previousDeepSeekAggregateCacheHits = $script:DeepSeekAggregateCacheHits
+    $previousDeepSeekAggregateCacheMisses = $script:DeepSeekAggregateCacheMisses
     try {
         [void](New-Item -ItemType Directory -Path $syntheticRoot)
         New-SyntheticCodexSessionFile `
@@ -481,8 +489,85 @@ if ($CheckRefreshPerformance) {
         $headOnlyRateLimitIgnored = (
             $null -eq $headSnapshot.RateLimitPayload
         )
+
+        $deepSeekProjectsRoot = Join-Path $syntheticRoot '.claude\projects\cache-test'
+        [void](New-Item -ItemType Directory -Path $deepSeekProjectsRoot -Force)
+        $deepSeekLogPath = Join-Path $deepSeekProjectsRoot 'usage.jsonl'
+        $firstTimestamp = [DateTimeOffset]::Now.Date.AddHours(10)
+        $firstLine = [ordered]@{
+            message = [ordered]@{
+                id = 'cache-first'
+                model = 'deepseek-v4-pro'
+                usage = [ordered]@{
+                    input_tokens = 100
+                    cache_creation_input_tokens = 0
+                    cache_read_input_tokens = 50
+                    output_tokens = 10
+                }
+            }
+            uuid = 'cache-first-uuid'
+            timestamp = $firstTimestamp.ToString('o')
+        } | ConvertTo-Json -Depth 6 -Compress
+        [IO.File]::WriteAllText($deepSeekLogPath, $firstLine, $utf8)
+
+        $env:USERPROFILE = $syntheticRoot
+        $script:DeepSeekUsageCache = @{}
+        $script:DeepSeekLatestUsageCache = @{}
+        $script:DeepSeekAggregateUsageCache = $null
+        $script:DeepSeekAggregateCacheHits = 0
+        $script:DeepSeekAggregateCacheMisses = 0
+        $firstDeepSeekUsage = Get-DeepSeekLocalUsage
+        $secondDeepSeekUsage = Get-DeepSeekLocalUsage
+        $deepSeekAggregateCacheHit = (
+            $script:DeepSeekAggregateCacheHits -eq 1 -and
+            $script:DeepSeekAggregateCacheMisses -eq 1 -and
+            $firstDeepSeekUsage.TodayTokens -eq
+                $secondDeepSeekUsage.TodayTokens
+        )
+
+        $secondTimestamp = $firstTimestamp.AddMinutes(1)
+        $secondLine = [ordered]@{
+            message = [ordered]@{
+                id = 'cache-second'
+                model = 'deepseek-v4-pro'
+                usage = [ordered]@{
+                    input_tokens = 200
+                    cache_creation_input_tokens = 0
+                    cache_read_input_tokens = 80
+                    output_tokens = 20
+                }
+            }
+            uuid = 'cache-second-uuid'
+            timestamp = $secondTimestamp.ToString('o')
+        } | ConvertTo-Json -Depth 6 -Compress
+        [IO.File]::AppendAllText(
+            $deepSeekLogPath,
+            [Environment]::NewLine + $secondLine,
+            $utf8
+        )
+        [IO.File]::SetLastWriteTimeUtc(
+            $deepSeekLogPath,
+            [DateTime]::UtcNow.AddSeconds(1)
+        )
+        $updatedDeepSeekUsage = Get-DeepSeekLocalUsage
+        [void](Get-DeepSeekLocalUsage)
+        $deepSeekAggregateCacheInvalidated = (
+            $script:DeepSeekAggregateCacheHits -eq 2 -and
+            $script:DeepSeekAggregateCacheMisses -eq 2 -and
+            $updatedDeepSeekUsage.TodayTokens -gt
+                $firstDeepSeekUsage.TodayTokens
+        )
     }
     finally {
+        $env:USERPROFILE = $previousUserProfile
+        $script:DeepSeekUsageCache = $previousDeepSeekUsageCache
+        $script:DeepSeekLatestUsageCache = $previousDeepSeekLatestUsageCache
+        $script:DeepSeekAggregateUsageCache =
+            $previousDeepSeekAggregateUsageCache
+        $script:DeepSeekAggregateCacheHits =
+            $previousDeepSeekAggregateCacheHits
+        $script:DeepSeekAggregateCacheMisses =
+            $previousDeepSeekAggregateCacheMisses
         if (
             (Test-Path -LiteralPath $syntheticRoot) -and
             $syntheticRoot.StartsWith(
@@ -533,6 +618,9 @@ if ($CheckRefreshPerformance) {
         TailOnlyPayloadSelected = $tailOnlyPayloadSelected
         HeadOnlyPayloadIgnored = $headOnlyPayloadIgnored
         HeadOnlyRateLimitIgnored = $headOnlyRateLimitIgnored
+        DeepSeekAggregateCacheHit = $deepSeekAggregateCacheHit
+        DeepSeekAggregateCacheInvalidated =
+            $deepSeekAggregateCacheInvalidated
     } | ConvertTo-Json
     $script:RmfStopLoading = $true
     return
@@ -673,6 +761,13 @@ if ($CheckUsageHistory) {
     }
     $highPreviousSample = New-HistoryCheckSample -HoursAgo 1 -Value 26
     $lowPreviousSample = New-HistoryCheckSample -HoursAgo 1 -Value 19
+    $customThresholdSnapshot = [pscustomobject]@{
+        Available = $true
+        HasProgress = $true
+        RemainingPercent = 34
+    }
+    $customThresholdPreviousSample =
+        New-HistoryCheckSample -HoursAgo 1 -Value 36
 
     $historyTestPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.HistoryDiagnostic.{0}.jsonl' -f $PID
@@ -726,6 +821,11 @@ if ($CheckUsageHistory) {
                 -Snapshot $lowSnapshot `
                 -PreviousSample $lowPreviousSample
         )
+        CustomLowThresholdCrossingDetected =
+            Test-LowRemainingAlertCondition `
+                -Snapshot $customThresholdSnapshot `
+                -PreviousSample $customThresholdPreviousSample `
+                -Threshold 35
         PersistenceRoundTrip = $persistenceRoundTrip
         HistorySampleContainsNoAccountData = (
             $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountName' -and

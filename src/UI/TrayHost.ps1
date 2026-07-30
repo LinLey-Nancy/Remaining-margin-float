@@ -59,12 +59,20 @@ $script:TrayTopmostItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Save-Settings
 }))
 $script:TrayLowAlertsItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$script:TrayLowAlertsItem.Text = '低余量提醒（≤20%）'
+$script:TrayLowAlertsItem.Text = Get-LowRemainingAlertMenuText
 $script:TrayLowAlertsItem.CheckOnClick = $true
 $script:TrayLowAlertsItem.Checked = $script:LowRemainingAlertsEnabled
 $script:TrayLowAlertsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Set-LowRemainingAlertsEnabled -Enabled $script:TrayLowAlertsItem.Checked
 }))
+$script:TrayLowAlertThresholdItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayLowAlertThresholdItem.Text = '提醒阈值…'
+$script:TrayLowAlertThresholdItem.Add_Click((
+    New-RmfEventHandler -Kind Event -Callback {
+        Show-ExistingWindow
+        [void](Show-LowRemainingAlertSettings)
+    }
+))
 $script:TrayEdgeDockItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayEdgeDockItem.Text = '贴边隐藏'
 $script:TrayEdgeDockItem.CheckOnClick = $true
@@ -116,6 +124,7 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertsItem)
+[void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)
 [void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)
 [void]$script:TrayMenu.Items.Add($trayStartupItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
@@ -158,7 +167,12 @@ if ($releaseGuiCheck) {
     $script:RmfGuiCheckInnerHandler = New-RmfEventHandler `
         -Kind Event `
         -Callback {
-            $script:RmfGuiCheckPassed = $true
+            $script:RmfGuiCheckPassed = (
+                $null -ne $script:LowAlertThresholdMenuItem -and
+                $null -ne $script:TrayLowAlertThresholdItem -and
+                [string]$script:TrayLowAlertsItem.Text -eq
+                    (Get-LowRemainingAlertMenuText)
+            )
             $savedOfficialAccess = $script:CodexOfficialAccessEnabled
             try {
                 $script:CodexOfficialAccessEnabled = $false

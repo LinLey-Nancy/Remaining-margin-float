@@ -134,6 +134,10 @@ Assert-Diagnostic -Condition (
     [bool]$performance.HeadOnlyPayloadIgnored -and
     [bool]$performance.HeadOnlyRateLimitIgnored
 ) -Message 'Codex bounded session tail regression'
+Assert-Diagnostic -Condition (
+    [bool]$performance.DeepSeekAggregateCacheHit -and
+    [bool]$performance.DeepSeekAggregateCacheInvalidated
+) -Message 'DeepSeek aggregate cache invalidation'
 
 $emptyProfilePerformance = Invoke-EmptyProfilePerformanceDiagnostic
 Assert-Diagnostic -Condition (
@@ -181,6 +185,9 @@ Assert-Diagnostic -Condition ([bool]$history.LowThresholdCrossingDetected) `
     -Message 'Low threshold crossing'
 Assert-Diagnostic -Condition ([bool]$history.RepeatedLowAlertSuppressed) `
     -Message 'Repeated low alert suppression'
+Assert-Diagnostic -Condition (
+    [bool]$history.CustomLowThresholdCrossingDetected
+) -Message 'Custom low alert threshold crossing'
 Assert-Diagnostic -Condition ([bool]$history.PersistenceRoundTrip) `
     -Message 'History persistence round trip'
 Assert-Diagnostic -Condition ([bool]$history.HistorySampleContainsNoAccountData) `
@@ -304,6 +311,14 @@ Assert-Diagnostic `
 Assert-Diagnostic `
     -Condition ([bool]$transitions.LowAlertMenuChecked) `
     -Message 'Low-alert menu UI'
+Assert-Diagnostic -Condition (
+    [string]$transitions.LowAlertThresholdMenuText -match '35%'
+) -Message 'Custom low-alert threshold menu UI'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.LowAlertThresholdPersisted -and
+    [bool]$transitions.LowAlertThresholdInvalidFallback -and
+    [bool]$transitions.LowAlertThresholdDialogReady
+) -Message 'Custom low-alert threshold persistence'
 
 $refresh = Invoke-JsonDiagnostic -Name 'CheckRefreshCoordinator'
 Assert-Diagnostic -Condition ([bool]$refresh.ManualRefreshSucceeded) `

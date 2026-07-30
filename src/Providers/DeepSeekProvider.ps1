@@ -221,15 +221,75 @@ function Get-DeepSeekLocalUsage {
     }
 
     $projectsRoot = Join-Path $env:USERPROFILE '.claude\projects'
-    if (-not (Test-Path -LiteralPath $projectsRoot)) {
-        return [pscustomobject]$result
-    }
-
-    $files = @(Get-ChildItem -LiteralPath $projectsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending)
     $todayDate = (Get-Date).Date
     $monthStart = Get-Date -Day 1 -Hour 0 -Minute 0 -Second 0 -Millisecond 0
     $nextMonth = $monthStart.AddMonths(1)
+    if (-not (Test-Path -LiteralPath $projectsRoot)) {
+        $missingCacheKey = '{0}|missing|{1}' -f (
+            [IO.Path]::GetFullPath($projectsRoot)
+        ), $todayDate.Ticks
+        if (
+            $script:DeepSeekAggregateUsageCache -and
+            $script:DeepSeekAggregateUsageCache.Key -eq $missingCacheKey
+        ) {
+            $script:DeepSeekAggregateCacheHits++
+            return $script:DeepSeekAggregateUsageCache.Value
+        }
+        $script:DeepSeekAggregateCacheMisses++
+        $emptyResult = [pscustomobject]$result
+        $script:DeepSeekAggregateUsageCache = [pscustomobject]@{
+            Key = $missingCacheKey
+            Value = $emptyResult
+        }
+        return $emptyResult
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $projectsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc, FullName -Descending)
+    $inventoryParts = New-Object System.Collections.ArrayList
+    [void]$inventoryParts.Add(
+        (
+            '{0}|{1}|{2}' -f
+                [IO.Path]::GetFullPath($projectsRoot),
+                $todayDate.Ticks,
+                $monthStart.Ticks
+        )
+    )
+    foreach ($file in $files) {
+        [void]$inventoryParts.Add(
+            (
+                '{0}|{1}|{2}' -f
+                    $file.FullName,
+                    $file.LastWriteTimeUtc.Ticks,
+                    $file.Length
+            )
+        )
+    }
+    $inventoryKey = $inventoryParts -join "`n"
+    if (
+        $script:DeepSeekAggregateUsageCache -and
+        $script:DeepSeekAggregateUsageCache.Key -eq $inventoryKey
+    ) {
+        $script:DeepSeekAggregateCacheHits++
+        return $script:DeepSeekAggregateUsageCache.Value
+    }
+    $script:DeepSeekAggregateCacheMisses++
+
+    $liveFiles = @{}
+    foreach ($file in $files) {
+        $liveFiles[$file.FullName] = $true
+    }
+    foreach ($cachedPath in @($script:DeepSeekUsageCache.Keys)) {
+        if (-not $liveFiles.ContainsKey($cachedPath)) {
+            $script:DeepSeekUsageCache.Remove($cachedPath)
+        }
+    }
+    foreach ($cachedPath in @($script:DeepSeekLatestUsageCache.Keys)) {
+        if (-not $liveFiles.ContainsKey($cachedPath)) {
+            $script:DeepSeekLatestUsageCache.Remove($cachedPath)
+        }
+    }
+
     $latest = $null
     $monthEvents = New-Object System.Collections.ArrayList
     $monthFiles = @($files | Where-Object { $_.LastWriteTime -ge $monthStart })
@@ -279,7 +339,12 @@ function Get-DeepSeekLocalUsage {
         $result.Model = $latest.Model
         $result.SampledAt = $latest.Timestamp.LocalDateTime
     }
-    return [pscustomobject]$result
+    $usageResult = [pscustomobject]$result
+    $script:DeepSeekAggregateUsageCache = [pscustomobject]@{
+        Key = $inventoryKey
+        Value = $usageResult
+    }
+    return $usageResult
 }
 
 function Format-CurrencyAmount {

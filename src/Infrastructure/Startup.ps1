@@ -520,44 +520,51 @@ function Set-StartupMode {
     }
 }
 
+function Get-AppSettingsSnapshot {
+    $saveLeft = if ($script:EdgeDockSide) {
+        $workArea = Get-EdgeDockWorkArea
+        Get-EdgeDockPlacement `
+            -Side $script:EdgeDockSide `
+            -Revealed $true `
+            -WindowWidth $script:CompactWidth `
+            -VisibleWidth $script:EdgeVisibleWidth `
+            -WorkLeft $workArea.Left `
+            -WorkRight $workArea.Right
+    }
+    elseif ($null -ne $script:CompactAnchorLeft) {
+        $script:CompactAnchorLeft
+    } else {
+        $window.Left
+    }
+    $saveTop = if ($null -ne $script:CompactAnchorTop) {
+        $script:CompactAnchorTop
+    } else {
+        $window.Top
+    }
+    return [pscustomobject][ordered]@{
+        Left = $saveLeft
+        Top = $saveTop
+        Expanded = $false
+        Topmost = $window.Topmost
+        Provider = $script:ActiveProvider
+        CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
+        LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
+        LowRemainingThreshold = $script:LowRemainingThreshold
+        EdgeDockEnabled = $script:EdgeDockEnabled
+        EdgeDockSide = $script:EdgeDockSide
+    }
+}
+
 function Save-Settings {
     if ($isDiagnosticRun -or $script:IsRestoringSettings) { return }
 
     try {
-        $saveLeft = if ($script:EdgeDockSide) {
-            $workArea = Get-EdgeDockWorkArea
-            Get-EdgeDockPlacement `
-                -Side $script:EdgeDockSide `
-                -Revealed $true `
-                -WindowWidth $script:CompactWidth `
-                -VisibleWidth $script:EdgeVisibleWidth `
-                -WorkLeft $workArea.Left `
-                -WorkRight $workArea.Right
-        }
-        elseif ($null -ne $script:CompactAnchorLeft) {
-            $script:CompactAnchorLeft
-        } else {
-            $window.Left
-        }
-        $saveTop = if ($null -ne $script:CompactAnchorTop) {
-            $script:CompactAnchorTop
-        } else {
-            $window.Top
-        }
-        [ordered]@{
-            Left = $saveLeft
-            Top = $saveTop
-            Expanded = $false
-            Topmost = $window.Topmost
-            Provider = $script:ActiveProvider
-            CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
-            LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
-            EdgeDockEnabled = $script:EdgeDockEnabled
-            EdgeDockSide = $script:EdgeDockSide
-        } | ConvertTo-Json | Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
+        Get-AppSettingsSnapshot |
+            ConvertTo-Json |
+            Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
     }
     catch {
-        # Settings persistence is optional; the widget remains functional without it.
+        # 设置持久化失败时不影响悬浮窗继续运行。
     }
 }
 
@@ -603,6 +610,11 @@ function Restore-Settings {
             if ($settings.PSObject.Properties['LowRemainingAlertsEnabled']) {
                 $script:LowRemainingAlertsEnabled =
                     [bool]$settings.LowRemainingAlertsEnabled
+            }
+            if ($settings.PSObject.Properties['LowRemainingThreshold']) {
+                $script:LowRemainingThreshold = ConvertTo-LowRemainingThreshold `
+                    -Value $settings.LowRemainingThreshold `
+                    -Fallback $script:LowRemainingThreshold
             }
         }
     }

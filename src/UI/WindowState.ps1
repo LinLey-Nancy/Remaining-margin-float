@@ -887,12 +887,19 @@ function Update-UsageInsightView {
         -Samples $Insights.Trend7Days.Samples
 }
 
+function Get-LowRemainingAlertMenuText {
+    return '低余量提醒（≤{0:0}%）' -f $script:LowRemainingThreshold
+}
+
 function Sync-LowAlertMenuState {
+    $menuText = Get-LowRemainingAlertMenuText
     if ($script:LowAlertsMenuItem) {
         $script:LowAlertsMenuItem.IsChecked = $script:LowRemainingAlertsEnabled
+        $script:LowAlertsMenuItem.Header = $menuText
     }
     if ($script:TrayLowAlertsItem) {
         $script:TrayLowAlertsItem.Checked = $script:LowRemainingAlertsEnabled
+        $script:TrayLowAlertsItem.Text = $menuText
     }
 }
 
@@ -905,6 +912,102 @@ function Set-LowRemainingAlertsEnabled {
     }
     Sync-LowAlertMenuState
     Save-Settings
+}
+
+function Set-LowRemainingThreshold {
+    param($Threshold)
+
+    $validatedThreshold = ConvertTo-LowRemainingThreshold `
+        -Value $Threshold `
+        -Strict
+    $script:LowRemainingThreshold = $validatedThreshold
+    $script:LowAlertActive = @{}
+    Sync-LowAlertMenuState
+    Save-Settings
+    return $validatedThreshold
+}
+
+function New-LowRemainingAlertSettingsDialog {
+    [xml]$dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="低余量提醒阈值"
+        Width="390"
+        Height="245"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#FCFBF8"
+        FontFamily="Microsoft YaHei UI">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="18"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="38"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="余量降至多少时提醒"
+                   FontSize="18" FontWeight="SemiBold" Foreground="#343A35"/>
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="34"/>
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="ThresholdBox" Grid.Column="0" Height="34"
+                     Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                     AutomationProperties.Name="低余量提醒阈值"/>
+            <TextBlock Grid.Column="1" Text="%" Margin="10,7,0,0"
+                       FontSize="13" Foreground="#4E5750"/>
+        </Grid>
+        <TextBlock Grid.Row="3" Margin="0,7,0,0" FontSize="10"
+                   Foreground="#7B847D" TextWrapping="Wrap"
+                   Text="可设置 1–99 的整数；Codex 与 DeepSeek 共用此阈值。"/>
+        <TextBlock x:Name="ErrorText" Grid.Row="4" Margin="0,8,0,0"
+                   Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
+        <Grid Grid.Row="5">
+            <Button Width="82" Height="34" HorizontalAlignment="Right"
+                    Margin="0,0,92,0" Content="取消" IsCancel="True"/>
+            <Button x:Name="SaveButton" Width="82" Height="34"
+                    HorizontalAlignment="Right" Content="保存" IsDefault="True"
+                    Background="#E9F0EA" BorderBrush="#BFCDBF"
+                    Foreground="#344A3B"/>
+        </Grid>
+    </Grid>
+</Window>
+'@
+    $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
+    $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
+    return $dialog
+}
+
+function Show-LowRemainingAlertSettings {
+    $dialog = New-LowRemainingAlertSettingsDialog
+    $dialog.Owner = $window
+    $thresholdBox = $dialog.FindName('ThresholdBox')
+    $errorText = $dialog.FindName('ErrorText')
+    $saveButton = $dialog.FindName('SaveButton')
+    $thresholdBox.Text = $script:LowRemainingThreshold.ToString(
+        '0',
+        [Globalization.CultureInfo]::CurrentCulture
+    )
+    $thresholdBox.SelectAll()
+
+    $saveButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+        $errorText.Text = ''
+        try {
+            [void](Set-LowRemainingThreshold -Threshold $thresholdBox.Text)
+            $dialog.DialogResult = $true
+        }
+        catch {
+            $errorText.Text = $_.Exception.Message
+            $thresholdBox.Focus() | Out-Null
+            $thresholdBox.SelectAll()
+        }
+    }))
+
+    return [bool]($dialog.ShowDialog())
 }
 
 function Invoke-LowRemainingAlert {
