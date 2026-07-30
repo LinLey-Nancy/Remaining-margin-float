@@ -94,3 +94,5 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 - `CheckRefreshPerformance` 使用真实本地 Codex 与 DeepSeek 日志记录冷启动、
   热读取耗时，并用 8 MB 合成日志验证 Codex 会话读取始终限制在文件尾部；
   该诊断只在开发和 CI 主动调用时运行，不改变生产刷新流程，也不保存用户数据。
+- CI 与发布工作流固定使用 PSScriptAnalyzer 1.25.0 检查错误级问题，并在独立
+  空用户目录中执行刷新性能回归，确保全新环境没有本地日志时仍可完成诊断。

@@ -27,6 +27,27 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version."
           }
 
+      - name: 安装 PowerShell 静态分析器
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider `
+            -Name NuGet `
+            -MinimumVersion 2.8.5.201 `
+            -Scope CurrentUser `
+            -Force
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module `
+            -Name PSScriptAnalyzer `
+            -RequiredVersion 1.25.0 `
+            -Scope CurrentUser `
+            -Repository PSGallery `
+            -Force
+
+      - name: 检查 PowerShell 错误级问题
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-StaticAnalysis.ps1
+
       - name: 运行应用诊断
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Diagnostics.ps1
@@ -48,7 +69,7 @@ jobs:
         run: powershell.exe -NoProfile -File .\Test-Release.ps1 -RequireArchive
 
       - name: 上传工作流产物
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Remaining-Margin-Float-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

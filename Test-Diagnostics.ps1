@@ -39,6 +39,49 @@ function Assert-Diagnostic {
     }
 }
 
+function Invoke-EmptyProfilePerformanceDiagnostic {
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $profileRoot = [IO.Path]::GetFullPath(
+        (Join-Path $tempRoot (
+            'RemainingMarginFloat.EmptyProfile.{0}.{1}' -f
+                $PID,
+                [Guid]::NewGuid().ToString('N')
+        ))
+    )
+    if (-not $profileRoot.StartsWith(
+        $tempRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'Empty-profile diagnostic escaped the temporary directory.'
+    }
+
+    $previousUserProfile = $env:USERPROFILE
+    try {
+        [void](New-Item `
+            -ItemType Directory `
+            -Path (Join-Path $profileRoot '.codex\sessions') `
+            -Force)
+        [void](New-Item `
+            -ItemType Directory `
+            -Path (Join-Path $profileRoot '.claude\projects') `
+            -Force)
+        $env:USERPROFILE = $profileRoot
+        return Invoke-JsonDiagnostic -Name 'CheckRefreshPerformance'
+    }
+    finally {
+        $env:USERPROFILE = $previousUserProfile
+        if (
+            (Test-Path -LiteralPath $profileRoot) -and
+            $profileRoot.StartsWith(
+                $tempRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            Remove-Item -LiteralPath $profileRoot -Recurse -Force
+        }
+    }
+}
+
 $codex = Invoke-JsonDiagnostic -Name 'CheckCodexRateLimitSelection'
 foreach ($property in $codex.PSObject.Properties) {
     if ($property.Value -is [bool]) {
@@ -91,6 +134,19 @@ Assert-Diagnostic -Condition (
     [bool]$performance.HeadOnlyPayloadIgnored -and
     [bool]$performance.HeadOnlyRateLimitIgnored
 ) -Message 'Codex bounded session tail regression'
+
+$emptyProfilePerformance = Invoke-EmptyProfilePerformanceDiagnostic
+Assert-Diagnostic -Condition (
+    $emptyProfilePerformance.SessionFileCount -eq 0 -and
+    $emptyProfilePerformance.SessionBytes -eq 0 -and
+    $emptyProfilePerformance.DeepSeekFileCount -eq 0 -and
+    $emptyProfilePerformance.DeepSeekBytes -eq 0 -and
+    $emptyProfilePerformance.TailSyntheticFileBytes -eq 8MB -and
+    $emptyProfilePerformance.HeadSyntheticFileBytes -eq 8MB -and
+    [bool]$emptyProfilePerformance.TailOnlyPayloadSelected -and
+    [bool]$emptyProfilePerformance.HeadOnlyPayloadIgnored -and
+    [bool]$emptyProfilePerformance.HeadOnlyRateLimitIgnored
+) -Message 'Empty-profile refresh performance regression'
 
 $deepSeek = Invoke-JsonDiagnostic -Name 'CheckDeepSeekData'
 Assert-Diagnostic -Condition ([bool]$deepSeek.Available) -Message 'DeepSeek availability'
@@ -269,6 +325,7 @@ Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
             $performance.DeepSeekColdReadMs,
             $performance.DeepSeekWarmReadMs
     )
+    EmptyProfilePerformance = 'Passed'
     DeepSeekData = 'Passed'
     UsageHistory = 'Passed'
     Placement = 'Passed'

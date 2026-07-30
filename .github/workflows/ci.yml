@@ -49,6 +49,27 @@ jobs:
             throw ($parseFailures -join [Environment]::NewLine)
           }
 
+      - name: 安装 PowerShell 静态分析器
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider `
+            -Name NuGet `
+            -MinimumVersion 2.8.5.201 `
+            -Scope CurrentUser `
+            -Force
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module `
+            -Name PSScriptAnalyzer `
+            -RequiredVersion 1.25.0 `
+            -Scope CurrentUser `
+            -Repository PSGallery `
+            -Force
+
+      - name: 检查 PowerShell 错误级问题
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-StaticAnalysis.ps1
+
       - name: 运行应用诊断
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Diagnostics.ps1
