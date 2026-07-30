@@ -21,13 +21,18 @@ SHA-256 后，在当前进程的 STA PowerShell Runspace 中初始化它。初�
 PowerShell 管线并串行执行。若事件在另一回调执行期间重入，桥接器会先排入
 WPF Dispatcher，待当前回调结束后继续执行。
 
-源码模式便于维护，发布模式则继续保持透明便携包：
+源码模式便于维护，发布构建目录继续保持五个可审查的应用文件：
 
 - `RemainingMarginFloat.exe`
 - `RemainingMarginFloat.ps1`
 - `README.txt`
 - `LICENSE`
 - `PRIVACY.md`
+
+`Build-Installer.ps1` 再将这五个文件编译成 Inno Setup 安装程序。正式 Release
+只发布 `*-Setup.exe` 与其 SHA-256；安装器提供用户级默认目录、可选安装位置、
+开始菜单/桌面快捷方式、覆盖升级和卸载。安装目录写入当前用户注册表后，开机
+启动直接指向稳定安装路径；便携目录仍使用原有哈希命名托管副本。
 
 ## 组件职责
 
@@ -36,7 +41,7 @@ WPF Dispatcher，待当前回调结束后继续执行。
 | `App` | 应用初始化、Provider 刷新协调 |
 | `Core` | 用量快照契约、Provider 价格目录、趋势历史、耗尽预测和窗口几何等核心逻辑 |
 | `Providers` | Codex 与 DeepSeek 数据读取、解析和快照生成 |
-| `Infrastructure` | 本地配置、DPAPI、开机启动和持久化 |
+| `Infrastructure` | 本地配置、DPAPI、开机启动、版本更新和持久化 |
 | `UI` | WPF 窗口、状态渲染、交互、托盘与 XAML |
 | `Diagnostics` | 数据、窗口、视觉和发布所需的自诊断流程 |
 
@@ -72,6 +77,10 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 ## 维护约束
 
 - 新组件必须登记在 `src\Components.psd1`，顺序即执行顺序。
+- 自动更新只检查公开的 GitHub 最新正式 Release；版本必须是三段语义版本，
+  安装器与校验文件必须匹配固定命名及本仓库 HTTPS 下载路径。下载完成后必须
+  验证 SHA-256 和安装器内嵌版本。只有 Authenticode 有效且证书指纹位于代码内
+  置的可信列表时才允许应用启动安装器；可信列表为空时只能打开文件所在位置。
 - 组件不得自行创建新的顶层 Runspace 或改变 STA 模式。
 - 打包宿主的 Runspace / 消息循环所有权注入和 UI 事件桥不得删除；生产 UI
   的事件与 Dispatcher Action 都必须通过 `New-RmfEventHandler` /
@@ -105,7 +114,7 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 - 使用记录导入必须与现有样本按 Provider、指标、单位和 UTC 时间去重合并；
   导出和运行诊断不得包含账户名称、邮箱、Token、API Key 或原始日志。
 - 普通 `push` 与 `pull_request` 通过 Windows 持续集成执行语法解析、源码诊断、
-  打包和真实运行策略检查；标签发布继续由独立发布工作流负责。
+  打包、真实运行策略及安装/卸载检查；标签发布继续由独立发布工作流负责。
 - `CheckRefreshPerformance` 使用真实本地 Codex 与 DeepSeek 日志记录冷启动、
   热读取耗时，并用 8 MB 合成日志验证 Codex 会话读取始终限制在文件尾部；
   同时验证 DeepSeek 聚合缓存命中和日志追加后的失效重算。该诊断只在开发和

@@ -91,10 +91,33 @@ if (
         '\$releaseTitle\s*=\s*\$env:GITHUB_REF_NAME' -or
     $releaseWorkflowText -notmatch
         'gh release edit \$releaseTag --title \$releaseTag' -or
+    $releaseWorkflowText -notmatch
+        'Remaining-Margin-Float-v\$version-Setup\.exe' -or
+    $releaseWorkflowText -notmatch
+        'gh release upload \$env:GITHUB_REF_NAME \$installer \$checksum --clobber' -or
     $releaseWorkflowText -match
         '\$releaseTitle\s*=\s*"Remaining Margin Float'
 ) {
-    throw 'GitHub Release titles must be normalized to the version tag only.'
+    throw (
+        'GitHub releases must use tag-only titles and installer-first assets.'
+    )
+}
+
+$installerScriptPath = Join-Path $PSScriptRoot 'installer\RemainingMarginFloat.iss'
+$installerScriptText = Get-Content -LiteralPath $installerScriptPath -Raw
+foreach ($requiredInstallerPattern in @(
+    '(?m)^\[UninstallRun\]$'
+    'schtasks\.exe.*Remaining Margin Float'
+    'reg\.exe.*RemainingMarginFloat'
+    '(?m)^\[UninstallDelete\]$'
+    'Remaining Margin Float\.lnk'
+)) {
+    if ($installerScriptText -notmatch $requiredInstallerPattern) {
+        throw (
+            'Installer does not remove every supported startup registration: ' +
+            $requiredInstallerPattern
+        )
+    }
 }
 
 $componentManifest = Import-PowerShellDataFile -LiteralPath $componentManifestPath

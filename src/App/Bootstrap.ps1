@@ -46,6 +46,7 @@ if (-not $isDiagnosticRun) {
 
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.Net.Http
+Add-Type -AssemblyName PresentationFramework
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -179,7 +180,7 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:AppVersion = '1.7.0'
+$script:AppVersion = '1.8.0'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -210,6 +211,26 @@ $script:DeepSeekAggregateCacheMisses = 0
 $script:CodexHttpClient = $null
 $script:CodexOfficialUsageCache = $null
 $script:DeepSeekHttpClient = $null
+$script:UpdateHttpClient = $null
+$script:TrayUpdateItem = $null
+$script:NextAutomaticUpdateCheckAt = $null
+$script:PromptedUpdateVersions = @{}
+$script:UpdateDiagnosticMode = $false
+$script:UpdateDiagnosticMessages = @()
+$script:UpdateDiagnosticUpdatesRoot = $null
+$script:UpdateDiagnosticInstallerPath = $null
+$script:UpdateDiagnosticInstallerVersion = $null
+$script:UpdateDiagnosticFileVersionInfo = $null
+$script:UpdateTrustedSignerThumbprints = @()
+$script:UpdateContext = [pscustomobject]@{
+    IsBusy = $false
+    Manual = $false
+    Phase = 'Idle'
+    ReleaseTask = $null
+    InstallerTask = $null
+    ChecksumTask = $null
+    Release = $null
+}
 $script:LastDeepSeekSnapshot = $null
 $script:UsageHistoryCache = $null
 $script:LastUsageHistoryError = ''

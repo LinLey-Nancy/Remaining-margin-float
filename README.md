@@ -40,6 +40,8 @@
 - 根据最近下降速度预测预计耗尽时间；Codex 会同时考虑额度重置时间
 - 余量首次降到用户设定的阈值时通过通知区域提醒；默认 20%，可在右键菜单调整或关闭
 - 可自定义“短时间快速下降”提醒的时间范围和阈值：Codex 按百分比点，DeepSeek 可选百分比点或具体金额
+- 启动后后台检查 GitHub 最新正式版，发现新版本时由用户决定是否下载；也可从托盘菜单手动检查
+- 更新安装程序只接受本仓库 Release 中符合版本命名的资产，并核对 SHA-256 与内嵌版本；当前未配置可信代码签名，应用只打开下载位置，不会自动运行安装程序
 
 ## 系统要求
 
@@ -52,10 +54,9 @@
 
 ## 快速开始
 
-1. 从 GitHub Release 下载 `Remaining-Margin-Float-v*.zip`，或克隆源码。
-2. 解压 ZIP 并保持目录内容完整，然后运行 `RemainingMarginFloat.exe`；源码用户
-   可以双击 `Start-RemainingMarginFloat.cmd`；仓库中已有当前版本构建时，该
-   脚本会优先启动打包版，否则回退到源码模式。
+1. 从 GitHub Release 下载 `Remaining-Margin-Float-v*-Setup.exe`。
+2. 运行安装程序，选择安装位置；安装程序会创建开始菜单入口，并可选创建桌面
+   快捷方式。源码用户也可以克隆仓库后双击 `Start-RemainingMarginFloat.cmd`。
 3. 点击悬浮窗查看详情，按住左键拖动位置。
 
 也可以从 PowerShell 启动：
@@ -69,34 +70,41 @@ powershell.exe -NoProfile -STA -File .\src\RemainingMarginFloat.ps1
 `Start-RemainingMarginFloat.cmd` 是透明的本地启动入口，不隐藏窗口，也不绕过
 PowerShell 执行策略。它会优先异步启动 `dist` 中与 `VERSION` 匹配的打包版，
 没有打包版时才在当前命令窗口运行源码，并显示明确状态。面向普通用户建议
-直接使用 Release ZIP 中的启动器。
+直接使用 Release 安装程序。
 
 ## 打包
 
 在项目根目录运行：
 
 ```powershell
-powershell.exe -NoProfile -File .\Build-Package.ps1
+powershell.exe -NoProfile -File .\Build-Package.ps1 -SkipArchive
+powershell.exe -NoProfile -File .\Build-Installer.ps1
+powershell.exe -NoProfile -File .\Test-Installer.ps1
 ```
 
-脚本会在 `dist` 中生成透明的便携目录和 ZIP。ZIP 内包含启动器、可审查的
-PowerShell 脚本、使用说明、MIT 许可证和隐私说明。启动器运行前会验证脚本
+`Build-Package.ps1` 会在 `dist` 中生成透明的安装输入目录，包含启动器、可
+审查的 PowerShell 脚本、使用说明、MIT 许可证和隐私说明。启动器运行前会验证脚本
 SHA-256，并在自身进程中
 托管 PowerShell；不会释放内嵌脚本、创建隐藏的 `powershell.exe` 子进程或使用
 `ExecutionPolicy Bypass`。
 
+`Build-Installer.ps1` 使用 Inno Setup 6/7 命令行编译器生成支持选择安装位置、
+覆盖升级、开始菜单、可选桌面快捷方式和标准卸载流程的安装程序。CI 会从 Inno
+Setup 官方不可变 GitHub Release 获取编译器，并在使用前验证其 Authenticode
+发布者；普通用户无需安装 Inno Setup。
+
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.7.0.zip
-Remaining-Margin-Float-v1.7.0.zip.sha256
+Remaining-Margin-Float-v1.8.0-Setup.exe
+Remaining-Margin-Float-v1.8.0-Setup.exe.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.7.0`）后，`Windows 发布`工作流会
-在 Windows Runner 上测试、构建、验证并生成 ZIP，随后创建或更新
+推送与 `VERSION` 一致的标签（例如 `v1.8.0`）后，`Windows 发布`工作流会
+在 Windows Runner 上测试、构建，并真实执行静默安装与卸载验证，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
-当前项目发布未签名的透明便携包，不要求代码签名。安全报告方式见
+当前项目的应用与安装程序尚未进行商业代码签名。安全报告方式见
 [SECURITY.md](SECURITY.md)。
 
 ## 源码结构
@@ -105,8 +113,8 @@ GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创�
 声明的顺序加载同一脚本作用域中的组件。Provider、基础设施、诊断与 UI 已分别
 放在对应目录，主窗口布局位于 `src\UI\MainWindow.xaml`。
 
-为了保持便携发布物简单且可审查，构建时会按照同一组件清单把源码和 XAML
-合并为 ZIP 内的单个 `RemainingMarginFloat.ps1`。源码模式与打包模式因此执行
+为了保持安装内容简单且可审查，构建时会按照同一组件清单把源码和 XAML
+合并为安装目录内的单个 `RemainingMarginFloat.ps1`。源码模式与打包模式因此执行
 同一组组件，同时发布启动器仍只需要验证一个脚本的 SHA-256。
 
 组件职责、Provider 快照契约和维护约束见
@@ -224,14 +232,16 @@ Windows 服务运行在隔离的 Session 0 中，无法向当前用户桌面显�
 
 ### Windows 阻止脚本执行
 
-面向普通用户请使用 Release ZIP 中的 `RemainingMarginFloat.exe`。源码启动入口
+面向普通用户请使用 Release 中的安装程序。源码启动入口
 不会绕过本机执行策略；如果组织策略禁止运行本地脚本，请不要降低系统安全
 设置，也不要通过关闭安全软件或添加全局白名单绕过限制。
 
 ### Windows 显示“未知发布者”或安全软件报风险
 
-当前 Release 未进行代码签名，因此 Windows 可能显示“未知发布者”，安全软件
-也可能提示风险。只从本仓库的 GitHub Release 下载并核对 SHA-256；如果文件
+当前 Release 未进行代码签名，因此安装程序可能显示“未知发布者”，安全软件
+也可能提示风险。只从本仓库的 GitHub Release 下载；应用内更新会核对
+配套 SHA-256 和内嵌版本，但不会自动运行未签名安装程序，只会打开其所在位置。
+手动下载时也应核对 SHA-256。如果文件
 哈希不一致，请勿运行，也不要通过关闭安全软件或添加全局白名单绕过提示。
 
 ## 许可证

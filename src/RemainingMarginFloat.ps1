@@ -9,6 +9,7 @@ param(
     [switch]$CheckPlacement,
     [switch]$CheckEdgeDocking,
     [switch]$CheckStartup,
+    [switch]$CheckUpdates,
     [switch]$CheckTransitions,
     [switch]$CheckRefreshCoordinator,
     [switch]$CaptureVisuals,
@@ -38,6 +39,7 @@ $isDiagnosticRun = (
     $CheckPlacement -or
     $CheckEdgeDocking -or
     $CheckStartup -or
+    $CheckUpdates -or
     $CheckTransitions -or
     $CheckRefreshCoordinator -or
     $CaptureVisuals -or

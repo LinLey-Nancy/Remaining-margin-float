@@ -48,6 +48,20 @@ Windows DPAPI `CurrentUser` 加密，保存在
 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。也可以使用
 `DEEPSEEK_API_KEY` 环境变量，避免落盘。
 
+## 版本更新
+
+应用启动约 8 秒后会请求
+`https://api.github.com/repos/LinLey-Nancy/Remaining-margin-float/releases/latest`，
+之后运行期间最多每 6 小时检查一次。用户也可以从托盘菜单手动检查。该请求
+只包含应用名称和版本形式的 User-Agent，不包含账号、Token、API Key、历史
+记录、诊断数据或设备标识。
+
+发现新版本时，应用先询问用户，不会自动安装。只有用户选择更新后，才会从该
+正式 Release 下载安装程序和同名 SHA-256 文件。应用会限制资产必须来自本仓库
+对应版本的 GitHub Release 路径，并核对哈希与内嵌版本。当前未配置可信代码
+签名，因此应用不会自动运行安装程序，只会询问是否打开文件所在位置。下载文件保存在
+`%LOCALAPPDATA%\RemainingMarginFloat\updates\<版本>`，可由用户自行删除。
+
 ## 开机启动与本地修改
 
 开机启动默认关闭。只有用户主动选择后，应用才会创建计划任务、当前用户

@@ -256,6 +256,34 @@ Assert-Diagnostic -Condition (
     $startup.CommandLine -notmatch 'WindowStyle\s+Hidden'
 ) -Message 'Source startup command policy'
 
+$updates = Invoke-JsonDiagnostic -Name 'CheckUpdates'
+foreach ($propertyName in @(
+    'NewerVersionDetected'
+    'CurrentVersionNotNewer'
+    'InstallerSelected'
+    'TrustedAssetUrlAccepted'
+    'UntrustedAssetUrlRejected'
+    'ChecksumParsed'
+    'MultiLineChecksumRejected'
+    'ByteHashVerified'
+    'PayloadVerified'
+    'PayloadMismatchRejected'
+    'EmbeddedVersionMismatchRejected'
+    'UnsignedInstallerNotAutoTrusted'
+    'ReleaseStateStarted'
+    'ReleaseStateCompleted'
+    'DownloadStateStarted'
+    'PartialDownloadFailureReset'
+    'SuccessfulDownloadCompleted'
+    'CancelledReleaseReset'
+)) {
+    Assert-Diagnostic `
+        -Condition ([bool]$updates.$propertyName) `
+        -Message "CheckUpdates.$propertyName"
+}
+Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
+    -Message 'Update release version'
+
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -414,6 +442,7 @@ Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
     Placement = 'Passed'
     EdgeDocking = 'Passed'
     Startup = 'Passed'
+    Updates = 'Passed'
     Transitions = 'Passed'
     RefreshCoordinator = 'Passed'
 }

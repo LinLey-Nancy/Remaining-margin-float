@@ -9,6 +9,49 @@ function Get-StartupShortcutPath {
     return Join-Path $startupDirectory 'Remaining Margin Float.lnk'
 }
 
+function Get-InstalledApplicationRoot {
+    try {
+        $installed = Get-ItemProperty `
+            -LiteralPath 'HKCU:\Software\RemainingMarginFloat' `
+            -Name InstallLocation `
+            -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$installed.InstallLocation)) {
+            return ''
+        }
+        return [IO.Path]::GetFullPath([string]$installed.InstallLocation).
+            TrimEnd([IO.Path]::DirectorySeparatorChar)
+    }
+    catch {
+        return ''
+    }
+}
+
+function Test-InstalledApplicationFiles {
+    param(
+        [string]$LauncherPath,
+        [string]$ScriptPath
+    )
+
+    $installedRoot = Get-InstalledApplicationRoot
+    if ([string]::IsNullOrWhiteSpace($installedRoot)) {
+        return $false
+    }
+    $expectedLauncher = Join-Path $installedRoot 'RemainingMarginFloat.exe'
+    $expectedScript = Join-Path $installedRoot 'RemainingMarginFloat.ps1'
+    return (
+        (Test-Path -LiteralPath $expectedLauncher -PathType Leaf) -and
+        (Test-Path -LiteralPath $expectedScript -PathType Leaf) -and
+        [IO.Path]::GetFullPath($LauncherPath).Equals(
+            [IO.Path]::GetFullPath($expectedLauncher),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        [IO.Path]::GetFullPath($ScriptPath).Equals(
+            [IO.Path]::GetFullPath($expectedScript),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    )
+}
+
 function Get-StartupLaunchSpec {
     param([switch]$PrepareLauncher)
 
@@ -26,6 +69,16 @@ function Get-StartupLaunchSpec {
         -not [string]::IsNullOrWhiteSpace($packagedScriptPath) -and
         (Test-Path -LiteralPath $packagedScriptPath -PathType Leaf)
     ) {
+        if (Test-InstalledApplicationFiles `
+            -LauncherPath $launcherPath `
+            -ScriptPath $packagedScriptPath) {
+            return [pscustomobject]@{
+                FilePath = [IO.Path]::GetFullPath($launcherPath)
+                Arguments = ''
+                WorkingDirectory = Split-Path -Parent $launcherPath
+                Source = 'InstalledExe'
+            }
+        }
         $launcherHash = (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).
             Hash.ToLowerInvariant()
         $scriptHash = (Get-FileHash -LiteralPath $packagedScriptPath -Algorithm SHA256).

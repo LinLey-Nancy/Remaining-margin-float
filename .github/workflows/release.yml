@@ -60,21 +60,33 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Release.ps1
 
-      - name: 生成归档与校验值
+      - name: 准备 Inno Setup 编译器
         shell: powershell
-        run: powershell.exe -NoProfile -File .\Finalize-Package.ps1
+        run: |
+          $compiler = & .\Install-InnoSetupCompiler.ps1
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compiler)) {
+            throw "Could not prepare Inno Setup compiler: $compiler"
+          }
+          "INNO_SETUP_COMPILER=$compiler" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
 
-      - name: 验证最终归档
+      - name: 构建安装程序与校验值
         shell: powershell
-        run: powershell.exe -NoProfile -File .\Test-Release.ps1 -RequireArchive
+        run: powershell.exe -NoProfile -File .\Build-Installer.ps1
+
+      - name: 验证安装与卸载
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-Installer.ps1
 
       - name: 上传工作流产物
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Remaining-Margin-Float-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            dist/*.zip
-            dist/*.sha256
+            dist/*-Setup.exe
+            dist/*-Setup.exe.sha256
           if-no-files-found: error
 
       - name: 创建或更新 GitHub Release
@@ -84,9 +96,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
-          $archive = ".\dist\Remaining-Margin-Float-v$version.zip"
-          $checksum = "$archive.sha256"
+          $installer = ".\dist\Remaining-Margin-Float-v$version-Setup.exe"
+          $checksum = "$installer.sha256"
           $releaseTitle = $env:GITHUB_REF_NAME
+          $legacyArchive = "Remaining-Margin-Float-v$version.zip"
+          $legacyArchiveChecksum = "$legacyArchive.sha256"
           $legacyExecutable = "Remaining-Margin-Float-v$version.exe"
           $legacyChecksum = "$legacyExecutable.sha256"
 
@@ -97,7 +111,12 @@ jobs:
           $ErrorActionPreference = $previousErrorActionPreference
 
           if ($releaseExists) {
-            foreach ($legacyAsset in @($legacyExecutable, $legacyChecksum)) {
+            foreach ($legacyAsset in @(
+              $legacyArchive,
+              $legacyArchiveChecksum,
+              $legacyExecutable,
+              $legacyChecksum
+            )) {
               $assetNames = @(
                 gh release view $env:GITHUB_REF_NAME `
                   --json assets `
@@ -119,13 +138,13 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "Could not update release metadata."
             }
-            gh release upload $env:GITHUB_REF_NAME $archive $checksum --clobber
+            gh release upload $env:GITHUB_REF_NAME $installer $checksum --clobber
             if ($LASTEXITCODE -ne 0) {
               throw "Could not upload release assets."
             }
           }
           else {
-            gh release create $env:GITHUB_REF_NAME $archive $checksum `
+            gh release create $env:GITHUB_REF_NAME $installer $checksum `
               --title $releaseTitle `
               --notes-file .\RELEASE_NOTES.md
             if ($LASTEXITCODE -ne 0) {
@@ -142,14 +161,19 @@ jobs:
             throw "Could not inspect final release assets."
           }
           foreach ($requiredAsset in @(
-            [IO.Path]::GetFileName($archive),
+            [IO.Path]::GetFileName($installer),
             [IO.Path]::GetFileName($checksum)
           )) {
             if ($requiredAsset -notin $finalAssetNames) {
               throw "Required release asset is missing: $requiredAsset"
             }
           }
-          foreach ($legacyAsset in @($legacyExecutable, $legacyChecksum)) {
+          foreach ($legacyAsset in @(
+            $legacyArchive,
+            $legacyArchiveChecksum,
+            $legacyExecutable,
+            $legacyChecksum
+          )) {
             if ($legacyAsset -in $finalAssetNames) {
               throw "Legacy release asset is still present: $legacyAsset"
             }

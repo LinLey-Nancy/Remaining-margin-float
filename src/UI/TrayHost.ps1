@@ -107,6 +107,11 @@ $trayImportHistoryItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 )
 [void]$trayDataItem.DropDownItems.Add($trayExportHistoryItem)
 [void]$trayDataItem.DropDownItems.Add($trayImportHistoryItem)
+$script:TrayUpdateItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayUpdateItem.Text = '检查更新…'
+$script:TrayUpdateItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Start-UpdateCheck -Manual
+}))
 $trayStartupItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayStartupItem.Text = '设置开机启动'
 $trayStartupClickHandler = {
@@ -153,6 +158,7 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)
 [void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)
 [void]$script:TrayMenu.Items.Add($trayDataItem)
+[void]$script:TrayMenu.Items.Add($script:TrayUpdateItem)
 [void]$script:TrayMenu.Items.Add($trayStartupItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)
@@ -173,11 +179,16 @@ Sync-ProviderMenuState
 Sync-EdgeDockMenuState
 Sync-StartupMenuState
 Sync-LowAlertMenuState
+Sync-UpdateMenuState
+if (-not $isDiagnosticRun) {
+    $script:NextAutomaticUpdateCheckAt = [DateTimeOffset]::Now.AddSeconds(8)
+}
 
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
 $timer.Add_Tick((New-RmfEventHandler -Kind Event -Callback {
     Invoke-RefreshTimerTick
+    Invoke-UpdateTimerTick
 }))
 $timer.Start()
 
@@ -197,6 +208,7 @@ if ($releaseGuiCheck) {
             $script:RmfGuiCheckPassed = (
                 $null -ne $script:LowAlertThresholdMenuItem -and
                 $null -ne $script:TrayLowAlertThresholdItem -and
+                $null -ne $script:TrayUpdateItem -and
                 [string]$script:TrayLowAlertsItem.Text -eq
                     (Get-LowRemainingAlertMenuText)
             )
@@ -309,6 +321,11 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         $script:DeepSeekHttpClient.CancelPendingRequests()
         $script:DeepSeekHttpClient.Dispose()
         $script:DeepSeekHttpClient = $null
+    }
+    if ($script:UpdateHttpClient) {
+        $script:UpdateHttpClient.CancelPendingRequests()
+        $script:UpdateHttpClient.Dispose()
+        $script:UpdateHttpClient = $null
     }
     if (
         $script:AppContext.Refresh.Codex.RequestTask -or

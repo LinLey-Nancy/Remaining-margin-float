@@ -140,7 +140,7 @@ function New-CodexOfficialUsageRequest {
         [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
         [void]$request.Headers.TryAddWithoutValidation(
             'User-Agent',
-            'remaining-margin-float/1.7.0'
+            'remaining-margin-float/1.8.0'
         )
         [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
         return $request

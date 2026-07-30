@@ -81,3 +81,23 @@ jobs:
       - name: 检查打包运行行为
         shell: powershell
         run: powershell.exe -NoProfile -File .\Test-Release.ps1
+
+      - name: 准备 Inno Setup 编译器
+        shell: powershell
+        run: |
+          $compiler = & .\Install-InnoSetupCompiler.ps1
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compiler)) {
+            throw "Could not prepare Inno Setup compiler: $compiler"
+          }
+          "INNO_SETUP_COMPILER=$compiler" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+      - name: 构建安装程序
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Build-Installer.ps1
+
+      - name: 验证安装与卸载
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\Test-Installer.ps1
