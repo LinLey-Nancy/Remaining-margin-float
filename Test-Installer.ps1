@@ -68,8 +68,13 @@ function Test-InstallerRegistrationExists {
 $startupTaskExists = $false
 $taskQueryTool = Join-Path $env:SystemRoot 'System32\schtasks.exe'
 if (Test-Path -LiteralPath $taskQueryTool -PathType Leaf) {
-    & $taskQueryTool /Query /TN $startupTaskName 2>$null | Out-Null
-    $startupTaskExists = $LASTEXITCODE -eq 0
+    $taskQueryProcess = Start-Process `
+        -FilePath $taskQueryTool `
+        -ArgumentList @('/Query', '/TN', $startupTaskName) `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru
+    $startupTaskExists = $taskQueryProcess.ExitCode -eq 0
 }
 $startupRunExists = $null -ne (
     Get-ItemProperty `
