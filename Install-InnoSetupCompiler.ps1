@@ -9,6 +9,9 @@ $innoVersion = '6.7.3'
 $expectedInstallerSha256 = (
     '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
 )
+$expectedCompilerSha256 = (
+    '0a8757031b33777e4c9cbffee40f11a5062b36d25cbe144c1db73b6102b80ad7'
+)
 $downloadUri = (
     'https://github.com/jrsoftware/issrc/releases/download/' +
     "is-6_7_3/innosetup-$innoVersion.exe"
@@ -25,7 +28,6 @@ if ([string]::IsNullOrWhiteSpace($DestinationDirectory)) {
 }
 $installRoot = [IO.Path]::GetFullPath($DestinationDirectory)
 $compilerPath = Join-Path $installRoot 'ISCC.exe'
-$versionMarkerPath = Join-Path $installRoot '.rmf-inno-version'
 
 function Assert-InnoAuthenticodePublisher {
     param([string]$Path)
@@ -73,17 +75,28 @@ function Assert-InnoVersionMetadata {
     }
 }
 
+function Assert-FileSha256 {
+    param(
+        [string]$Path,
+        [string]$ExpectedHash,
+        [string]$Label
+    )
+
+    $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    if (-not $actualHash.Equals(
+        $ExpectedHash,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Unexpected $Label SHA-256: $actualHash"
+    }
+}
+
 if (Test-Path -LiteralPath $compilerPath -PathType Leaf) {
     Assert-InnoAuthenticodePublisher -Path $compilerPath
-    $cachedVersion = if (Test-Path -LiteralPath $versionMarkerPath -PathType Leaf) {
-        (Get-Content -LiteralPath $versionMarkerPath -Raw).Trim()
-    }
-    else {
-        ''
-    }
-    if ($cachedVersion -ne $innoVersion) {
-        throw "Cached Inno Setup compiler version is not trusted: $cachedVersion"
-    }
+    Assert-FileSha256 `
+        -Path $compilerPath `
+        -ExpectedHash $expectedCompilerSha256 `
+        -Label 'Inno Setup compiler'
     Write-Output $compilerPath
     return
 }
@@ -103,15 +116,10 @@ try {
 
     Assert-InnoAuthenticodePublisher -Path $downloadPath
     Assert-InnoVersionMetadata -Path $downloadPath -Label 'Inno Setup installer'
-    $downloadHash = (
-        Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256
-    ).Hash
-    if (-not $downloadHash.Equals(
-        $expectedInstallerSha256,
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
-        throw "Unexpected Inno Setup installer SHA-256: $downloadHash"
-    }
+    Assert-FileSha256 `
+        -Path $downloadPath `
+        -ExpectedHash $expectedInstallerSha256 `
+        -Label 'Inno Setup installer'
 
     New-Item -Path $installRoot -ItemType Directory -Force | Out-Null
     $arguments = @(
@@ -134,10 +142,10 @@ try {
         throw "Inno Setup compiler was not installed at $compilerPath"
     }
     Assert-InnoAuthenticodePublisher -Path $compilerPath
-    Set-Content `
-        -LiteralPath $versionMarkerPath `
-        -Value $innoVersion `
-        -Encoding ASCII
+    Assert-FileSha256 `
+        -Path $compilerPath `
+        -ExpectedHash $expectedCompilerSha256 `
+        -Label 'Inno Setup compiler'
 }
 finally {
     if (Test-Path -LiteralPath $downloadPath) {
