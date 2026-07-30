@@ -276,8 +276,24 @@ internal static class Launcher
                         string message = "The application script reported an error.";
                         if (powerShell.Streams.Error.Count > 0)
                         {
+                            StringBuilder errorDetails = new StringBuilder();
+                            foreach (ErrorRecord errorRecord in powerShell.Streams.Error)
+                            {
+                                errorDetails.AppendLine(errorRecord.ToString());
+                                if (
+                                    errorRecord.InvocationInfo != null &&
+                                    !String.IsNullOrWhiteSpace(
+                                        errorRecord.InvocationInfo.PositionMessage
+                                    )
+                                )
+                                {
+                                    errorDetails.AppendLine(
+                                        errorRecord.InvocationInfo.PositionMessage
+                                    );
+                                }
+                            }
                             message += Environment.NewLine + Environment.NewLine +
-                                powerShell.Streams.Error[0].Exception.Message;
+                                errorDetails.ToString().Trim();
                         }
                         throw new InvalidOperationException(message);
                     }
@@ -444,6 +460,22 @@ internal static class Launcher
         {
             if (launcherCheck || guiCheck)
             {
+                string diagnosticPath =
+                    Environment.GetEnvironmentVariable(
+                        "REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT",
+                        EnvironmentVariableTarget.Process
+                    );
+                if (!String.IsNullOrWhiteSpace(diagnosticPath))
+                {
+                    try
+                    {
+                        File.WriteAllText(diagnosticPath, exception.ToString());
+                    }
+                    catch
+                    {
+                        // The exit code remains the trust signal if diagnostics cannot be written.
+                    }
+                }
                 return 1;
             }
             System.Windows.Forms.MessageBox.Show(

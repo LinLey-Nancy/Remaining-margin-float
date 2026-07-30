@@ -176,6 +176,14 @@ $negativeTestRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'RemainingMarginFloat.ReleaseTest.{0}.{1}' -f $PID, [Guid]::NewGuid().ToString('N')
 )
 try {
+    New-Item -Path $negativeTestRoot -ItemType Directory | Out-Null
+    $launcherCheckResultPath =
+        Join-Path $negativeTestRoot 'launcher-check-result.txt'
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT',
+        $launcherCheckResultPath,
+        $processEnvironment
+    )
     [Environment]::SetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_LAUNCHER_CHECK',
         '1',
@@ -183,10 +191,19 @@ try {
     )
     $validExitCode = Invoke-LauncherCheck -Path $executablePath
     if ($validExitCode -ne 0) {
-        throw "Launcher runtime check failed: $validExitCode"
+        $launcherCheckDetails = if (
+            Test-Path -LiteralPath $launcherCheckResultPath
+        ) {
+            Get-Content -LiteralPath $launcherCheckResultPath -Raw
+        } else {
+            'No launcher diagnostic result was written.'
+        }
+        throw (
+            "Launcher runtime check failed: $validExitCode`n" +
+            $launcherCheckDetails
+        )
     }
 
-    New-Item -Path $negativeTestRoot -ItemType Directory | Out-Null
     $negativeExecutable = Join-Path $negativeTestRoot 'RemainingMarginFloat.exe'
     $negativeScript = Join-Path $negativeTestRoot 'RemainingMarginFloat.ps1'
     Copy-Item -LiteralPath $executablePath -Destination $negativeExecutable

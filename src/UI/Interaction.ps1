@@ -282,7 +282,7 @@ $script:LowAlertsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback 
     Set-LowRemainingAlertsEnabled -Enabled $script:LowAlertsMenuItem.IsChecked
 }))
 $script:LowAlertThresholdMenuItem = New-Object Windows.Controls.MenuItem
-$script:LowAlertThresholdMenuItem.Header = '提醒阈值…'
+$script:LowAlertThresholdMenuItem.Header = Get-UsageAlertSettingsMenuText
 $script:LowAlertThresholdMenuItem.Add_Click((
     New-RmfEventHandler -Kind Routed -Callback {
         [void](Show-LowRemainingAlertSettings)

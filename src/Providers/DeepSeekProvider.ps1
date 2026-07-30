@@ -389,7 +389,12 @@ function ConvertTo-DeepSeekSnapshot {
     )
     $isAvailable = [bool](Get-ObjectPropertyValue -Object $BalancePayload -Name 'is_available' -Default $false)
     $budgetPercent = if ($Budget -gt 0) {
-        [Math]::Round([Math]::Max(0, [Math]::Min(100, ($totalBalance / $Budget) * 100)))
+        [Math]::Round(
+            [Math]::Max(
+                0.0,
+                [Math]::Min(100.0, ($totalBalance / $Budget) * 100)
+            )
+        )
     } else { $null }
 
     return [pscustomobject]@{

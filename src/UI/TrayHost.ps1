@@ -66,7 +66,7 @@ $script:TrayLowAlertsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Set-LowRemainingAlertsEnabled -Enabled $script:TrayLowAlertsItem.Checked
 }))
 $script:TrayLowAlertThresholdItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$script:TrayLowAlertThresholdItem.Text = '提醒阈值…'
+$script:TrayLowAlertThresholdItem.Text = Get-UsageAlertSettingsMenuText
 $script:TrayLowAlertThresholdItem.Add_Click((
     New-RmfEventHandler -Kind Event -Callback {
         Show-ExistingWindow

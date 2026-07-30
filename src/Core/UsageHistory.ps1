@@ -159,8 +159,8 @@ function ConvertTo-UsageHistorySample {
     if ([bool]$Snapshot.HasProgress) {
         $metricType = 'Percent'
         $remainingValue = [Math]::Max(
-            0,
-            [Math]::Min(100, [double]$Snapshot.RemainingPercent)
+            0.0,
+            [Math]::Min(100.0, [double]$Snapshot.RemainingPercent)
         )
         $unit = '%'
     }
@@ -169,7 +169,7 @@ function ConvertTo-UsageHistorySample {
         $Snapshot.PSObject.Properties['TotalBalance']
     ) {
         $metricType = 'Balance'
-        $remainingValue = [Math]::Max(0, [double]$Snapshot.TotalBalance)
+        $remainingValue = [Math]::Max(0.0, [double]$Snapshot.TotalBalance)
         $unit = if ($Snapshot.PSObject.Properties['Currency']) {
             [string]$Snapshot.Currency
         } else {
@@ -210,6 +210,59 @@ function ConvertTo-UsageHistorySample {
         Unit = $unit
         ResetAtUtc = $resetAtUtc
     }
+}
+
+function ConvertTo-UsageHistorySamples {
+    param(
+        $Snapshot,
+        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
+    )
+
+    $samples = New-Object Collections.Generic.List[object]
+    $primarySample = ConvertTo-UsageHistorySample `
+        -Snapshot $Snapshot `
+        -ObservedAt $ObservedAt `
+        -TimeZone $TimeZone
+    if ($primarySample) {
+        $samples.Add($primarySample)
+    }
+
+    if (
+        $primarySample -and
+        [string]$Snapshot.ProviderId -eq 'DeepSeek' -and
+        $primarySample.MetricType -ne 'Balance' -and
+        $Snapshot.PSObject.Properties['TotalBalance']
+    ) {
+        $balance = [double]$Snapshot.TotalBalance
+        if (
+            -not [double]::IsNaN($balance) -and
+            -not [double]::IsInfinity($balance) -and
+            $balance -ge 0
+        ) {
+            $calendar = Get-UsageHistoryCalendarMetadata `
+                -ObservedAt $ObservedAt `
+                -TimeZone $TimeZone
+            $currency = if ($Snapshot.PSObject.Properties['Currency']) {
+                [string]$Snapshot.Currency
+            } else {
+                'CNY'
+            }
+            $samples.Add([pscustomobject]@{
+                Version = 2
+                ProviderId = 'DeepSeek'
+                ObservedAtUtc = $ObservedAt.ToUniversalTime()
+                LocalDate = $calendar.LocalDate
+                TimeZoneId = $calendar.TimeZoneId
+                UtcOffsetMinutes = $calendar.UtcOffsetMinutes
+                MetricType = 'Balance'
+                RemainingValue = [Math]::Round($balance, 4)
+                Unit = $currency
+                ResetAtUtc = ''
+            })
+        }
+    }
+    return $samples.ToArray()
 }
 
 function Read-UsageHistory {
@@ -451,9 +504,12 @@ function Add-UsageHistorySample {
         [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now
     )
 
-    $currentSample = ConvertTo-UsageHistorySample `
+    $currentSamples = @(
+        ConvertTo-UsageHistorySamples `
         -Snapshot $Snapshot `
         -ObservedAt $ObservedAt
+    )
+    $currentSample = $currentSamples | Select-Object -First 1
     $history = if ($isDiagnosticRun -and $null -eq $script:UsageHistoryCache) {
         @()
     } else {
@@ -468,56 +524,79 @@ function Add-UsageHistorySample {
         }
     }
 
-    $matchingSamples = @(
+    $previousSample = (@(
         $history | Where-Object {
             $_.ProviderId -eq $currentSample.ProviderId -and
             $_.MetricType -eq $currentSample.MetricType -and
             $_.Unit -eq $currentSample.Unit -and
             $_.ObservedAtUtc -le $currentSample.ObservedAtUtc.AddMinutes(5)
         } | Sort-Object ObservedAtUtc
-    )
-    $previousSample = $matchingSamples | Select-Object -Last 1
+    ) | Select-Object -Last 1)
     if ($isDiagnosticRun) {
         return [pscustomobject]@{
-            Samples = @($history + $currentSample)
+            Samples = @($history + $currentSamples)
             CurrentSample = $currentSample
             PreviousSample = $previousSample
             Changed = $false
         }
     }
 
-    $changed = $true
-    if ($previousSample) {
-        $elapsed = $currentSample.ObservedAtUtc - $previousSample.ObservedAtUtc
-        if ($elapsed.TotalMinutes -lt 2) {
-            $replaced = $false
-            $updatedHistory = New-Object Collections.Generic.List[object]
-            foreach ($item in $history) {
-                if (-not $replaced -and [object]::ReferenceEquals($item, $previousSample)) {
-                    $updatedHistory.Add($currentSample)
-                    $replaced = $true
-                }
-                else {
-                    $updatedHistory.Add($item)
-                }
-            }
-            $history = @($updatedHistory)
+    $changed = $false
+    foreach ($sample in $currentSamples) {
+        $matchingSamples = @(
+            $history | Where-Object {
+                $_.ProviderId -eq $sample.ProviderId -and
+                $_.MetricType -eq $sample.MetricType -and
+                $_.Unit -eq $sample.Unit -and
+                $_.ObservedAtUtc -le $sample.ObservedAtUtc.AddMinutes(5)
+            } | Sort-Object ObservedAtUtc
+        )
+        $previousForMetric = $matchingSamples | Select-Object -Last 1
+        if ([object]::ReferenceEquals($sample, $currentSample)) {
+            $previousSample = $previousForMetric
         }
-        elseif (
-            $elapsed.TotalMinutes -lt 5 -and
-            [Math]::Abs(
-                [double]$currentSample.RemainingValue -
-                [double]$previousSample.RemainingValue
-            ) -lt 0.0001
-        ) {
-            $changed = $false
+
+        $metricChanged = $true
+        if ($previousForMetric) {
+            $elapsed = $sample.ObservedAtUtc - $previousForMetric.ObservedAtUtc
+            if (
+                $elapsed.TotalMinutes -ge 0 -and
+                $elapsed.TotalMinutes -lt 2
+            ) {
+                $replaced = $false
+                $updatedHistory = New-Object Collections.Generic.List[object]
+                foreach ($item in $history) {
+                    if (
+                        -not $replaced -and
+                        [object]::ReferenceEquals($item, $previousForMetric)
+                    ) {
+                        $updatedHistory.Add($sample)
+                        $replaced = $true
+                    }
+                    else {
+                        $updatedHistory.Add($item)
+                    }
+                }
+                $history = $updatedHistory.ToArray()
+            }
+            elseif (
+                $elapsed.TotalMinutes -ge 0 -and
+                $elapsed.TotalMinutes -lt 5 -and
+                [Math]::Abs(
+                    [double]$sample.RemainingValue -
+                    [double]$previousForMetric.RemainingValue
+                ) -lt 0.0001
+            ) {
+                $metricChanged = $false
+            }
+            else {
+                $history = @($history + $sample)
+            }
         }
         else {
-            $history = @($history + $currentSample)
+            $history = @($history + $sample)
         }
-    }
-    else {
-        $history = @($history + $currentSample)
+        $changed = $changed -or $metricChanged
     }
 
     if ($changed) {
@@ -568,7 +647,10 @@ function Get-UsageTrend {
         return [pscustomobject]@{
             Hours = $Hours
             Samples = @()
+            SampleCount = 0
             Change = 0.0
+            StartValue = $null
+            EndValue = $null
             Summary = '暂无数据'
         }
     }
@@ -587,7 +669,14 @@ function Get-UsageTrend {
         return [pscustomobject]@{
             Hours = $Hours
             Samples = $series
+            SampleCount = $series.Count
             Change = 0.0
+            StartValue = if ($series.Count -eq 1) {
+                [double]$series[0].RemainingValue
+            } else { $null }
+            EndValue = if ($series.Count -eq 1) {
+                [double]$series[0].RemainingValue
+            } else { $null }
             Summary = '积累中'
         }
     }
@@ -618,7 +707,10 @@ function Get-UsageTrend {
     return [pscustomobject]@{
         Hours = $Hours
         Samples = $series
+        SampleCount = $series.Count
         Change = $change
+        StartValue = [double]$series[0].RemainingValue
+        EndValue = [double]$series[-1].RemainingValue
         Summary = $summary
     }
 }
@@ -712,7 +804,7 @@ function Get-DepletionForecast {
         }
     }
 
-    $currentValue = [Math]::Max(0, [double]$CurrentSample.RemainingValue)
+    $currentValue = [Math]::Max(0.0, [double]$CurrentSample.RemainingValue)
     $hoursToEmpty = $currentValue / (-$slope)
     if ($hoursToEmpty -gt (24 * 30)) {
         return [pscustomobject]@{
@@ -758,7 +850,232 @@ function Get-DepletionForecast {
         Status = 'Depleting'
         HoursToEmpty = $hoursToEmpty
         RatePerHour = $slope
-        Text = "按当前速度预计 $durationText 后耗尽"
+        Text = "按当前速度预计 ${durationText}后耗尽"
+    }
+}
+
+function ConvertTo-RapidDropWindowMinutes {
+    param(
+        $Value,
+        [int]$Fallback = 30,
+        [switch]$Strict
+    )
+
+    $parsedValue = 0
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $isValid = (
+        [int]::TryParse($text.Trim(), [ref]$parsedValue) -and
+        $parsedValue -ge 5 -and
+        $parsedValue -le 1440
+    )
+    if ($isValid) { return $parsedValue }
+    if ($Strict) {
+        throw '快速下降时间范围需要是 5 到 1440 分钟之间的整数。'
+    }
+    return $Fallback
+}
+
+function ConvertTo-RapidDropPercent {
+    param(
+        $Value,
+        [double]$Fallback = 10.0,
+        [switch]$Strict
+    )
+
+    $parsedValue = 0.0
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $parsed = [double]::TryParse(
+        $text.Trim(),
+        [Globalization.NumberStyles]::Number,
+        [Globalization.CultureInfo]::CurrentCulture,
+        [ref]$parsedValue
+    )
+    if (-not $parsed) {
+        $parsed = [double]::TryParse(
+            $text.Trim(),
+            [Globalization.NumberStyles]::Number,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsedValue
+        )
+    }
+    $isValid = (
+        $parsed -and
+        -not [double]::IsNaN($parsedValue) -and
+        -not [double]::IsInfinity($parsedValue) -and
+        $parsedValue -ge 0.1 -and
+        $parsedValue -le 100
+    )
+    if ($isValid) { return [Math]::Round($parsedValue, 1) }
+    if ($Strict) {
+        throw '快速下降百分比需要在 0.1 到 100 个百分点之间。'
+    }
+    return $Fallback
+}
+
+function ConvertTo-RapidDropAmount {
+    param(
+        $Value,
+        [double]$Fallback = 10.0,
+        [switch]$Strict
+    )
+
+    $parsedValue = 0.0
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $parsed = [double]::TryParse(
+        $text.Trim(),
+        [Globalization.NumberStyles]::Number,
+        [Globalization.CultureInfo]::CurrentCulture,
+        [ref]$parsedValue
+    )
+    if (-not $parsed) {
+        $parsed = [double]::TryParse(
+            $text.Trim(),
+            [Globalization.NumberStyles]::Number,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsedValue
+        )
+    }
+    $isValid = (
+        $parsed -and
+        -not [double]::IsNaN($parsedValue) -and
+        -not [double]::IsInfinity($parsedValue) -and
+        $parsedValue -ge 0.01 -and
+        $parsedValue -le 1000000000
+    )
+    if ($isValid) { return [Math]::Round($parsedValue, 2) }
+    if ($Strict) {
+        throw '快速下降金额需要在 0.01 到 1,000,000,000 之间。'
+    }
+    return $Fallback
+}
+
+function Measure-RapidUsageDrop {
+    param(
+        [object[]]$Samples,
+        $Snapshot,
+        [int]$WindowMinutes = 30,
+        [double]$CodexPercent = 10.0,
+        [ValidateSet('Percent', 'Amount')]
+        [string]$DeepSeekMode = 'Percent',
+        [double]$DeepSeekPercent = 10.0,
+        [double]$DeepSeekAmount = 10.0,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $emptyResult = {
+        param(
+            [string]$ProviderId,
+            [string]$MetricType,
+            [double]$Threshold,
+            [string]$Unit,
+            [string]$Summary
+        )
+        return [pscustomobject]@{
+            Available = $false
+            IsRapid = $false
+            ProviderId = $ProviderId
+            MetricType = $MetricType
+            WindowMinutes = $WindowMinutes
+            Threshold = $Threshold
+            Drop = 0.0
+            Unit = $Unit
+            BaselineValue = $null
+            CurrentValue = $null
+            BaselineAtUtc = $null
+            CurrentAtUtc = $null
+            SampleCount = 0
+            Summary = $Summary
+        }
+    }
+
+    if (-not $Snapshot -or -not [bool]$Snapshot.Available) {
+        return & $emptyResult '' '' 0.0 '' '当前数据不可用'
+    }
+    $providerId = [string]$Snapshot.ProviderId
+    if ($providerId -eq 'Codex') {
+        $metricType = 'Percent'
+        $threshold = $CodexPercent
+        $unit = '%'
+        if (-not [bool]$Snapshot.HasProgress) {
+            return & $emptyResult $providerId $metricType $threshold $unit `
+                '等待 Codex 余量数据'
+        }
+    }
+    elseif ($providerId -eq 'DeepSeek') {
+        $metricType = if ($DeepSeekMode -eq 'Amount') {
+            'Balance'
+        } else {
+            'Percent'
+        }
+        $threshold = if ($DeepSeekMode -eq 'Amount') {
+            $DeepSeekAmount
+        } else {
+            $DeepSeekPercent
+        }
+        $unit = if ($DeepSeekMode -eq 'Amount') {
+            if ($Snapshot.PSObject.Properties['Currency']) {
+                [string]$Snapshot.Currency
+            } else {
+                'CNY'
+            }
+        } else {
+            '%'
+        }
+        if ($metricType -eq 'Percent' -and -not [bool]$Snapshot.HasProgress) {
+            return & $emptyResult $providerId $metricType $threshold $unit `
+                '设置预算基准后监控百分比'
+        }
+    }
+    else {
+        return & $emptyResult $providerId '' 0.0 '' '暂不支持此数据源'
+    }
+
+    $cutoff = $Now.ToUniversalTime().AddMinutes(-$WindowMinutes)
+    $series = @(
+        $Samples | Where-Object {
+            $_.ProviderId -eq $providerId -and
+            $_.MetricType -eq $metricType -and
+            $_.Unit -eq $unit -and
+            $_.ObservedAtUtc -ge $cutoff -and
+            $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
+        } | Sort-Object ObservedAtUtc
+    )
+    if ($series.Count -lt 2) {
+        return & $emptyResult $providerId $metricType $threshold $unit `
+            '正在积累快速下降样本'
+    }
+
+    $currentSample = $series[-1]
+    $baselineSample = $series |
+        Sort-Object RemainingValue -Descending |
+        Select-Object -First 1
+    $drop = [Math]::Max(
+        0.0,
+        [double]$baselineSample.RemainingValue -
+            [double]$currentSample.RemainingValue
+    )
+    $summary = if ($metricType -eq 'Percent') {
+        '{0} 分钟内下降 {1:0.#}pp' -f $WindowMinutes, $drop
+    } else {
+        '{0} 分钟内减少 {1}' -f
+            $WindowMinutes,
+            (Format-CurrencyAmount -Amount $drop -Currency $unit)
+    }
+    return [pscustomobject]@{
+        Available = $true
+        IsRapid = $drop -ge $threshold
+        ProviderId = $providerId
+        MetricType = $metricType
+        WindowMinutes = $WindowMinutes
+        Threshold = $threshold
+        Drop = $drop
+        Unit = $unit
+        BaselineValue = [double]$baselineSample.RemainingValue
+        CurrentValue = [double]$currentSample.RemainingValue
+        BaselineAtUtc = $baselineSample.ObservedAtUtc
+        CurrentAtUtc = $currentSample.ObservedAtUtc
+        SampleCount = $series.Count
+        Summary = $summary
     }
 }
 
@@ -767,6 +1084,13 @@ function Measure-UsageInsights {
         [object[]]$Samples,
         $CurrentSample,
         $PreviousSample,
+        $Snapshot = $null,
+        [int]$RapidDropWindowMinutes = 30,
+        [double]$CodexRapidDropPercent = 10.0,
+        [ValidateSet('Percent', 'Amount')]
+        [string]$DeepSeekRapidDropMode = 'Percent',
+        [double]$DeepSeekRapidDropPercent = 10.0,
+        [double]$DeepSeekRapidDropAmount = 10.0,
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
@@ -786,6 +1110,15 @@ function Measure-UsageInsights {
         Forecast = Get-DepletionForecast `
             -Samples $Samples `
             -CurrentSample $CurrentSample `
+            -Now $Now
+        RapidDrop = Measure-RapidUsageDrop `
+            -Samples $Samples `
+            -Snapshot $Snapshot `
+            -WindowMinutes $RapidDropWindowMinutes `
+            -CodexPercent $CodexRapidDropPercent `
+            -DeepSeekMode $DeepSeekRapidDropMode `
+            -DeepSeekPercent $DeepSeekRapidDropPercent `
+            -DeepSeekAmount $DeepSeekRapidDropAmount `
             -Now $Now
     }
 }
@@ -859,7 +1192,13 @@ function ConvertTo-LowRemainingThreshold {
 function Update-UsageHistory {
     param(
         $Snapshot,
-        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now
+        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now,
+        [int]$RapidDropWindowMinutes = 30,
+        [double]$CodexRapidDropPercent = 10.0,
+        [ValidateSet('Percent', 'Amount')]
+        [string]$DeepSeekRapidDropMode = 'Percent',
+        [double]$DeepSeekRapidDropPercent = 10.0,
+        [double]$DeepSeekRapidDropAmount = 10.0
     )
 
     $record = Add-UsageHistorySample `
@@ -869,5 +1208,11 @@ function Update-UsageHistory {
         -Samples $record.Samples `
         -CurrentSample $record.CurrentSample `
         -PreviousSample $record.PreviousSample `
+        -Snapshot $Snapshot `
+        -RapidDropWindowMinutes $RapidDropWindowMinutes `
+        -CodexRapidDropPercent $CodexRapidDropPercent `
+        -DeepSeekRapidDropMode $DeepSeekRapidDropMode `
+        -DeepSeekRapidDropPercent $DeepSeekRapidDropPercent `
+        -DeepSeekRapidDropAmount $DeepSeekRapidDropAmount `
         -Now $ObservedAt
 }

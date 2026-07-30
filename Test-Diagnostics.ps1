@@ -208,11 +208,33 @@ Assert-Diagnostic -Condition ([bool]$history.DiagnosticRedaction) `
     -Message 'Runtime diagnostic redaction'
 Assert-Diagnostic -Condition ([bool]$history.HistorySampleContainsNoAccountData) `
     -Message 'History privacy fields'
+Assert-Diagnostic -Condition ([bool]$history.CodexRapidDropDetected) `
+    -Message 'Codex rapid percentage drop detection'
+Assert-Diagnostic -Condition ([bool]$history.CodexRapidDropThresholdRespected) `
+    -Message 'Codex rapid drop custom threshold'
+Assert-Diagnostic -Condition ([bool]$history.CodexRapidDropRequiresProgress) `
+    -Message 'Codex rapid drop progress requirement'
+Assert-Diagnostic -Condition ([bool]$history.RapidDropTimeWindowRespected) `
+    -Message 'Rapid drop custom time window'
+Assert-Diagnostic -Condition ([bool]$history.DeepSeekAmountRapidDropDetected) `
+    -Message 'DeepSeek rapid amount drop detection'
+Assert-Diagnostic -Condition ([bool]$history.DeepSeekPercentRapidDropDetected) `
+    -Message 'DeepSeek rapid percentage drop detection'
+Assert-Diagnostic -Condition ([bool]$history.DeepSeekPercentRequiresBudget) `
+    -Message 'DeepSeek percentage drop budget requirement'
+Assert-Diagnostic -Condition ([bool]$history.DeepSeekDualMetricHistory) `
+    -Message 'DeepSeek percentage and balance history'
+Assert-Diagnostic -Condition ([bool]$history.FractionalHistoryPrecision) `
+    -Message 'Fractional percentage and balance history precision'
+Assert-Diagnostic -Condition (
+    [bool]$history.RapidDropWindowValidation -and
+    [bool]$history.RapidDropThresholdValidation
+) -Message 'Rapid drop setting validation'
 
 $placement = Invoke-JsonDiagnostic -Name 'CheckPlacement'
 Assert-Diagnostic -Condition (
-    $placement.Expanded.Left -eq 1550 -and
-    $placement.Expanded.Top -eq 580 -and
+    $placement.Expanded.Left -eq 1520 -and
+    $placement.Expanded.Top -eq 520 -and
     $placement.Restored.Left -eq $placement.Anchor.Left -and
     $placement.Restored.Top -eq $placement.Anchor.Top
 ) -Message 'Window placement and restoration'
@@ -244,10 +266,10 @@ Assert-Diagnostic -Condition ([bool]$transitions.ReentrantCallbackObserved) `
 Assert-Diagnostic -Condition ([bool]$transitions.TaskViewHidden) `
     -Message 'Task view visibility'
 Assert-Diagnostic -Condition (
-    $transitions.ExpandedWidth -eq 370 -and
-    $transitions.ExpandedHeight -eq 500 -and
-    $transitions.ReopenedWidth -eq 370 -and
-    $transitions.ReopenedHeight -eq 500 -and
+    $transitions.ExpandedWidth -eq 400 -and
+    $transitions.ExpandedHeight -eq 560 -and
+    $transitions.ReopenedWidth -eq 400 -and
+    $transitions.ReopenedHeight -eq 560 -and
     $transitions.InactiveWidth -eq 80 -and
     $transitions.InactiveHeight -eq 80 -and
     $transitions.ExpandedVisibility -eq 'Visible' -and
@@ -260,6 +282,15 @@ Assert-Diagnostic -Condition (
     $transitions.LowerClampedRemaining -eq 0 -and
     $transitions.LowerClampedUsed -eq 100
 ) -Message 'Progress clamping'
+Assert-Diagnostic -Condition (
+    [Math]::Abs(
+        [double]$transitions.FractionalProgressRemaining - 72.4
+    ) -lt 0.0001 -and
+    [Math]::Abs(
+        [double]$transitions.FractionalProgressUsed - 27.6
+    ) -lt 0.0001 -and
+    $transitions.FractionalBlendRed -eq 128
+) -Message 'Fractional progress and palette interpolation'
 Assert-Diagnostic -Condition (
     $transitions.CodexSettingsVisibility -eq 'Collapsed' -and
     $transitions.DeepSeekSettingsVisibility -eq 'Visible'
@@ -291,7 +322,7 @@ Assert-Diagnostic -Condition (
         $_ -ne 'Segoe UI Variable Display'
     }).Count -eq 0 -and
     @($transitions.MetricValueFontSizes | Where-Object {
-        [double]$_ -ne 21
+        [double]$_ -ne 22
     }).Count -eq 0 -and
     @($transitions.MetricValueFontWeights | Where-Object {
         $_ -ne 'SemiBold'
@@ -320,10 +351,22 @@ Assert-Diagnostic -Condition (
     $transitions.HiddenSurfaceAlpha -eq 0
 ) -Message 'Edge transition behavior'
 Assert-Diagnostic `
-    -Condition ([string]$transitions.Trend24Text -match '^24H') `
+    -Condition (
+        -not [string]::IsNullOrWhiteSpace([string]$transitions.Trend24Text) -and
+        $transitions.Trend24PointCount -ge 2 -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string]$transitions.Trend24MetaText
+        )
+    ) `
     -Message '24-hour trend UI'
 Assert-Diagnostic `
-    -Condition ([string]$transitions.Trend7Text -match '^7D') `
+    -Condition (
+        -not [string]::IsNullOrWhiteSpace([string]$transitions.Trend7Text) -and
+        $transitions.Trend7PointCount -ge 2 -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string]$transitions.Trend7MetaText
+        )
+    ) `
     -Message '7-day trend UI'
 Assert-Diagnostic `
     -Condition (-not [string]::IsNullOrWhiteSpace([string]$transitions.PredictionText)) `
@@ -332,12 +375,17 @@ Assert-Diagnostic `
     -Condition ([bool]$transitions.LowAlertMenuChecked) `
     -Message 'Low-alert menu UI'
 Assert-Diagnostic -Condition (
-    [string]$transitions.LowAlertThresholdMenuText -match '35%'
+    [string]$transitions.LowAlertThresholdMenuText -match '35%' -and
+    [string]$transitions.UsageAlertSettingsMenuText -match '45'
 ) -Message 'Custom low-alert threshold menu UI'
 Assert-Diagnostic -Condition (
     [bool]$transitions.LowAlertThresholdPersisted -and
+    [bool]$transitions.RapidDropSettingsPersisted -and
     [bool]$transitions.LowAlertThresholdInvalidFallback -and
-    [bool]$transitions.LowAlertThresholdDialogReady
+    [bool]$transitions.LowAlertThresholdDialogReady -and
+    -not [string]::IsNullOrWhiteSpace(
+        [string]$transitions.RapidDropStatusText
+    )
 ) -Message 'Custom low-alert threshold persistence'
 
 $refresh = Invoke-JsonDiagnostic -Name 'CheckRefreshCoordinator'

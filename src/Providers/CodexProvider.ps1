@@ -75,7 +75,10 @@ function ConvertTo-CodexOfficialUsage {
     }
 
     return [pscustomobject]@{
-        UsedPercent = [Math]::Max(0, [Math]::Min(100, [double]$usedValue))
+        UsedPercent = [Math]::Max(
+            0.0,
+            [Math]::Min(100.0, [double]$usedValue)
+        )
         WindowMinutes = [int][Math]::Round([double]$windowSecondsValue / 60)
         ResetsAt = [long]$resetValue
         PlanType = [string](Get-ObjectPropertyValue `
@@ -137,7 +140,7 @@ function New-CodexOfficialUsageRequest {
         [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
         [void]$request.Headers.TryAddWithoutValidation(
             'User-Agent',
-            'remaining-margin-float/1.6.0'
+            'remaining-margin-float/1.7.0'
         )
         [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
         return $request
@@ -358,7 +361,7 @@ function Resolve-CodexQuotaUsage {
             Channel = if ($isCached) { 'OfficialCache' } else { 'Official' }
             UsedPercent = [Math]::Max(
                 0,
-                [Math]::Min(100, [double]$OfficialUsage.UsedPercent)
+                [Math]::Min(100.0, [double]$OfficialUsage.UsedPercent)
             )
             WindowMinutes = [int]$OfficialUsage.WindowMinutes
             ResetsAt = [long]$OfficialUsage.ResetsAt
@@ -763,7 +766,10 @@ function Get-CodexUsageSnapshot {
     $contextWindow = [double](Get-ObjectPropertyValue -Object $info -Name 'model_context_window' -Default 0)
     $cacheHit = if ($inputTokens -gt 0) { [Math]::Round(($cachedTokens / $inputTokens) * 100, 1) } else { 0 }
     $contextPercent = if ($contextWindow -gt 0) {
-        [Math]::Round([Math]::Min(100, ($lastTurnTokens / $contextWindow) * 100), 1)
+        [Math]::Round(
+            [Math]::Min(100.0, ($lastTurnTokens / $contextWindow) * 100),
+            1
+        )
     } else { 0 }
 
     $today = (Get-Date).Date

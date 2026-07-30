@@ -17,6 +17,40 @@
         [Windows.Threading.Dispatcher]::PushFrame($frame)
     }
 
+    function Set-CaptureUsageHistory {
+        param(
+            $Snapshot,
+            [double[]]$Values
+        )
+
+        $hoursAgo = @(168, 120, 72, 48, 24, 12, 4, 0)
+        $now = [DateTimeOffset]::Now
+        $history = New-Object Collections.Generic.List[object]
+        for ($index = 0; $index -lt $hoursAgo.Count; $index++) {
+            $sampleSnapshot = $Snapshot.PSObject.Copy()
+            if ([bool]$sampleSnapshot.HasProgress) {
+                $sampleSnapshot.RemainingPercent = $Values[$index]
+            }
+            if (
+                [string]$sampleSnapshot.ProviderId -eq 'DeepSeek' -and
+                $sampleSnapshot.PSObject.Properties['TotalBalance']
+            ) {
+                $sampleSnapshot.TotalBalance = [Math]::Round(
+                    120 * ($Values[$index] / 100),
+                    2
+                )
+            }
+            foreach ($sample in @(
+                ConvertTo-UsageHistorySamples `
+                    -Snapshot $sampleSnapshot `
+                    -ObservedAt $now.AddHours(-$hoursAgo[$index])
+            )) {
+                $history.Add($sample)
+            }
+        }
+        $script:UsageHistoryCache = $history.ToArray()
+    }
+
     $captureRoot = [IO.Path]::GetFullPath($CaptureDirectory)
     [void][IO.Directory]::CreateDirectory($captureRoot)
     $window.ShowInTaskbar = $false
@@ -26,6 +60,9 @@
     Wait-ForCaptureUi -Milliseconds 80
 
     $previewSnapshot = Get-DeepSeekDemoSnapshot
+    Set-CaptureUsageHistory `
+        -Snapshot $previewSnapshot `
+        -Values @(96, 93, 90, 86, 82, 78, 74, 72)
     Update-UsageView -Snapshot $previewSnapshot
     Set-ExpandedState -Expanded $false -Immediate
 
@@ -72,6 +109,9 @@
     Save-VisualPng -Element $window -Path $compactBalancePath
     $captureFiles['compact-balance'] = $compactBalancePath
 
+    Set-CaptureUsageHistory `
+        -Snapshot $previewSnapshot `
+        -Values @(96, 93, 90, 86, 82, 78, 74, 72)
     Update-UsageView -Snapshot $previewSnapshot
     Set-ExpandedState -Expanded $true -Immediate
     Wait-ForCaptureUi -Milliseconds 60
@@ -110,6 +150,9 @@
         Status = '额度充足'
         Source = 'Codex 本地会话快照'
     }
+    Set-CaptureUsageHistory `
+        -Snapshot $codexPreviewSnapshot `
+        -Values @(91, 88, 85, 82, 78, 74, 71, 68)
     Update-UsageView -Snapshot $codexPreviewSnapshot
     Set-ExpandedState -Expanded $true -Immediate
     Wait-ForCaptureUi -Milliseconds 40
@@ -218,12 +261,47 @@ if ($CheckTransitions) {
     Set-Progress -Percent -20
     $lowerClampedRemaining = $RemainingProgressColumn.Width.Value
     $lowerClampedUsed = $UsedProgressColumn.Width.Value
+    Set-Progress -Percent 72.4
+    $fractionalProgressRemaining = $RemainingProgressColumn.Width.Value
+    $fractionalProgressUsed = $UsedProgressColumn.Width.Value
+    $fractionalBlend = Get-BlendedColor `
+        -From '#000000' `
+        -To '#FFFFFF' `
+        -Amount 0.5
     $script:ActiveProvider = 'Codex'
     Sync-ProviderMenuState
     $codexSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
     $script:ActiveProvider = 'DeepSeek'
     Sync-ProviderMenuState
     $deepSeekSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $diagnosticNow = [DateTimeOffset]::Now
+    $script:UsageHistoryCache = @(
+        foreach ($item in @(
+            @{ Hours = 21; Percent = 91; Balance = 109.2 },
+            @{ Hours = 15; Percent = 86; Balance = 103.2 },
+            @{ Hours = 9; Percent = 80; Balance = 96.0 },
+            @{ Hours = 4; Percent = 76; Balance = 91.2 },
+            @{ Hours = 1; Percent = 73; Balance = 87.6 }
+        )) {
+            foreach ($metric in @(
+                @{ Type = 'Percent'; Value = $item.Percent; Unit = '%' },
+                @{ Type = 'Balance'; Value = $item.Balance; Unit = 'CNY' }
+            )) {
+                [pscustomobject]@{
+                    Version = 2
+                    ProviderId = 'DeepSeek'
+                    ObservedAtUtc = $diagnosticNow.AddHours(-$item.Hours)
+                    LocalDate = $diagnosticNow.AddHours(-$item.Hours).ToString('yyyy-MM-dd')
+                    TimeZoneId = [TimeZoneInfo]::Local.Id
+                    UtcOffsetMinutes = 0
+                    MetricType = $metric.Type
+                    RemainingValue = $metric.Value
+                    Unit = $metric.Unit
+                    ResetAtUtc = ''
+                }
+            }
+        }
+    )
     $deepSeekCheckSnapshot = Get-DeepSeekDemoSnapshot
     Update-UsageView -Snapshot $deepSeekCheckSnapshot
     $deepSeekCompactValue = $RemainingValue.Text
@@ -262,6 +340,11 @@ if ($CheckTransitions) {
         $LastTurnTokens.FontWeight.ToString()
         $CacheHit.FontWeight.ToString()
     )
+    $trend24PointCount = $Trend24Line.Points.Count
+    $trend7PointCount = $Trend7Line.Points.Count
+    $trend24MetaText = $Trend24MetaText.Text
+    $trend7MetaText = $Trend7MetaText.Text
+    $rapidDropStatusText = $RapidDropText.Text
     Set-Progress -Percent 82
     Set-ExpandedState -Expanded $false -Immediate
     $anchorLeft = $window.Left
@@ -506,12 +589,28 @@ if ($CheckTransitions) {
         throw 'Existing-instance activation did not reveal the edge-docked window.'
     }
     Clear-EdgeDock
-    [void](Set-LowRemainingThreshold -Threshold 35)
+    [void](Set-UsageAlertSettings `
+        -LowAlertsEnabled $true `
+        -LowThreshold 35 `
+        -RapidAlertsEnabled $true `
+        -WindowMinutes 45 `
+        -CodexPercent 12.5 `
+        -DeepSeekMode 'Amount' `
+        -DeepSeekPercent 11.5 `
+        -DeepSeekAmount 8.5)
     $lowAlertThresholdMenuText = [string]$script:LowAlertsMenuItem.Header
+    $usageAlertSettingsMenuText =
+        [string]$script:LowAlertThresholdMenuItem.Header
     $lowAlertSettingsSnapshot = Get-AppSettingsSnapshot
     $lowAlertThresholdDialog = New-LowRemainingAlertSettingsDialog
     $lowAlertThresholdDialogReady = (
+        $null -ne $lowAlertThresholdDialog.FindName('LowAlertsEnabledBox') -and
         $null -ne $lowAlertThresholdDialog.FindName('ThresholdBox') -and
+        $null -ne $lowAlertThresholdDialog.FindName('RapidAlertsEnabledBox') -and
+        $null -ne $lowAlertThresholdDialog.FindName('WindowBox') -and
+        $null -ne $lowAlertThresholdDialog.FindName('CodexDropBox') -and
+        $null -ne $lowAlertThresholdDialog.FindName('DeepSeekModeBox') -and
+        $null -ne $lowAlertThresholdDialog.FindName('DeepSeekDropBox') -and
         $null -ne $lowAlertThresholdDialog.FindName('SaveButton') -and
         $null -ne $lowAlertThresholdDialog.FindName('ErrorText')
     )
@@ -531,6 +630,9 @@ if ($CheckTransitions) {
         UpperClampedUsed = $upperClampedUsed
         LowerClampedRemaining = $lowerClampedRemaining
         LowerClampedUsed = $lowerClampedUsed
+        FractionalProgressRemaining = $fractionalProgressRemaining
+        FractionalProgressUsed = $fractionalProgressUsed
+        FractionalBlendRed = $fractionalBlend.R
         CodexSettingsVisibility = $codexSettingsVisibility
         DeepSeekSettingsVisibility = $deepSeekSettingsVisibility
         DeepSeekCompactValue = $deepSeekCompactValue
@@ -607,12 +709,26 @@ if ($CheckTransitions) {
         HiddenSurfaceAlpha = $hiddenSurfaceAlpha
         Trend24Text = $Trend24Text.Text
         Trend7Text = $Trend7Text.Text
+        Trend24PointCount = $trend24PointCount
+        Trend7PointCount = $trend7PointCount
+        Trend24MetaText = $trend24MetaText
+        Trend7MetaText = $trend7MetaText
         PredictionText = $PredictionText.Text
+        RapidDropStatusText = $rapidDropStatusText
         UsageHistoryError = $script:LastUsageHistoryError
         LowAlertMenuChecked = [bool]$script:LowAlertsMenuItem.IsChecked
         LowAlertThresholdMenuText = $lowAlertThresholdMenuText
+        UsageAlertSettingsMenuText = $usageAlertSettingsMenuText
         LowAlertThresholdPersisted = (
             [double]$lowAlertSettingsSnapshot.LowRemainingThreshold -eq 35
+        )
+        RapidDropSettingsPersisted = (
+            [bool]$lowAlertSettingsSnapshot.RapidDropAlertsEnabled -and
+            [int]$lowAlertSettingsSnapshot.RapidDropWindowMinutes -eq 45 -and
+            [double]$lowAlertSettingsSnapshot.CodexRapidDropPercent -eq 12.5 -and
+            [string]$lowAlertSettingsSnapshot.DeepSeekRapidDropMode -eq 'Amount' -and
+            [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropPercent -eq 11.5 -and
+            [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropAmount -eq 8.5
         )
         LowAlertThresholdInvalidFallback = (
             (ConvertTo-LowRemainingThreshold `

@@ -587,7 +587,7 @@ function Get-BlendedColor {
 
     $start = [Windows.Media.ColorConverter]::ConvertFromString($From)
     $end = [Windows.Media.ColorConverter]::ConvertFromString($To)
-    $mix = [Math]::Max(0, [Math]::Min(1, $Amount))
+    $mix = [Math]::Max(0.0, [Math]::Min(1.0, $Amount))
     return [Windows.Media.Color]::FromRgb(
         [byte][Math]::Round($start.R + (($end.R - $start.R) * $mix)),
         [byte][Math]::Round($start.G + (($end.G - $start.G) * $mix)),
@@ -621,7 +621,7 @@ function Get-UsageStatusPalette {
         }
     }
 
-    $remaining = [Math]::Max(0, [Math]::Min(100, $Percent))
+    $remaining = [Math]::Max(0.0, [Math]::Min(100.0, $Percent))
     if ($remaining -le 50) {
         $amount = $remaining / 50
         $from = @{
@@ -764,7 +764,7 @@ function Set-Progress {
     )
 
     $remaining = if ($Available) {
-        [Math]::Max(0, [Math]::Min(100, $Percent))
+        [Math]::Max(0.0, [Math]::Min(100.0, $Percent))
     } else { 0 }
     $used = 100 - $remaining
     $RemainingProgressColumn.Width = New-Object Windows.GridLength(
@@ -805,90 +805,325 @@ function Format-CompactBalance {
     return '{0:0.0}' -f $Amount
 }
 
-function Set-TrendPolyline {
+function Select-TrendDisplaySamples {
     param(
+        [object[]]$Samples,
+        [int]$MaximumPoints = 48
+    )
+
+    $series = @($Samples | Sort-Object ObservedAtUtc)
+    if ($series.Count -le $MaximumPoints) { return $series }
+
+    $displaySamples = New-Object Collections.Generic.List[object]
+    $displaySamples.Add($series[0])
+    $bucketCount = [Math]::Max(1, [int][Math]::Floor(($MaximumPoints - 2) / 2))
+    $interiorCount = $series.Count - 2
+    for ($bucketIndex = 0; $bucketIndex -lt $bucketCount; $bucketIndex++) {
+        $start = 1 + [int][Math]::Floor(
+            $bucketIndex * $interiorCount / $bucketCount
+        )
+        $end = 1 + [int][Math]::Floor(
+            ($bucketIndex + 1) * $interiorCount / $bucketCount
+        ) - 1
+        if ($end -lt $start) { continue }
+        $bucket = @($series[$start..$end])
+        $minimumSample = $bucket |
+            Sort-Object RemainingValue, ObservedAtUtc |
+            Select-Object -First 1
+        $maximumSample = $bucket |
+            Sort-Object RemainingValue -Descending |
+            Select-Object -First 1
+        foreach ($sample in @($minimumSample, $maximumSample) |
+            Sort-Object ObservedAtUtc) {
+            if (
+                -not [object]::ReferenceEquals(
+                    $displaySamples[$displaySamples.Count - 1],
+                    $sample
+                )
+            ) {
+                $displaySamples.Add($sample)
+            }
+        }
+    }
+    $displaySamples.Add($series[-1])
+    return $displaySamples.ToArray()
+}
+
+function Format-UsageTrendValue {
+    param(
+        [double]$Value,
+        $CurrentSample
+    )
+
+    if ($CurrentSample.MetricType -eq 'Percent') {
+        return '{0:0.#}%' -f $Value
+    }
+    return Format-CurrencyAmount -Amount $Value -Currency $CurrentSample.Unit
+}
+
+function Format-UsageTrendChange {
+    param(
+        $Trend,
+        $CurrentSample
+    )
+
+    if (-not $Trend -or $Trend.SampleCount -lt 2) { return '积累中' }
+    $change = [double]$Trend.Change
+    if ([Math]::Abs($change) -lt 0.05) { return '— 持平' }
+    $arrow = if ($change -lt 0) { '↓' } else { '↑' }
+    if ($CurrentSample.MetricType -eq 'Percent') {
+        return '{0} {1:0.#}pp' -f $arrow, [Math]::Abs($change)
+    }
+    return '{0} {1}' -f $arrow, (
+        Format-CurrencyAmount `
+            -Amount ([Math]::Abs($change)) `
+            -Currency $CurrentSample.Unit
+    )
+}
+
+function Set-TrendChart {
+    param(
+        $Canvas,
         $Polyline,
-        [object[]]$Samples
+        $Area,
+        $StartMarker,
+        $EndMarker,
+        [object[]]$Samples,
+        [double]$Hours,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
     $Polyline.Points.Clear()
-    $series = @($Samples | Sort-Object ObservedAtUtc)
-    if ($series.Count -lt 2) { return }
+    $Area.Points.Clear()
+    $StartMarker.Visibility = 'Collapsed'
+    $EndMarker.Visibility = 'Collapsed'
+    $displaySamples = @(
+        Select-TrendDisplaySamples -Samples $Samples -MaximumPoints 48
+    )
+    if ($displaySamples.Count -lt 2) { return }
 
-    $maximumPoints = 36
-    $step = [Math]::Max(1, [int][Math]::Ceiling($series.Count / $maximumPoints))
-    $displaySamples = @()
-    for ($index = 0; $index -lt $series.Count; $index += $step) {
-        $displaySamples += $series[$index]
-    }
-    if ($displaySamples[-1] -ne $series[-1]) {
-        $displaySamples += $series[-1]
-    }
-
-    $values = @($displaySamples | ForEach-Object { [double]$_.RemainingValue })
+    $values = @($displaySamples | ForEach-Object {
+        [double]$_.RemainingValue
+    })
     $minimum = ($values | Measure-Object -Minimum).Minimum
     $maximum = ($values | Measure-Object -Maximum).Maximum
     $range = [double]$maximum - [double]$minimum
-    $width = 110.0
-    $height = 9.0
-    $firstObservedAt = [DateTimeOffset]$displaySamples[0].ObservedAtUtc
-    $lastObservedAt = [DateTimeOffset]$displaySamples[-1].ObservedAtUtc
-    $totalSeconds = ($lastObservedAt - $firstObservedAt).TotalSeconds
-    for ($index = 0; $index -lt $displaySamples.Count; $index++) {
-        $x = if ($totalSeconds -le 0) {
-            0.0
-        } else {
-            (
-                (
-                    ([DateTimeOffset]$displaySamples[$index].ObservedAtUtc) -
-                    $firstObservedAt
-                ).TotalSeconds / $totalSeconds
-            ) * $width
+    $minimumRange = if ($displaySamples[0].MetricType -eq 'Percent') {
+        10.0
+    } else {
+        [Math]::Max(0.01, [double]$maximum * 0.05)
+    }
+    if ($range -lt $minimumRange) {
+        $center = ([double]$minimum + [double]$maximum) / 2
+        $minimum = $center - ($minimumRange / 2)
+        $maximum = $center + ($minimumRange / 2)
+        if ($displaySamples[0].MetricType -eq 'Percent') {
+            if ($minimum -lt 0.0) {
+                $maximum = [Math]::Min(100.0, $maximum - $minimum)
+                $minimum = 0.0
+            }
+            elseif ($maximum -gt 100.0) {
+                $minimum = [Math]::Max(
+                    0.0,
+                    $minimum - ($maximum - 100.0)
+                )
+                $maximum = 100.0
+            }
         }
-        $y = if ($range -lt 0.0001) {
-            $height / 2
-        } else {
-            $height - (
+        $range = [Math]::Max(0.0001, [double]$maximum - [double]$minimum)
+    }
+    else {
+        $padding = $range * 0.12
+        $minimum -= $padding
+        $maximum += $padding
+        $range = [double]$maximum - [double]$minimum
+    }
+
+    $width = if ($Canvas.ActualWidth -gt 10) {
+        [double]$Canvas.ActualWidth
+    } else {
+        [double]$Canvas.Width
+    }
+    $height = if ($Canvas.ActualHeight -gt 10) {
+        [double]$Canvas.ActualHeight
+    } else {
+        [double]$Canvas.Height
+    }
+    $plotHeight = [Math]::Max(1.0, $height - 5.0)
+    $cutoff = $Now.ToUniversalTime().AddHours(-$Hours)
+    $totalSeconds = [Math]::Max(1, $Hours * 3600)
+    $points = New-Object Collections.Generic.List[Windows.Point]
+    for ($index = 0; $index -lt $displaySamples.Count; $index++) {
+        $elapsedSeconds = (
+            ([DateTimeOffset]$displaySamples[$index].ObservedAtUtc) - $cutoff
+        ).TotalSeconds
+        $x = [Math]::Max(
+            0.0,
+            [Math]::Min($width, ($elapsedSeconds / $totalSeconds) * $width)
+        )
+        $y = 2 + (
+            $plotHeight - (
                 (
                     [double]$displaySamples[$index].RemainingValue -
                     [double]$minimum
-                ) / $range * $height
+                ) / $range * $plotHeight
             )
-        }
-        $Polyline.Points.Add((New-Object Windows.Point($x, $y)))
+        )
+        $point = New-Object Windows.Point($x, $y)
+        $points.Add($point)
+        $Polyline.Points.Add($point)
     }
+
+    $Area.Points.Add((New-Object Windows.Point($points[0].X, $height)))
+    foreach ($point in $points) { $Area.Points.Add($point) }
+    $Area.Points.Add((New-Object Windows.Point($points[-1].X, $height)))
+
+    $StartMarker.Visibility = 'Visible'
+    $EndMarker.Visibility = 'Visible'
+    [Windows.Controls.Canvas]::SetLeft(
+        $StartMarker,
+        $points[0].X - ($StartMarker.Width / 2)
+    )
+    [Windows.Controls.Canvas]::SetTop(
+        $StartMarker,
+        $points[0].Y - ($StartMarker.Height / 2)
+    )
+    [Windows.Controls.Canvas]::SetLeft(
+        $EndMarker,
+        $points[-1].X - ($EndMarker.Width / 2)
+    )
+    [Windows.Controls.Canvas]::SetTop(
+        $EndMarker,
+        $points[-1].Y - ($EndMarker.Height / 2)
+    )
 }
 
 function Update-UsageInsightView {
     param($Insights)
 
     if (-not $Insights -or -not $Insights.CurrentSample) {
-        $Trend24Text.Text = '24H · 暂无数据'
-        $Trend7Text.Text = '7D · 暂无数据'
+        $Trend24Text.Text = '暂无数据'
+        $Trend7Text.Text = '暂无数据'
+        $Trend24MetaText.Text = '等待更多样本'
+        $Trend7MetaText.Text = '等待更多样本'
         $PredictionText.Text = '积累 30 分钟后预测'
         $Trend24Line.Points.Clear()
         $Trend7Line.Points.Clear()
+        $Trend24Area.Points.Clear()
+        $Trend7Area.Points.Clear()
+        $Trend24StartMarker.Visibility = 'Collapsed'
+        $Trend24EndMarker.Visibility = 'Collapsed'
+        $Trend7StartMarker.Visibility = 'Collapsed'
+        $Trend7EndMarker.Visibility = 'Collapsed'
+        $RapidDropText.Text = '快速下降监控 · 正在积累样本'
         return
     }
 
-    $Trend24Text.Text = '24H · ' + $Insights.Trend24Hours.Summary
-    $Trend7Text.Text = '7D · ' + $Insights.Trend7Days.Summary
+    $Trend24Text.Text = Format-UsageTrendChange `
+        -Trend $Insights.Trend24Hours `
+        -CurrentSample $Insights.CurrentSample
+    $Trend7Text.Text = Format-UsageTrendChange `
+        -Trend $Insights.Trend7Days `
+        -CurrentSample $Insights.CurrentSample
+    $Trend24MetaText.Text = if ($Insights.Trend24Hours.SampleCount -ge 2) {
+        '{0} 个样本 · {1} → {2}' -f
+            $Insights.Trend24Hours.SampleCount,
+            (Format-UsageTrendValue `
+                -Value $Insights.Trend24Hours.StartValue `
+                -CurrentSample $Insights.CurrentSample),
+            (Format-UsageTrendValue `
+                -Value $Insights.Trend24Hours.EndValue `
+                -CurrentSample $Insights.CurrentSample)
+    } else {
+        '等待更多样本'
+    }
+    $Trend7MetaText.Text = if ($Insights.Trend7Days.SampleCount -ge 2) {
+        '{0} 个样本 · {1} → {2}' -f
+            $Insights.Trend7Days.SampleCount,
+            (Format-UsageTrendValue `
+                -Value $Insights.Trend7Days.StartValue `
+                -CurrentSample $Insights.CurrentSample),
+            (Format-UsageTrendValue `
+                -Value $Insights.Trend7Days.EndValue `
+                -CurrentSample $Insights.CurrentSample)
+    } else {
+        '等待更多样本'
+    }
     $PredictionText.Text = $Insights.Forecast.Text
     $PredictionText.ToolTip = (
         '当前消耗速度 {0:0.###} {1}/小时' -f
         [Math]::Abs([double]$Insights.Forecast.RatePerHour),
         $Insights.CurrentSample.Unit
     )
-    Set-TrendPolyline `
+    Set-TrendChart `
+        -Canvas $Trend24Canvas `
         -Polyline $Trend24Line `
-        -Samples $Insights.Trend24Hours.Samples
-    Set-TrendPolyline `
+        -Area $Trend24Area `
+        -StartMarker $Trend24StartMarker `
+        -EndMarker $Trend24EndMarker `
+        -Samples $Insights.Trend24Hours.Samples `
+        -Hours 24
+    Set-TrendChart `
+        -Canvas $Trend7Canvas `
         -Polyline $Trend7Line `
-        -Samples $Insights.Trend7Days.Samples
+        -Area $Trend7Area `
+        -StartMarker $Trend7StartMarker `
+        -EndMarker $Trend7EndMarker `
+        -Samples $Insights.Trend7Days.Samples `
+        -Hours (24 * 7)
+
+    $rapidDrop = $Insights.RapidDrop
+    if (-not $script:RapidDropAlertsEnabled) {
+        $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#9AA09B')
+        )
+        $RapidDropText.Text = '快速下降监控 · 已关闭'
+        $RapidDropText.Foreground = $window.FindResource('TextMuted')
+        $RapidDropText.FontWeight = 'Normal'
+    }
+    elseif (-not $rapidDrop -or -not $rapidDrop.Available) {
+        $RapidDropStatusDot.Fill = $window.FindResource('Sage')
+        $RapidDropText.Text = '快速下降监控 · ' + $(if ($rapidDrop) {
+            $rapidDrop.Summary
+        } else {
+            '正在积累样本'
+        })
+        $RapidDropText.Foreground = $window.FindResource('TextSecondary')
+        $RapidDropText.FontWeight = 'Normal'
+    }
+    elseif ($rapidDrop.IsRapid) {
+        $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#B75B52')
+        )
+        $RapidDropText.Text = '检测到快速下降 · ' + $rapidDrop.Summary
+        $RapidDropText.Foreground = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#984B44')
+        )
+        $RapidDropText.FontWeight = 'SemiBold'
+    }
+    else {
+        $RapidDropStatusDot.Fill = $window.FindResource('Sage')
+        $thresholdText = if ($rapidDrop.MetricType -eq 'Percent') {
+            '{0:0.#}pp' -f $rapidDrop.Threshold
+        } else {
+            Format-CurrencyAmount `
+                -Amount $rapidDrop.Threshold `
+                -Currency $rapidDrop.Unit
+        }
+        $RapidDropText.Text = '{0} · 阈值 {1}' -f
+            $rapidDrop.Summary,
+            $thresholdText
+        $RapidDropText.Foreground = $window.FindResource('TextSecondary')
+        $RapidDropText.FontWeight = 'Normal'
+    }
 }
 
 function Get-LowRemainingAlertMenuText {
     return '低余量提醒（≤{0:0}%）' -f $script:LowRemainingThreshold
+}
+
+function Get-UsageAlertSettingsMenuText {
+    return '提醒设置（快降 {0} 分钟）…' -f $script:RapidDropWindowMinutes
 }
 
 function Sync-LowAlertMenuState {
@@ -900,6 +1135,13 @@ function Sync-LowAlertMenuState {
     if ($script:TrayLowAlertsItem) {
         $script:TrayLowAlertsItem.Checked = $script:LowRemainingAlertsEnabled
         $script:TrayLowAlertsItem.Text = $menuText
+    }
+    $settingsMenuText = Get-UsageAlertSettingsMenuText
+    if ($script:LowAlertThresholdMenuItem) {
+        $script:LowAlertThresholdMenuItem.Header = $settingsMenuText
+    }
+    if ($script:TrayLowAlertThresholdItem) {
+        $script:TrayLowAlertThresholdItem.Text = $settingsMenuText
     }
 }
 
@@ -914,26 +1156,89 @@ function Set-LowRemainingAlertsEnabled {
     Save-Settings
 }
 
-function Set-LowRemainingThreshold {
-    param($Threshold)
+function Set-UsageAlertSettings {
+    param(
+        [bool]$LowAlertsEnabled,
+        $LowThreshold,
+        [bool]$RapidAlertsEnabled,
+        $WindowMinutes,
+        $CodexPercent,
+        [ValidateSet('Percent', 'Amount')]
+        [string]$DeepSeekMode,
+        $DeepSeekPercent,
+        $DeepSeekAmount
+    )
 
-    $validatedThreshold = ConvertTo-LowRemainingThreshold `
-        -Value $Threshold `
+    $validatedLowThreshold = ConvertTo-LowRemainingThreshold `
+        -Value $LowThreshold `
         -Strict
-    $script:LowRemainingThreshold = $validatedThreshold
-    $script:LowAlertActive = @{}
+    $validatedWindow = ConvertTo-RapidDropWindowMinutes `
+        -Value $WindowMinutes `
+        -Strict
+    $validatedCodexPercent = ConvertTo-RapidDropPercent `
+        -Value $CodexPercent `
+        -Strict
+    $validatedDeepSeekPercent = ConvertTo-RapidDropPercent `
+        -Value $DeepSeekPercent `
+        -Strict
+    $validatedDeepSeekAmount = ConvertTo-RapidDropAmount `
+        -Value $DeepSeekAmount `
+        -Strict
+
+    $previousSettings = [pscustomobject]@{
+        LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
+        LowRemainingThreshold = $script:LowRemainingThreshold
+        RapidDropAlertsEnabled = $script:RapidDropAlertsEnabled
+        RapidDropWindowMinutes = $script:RapidDropWindowMinutes
+        CodexRapidDropPercent = $script:CodexRapidDropPercent
+        DeepSeekRapidDropMode = $script:DeepSeekRapidDropMode
+        DeepSeekRapidDropPercent = $script:DeepSeekRapidDropPercent
+        DeepSeekRapidDropAmount = $script:DeepSeekRapidDropAmount
+    }
+    $script:LowRemainingAlertsEnabled = $LowAlertsEnabled
+    $script:LowRemainingThreshold = $validatedLowThreshold
+    $script:RapidDropAlertsEnabled = $RapidAlertsEnabled
+    $script:RapidDropWindowMinutes = $validatedWindow
+    $script:CodexRapidDropPercent = $validatedCodexPercent
+    $script:DeepSeekRapidDropMode = $DeepSeekMode
+    $script:DeepSeekRapidDropPercent = $validatedDeepSeekPercent
+    $script:DeepSeekRapidDropAmount = $validatedDeepSeekAmount
     Sync-LowAlertMenuState
-    Save-Settings
-    return $validatedThreshold
+    try {
+        Save-Settings -ThrowOnError
+    }
+    catch {
+        $script:LowRemainingAlertsEnabled =
+            $previousSettings.LowRemainingAlertsEnabled
+        $script:LowRemainingThreshold =
+            $previousSettings.LowRemainingThreshold
+        $script:RapidDropAlertsEnabled =
+            $previousSettings.RapidDropAlertsEnabled
+        $script:RapidDropWindowMinutes =
+            $previousSettings.RapidDropWindowMinutes
+        $script:CodexRapidDropPercent =
+            $previousSettings.CodexRapidDropPercent
+        $script:DeepSeekRapidDropMode =
+            $previousSettings.DeepSeekRapidDropMode
+        $script:DeepSeekRapidDropPercent =
+            $previousSettings.DeepSeekRapidDropPercent
+        $script:DeepSeekRapidDropAmount =
+            $previousSettings.DeepSeekRapidDropAmount
+        Sync-LowAlertMenuState
+        throw
+    }
+    $script:LowAlertActive = @{}
+    $script:RapidDropAlertActive = @{}
+    return Get-AppSettingsSnapshot
 }
 
 function New-LowRemainingAlertSettingsDialog {
     [xml]$dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="低余量提醒阈值"
-        Width="390"
-        Height="245"
+        Title="使用提醒设置"
+        Width="480"
+        Height="540"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
@@ -942,31 +1247,145 @@ function New-LowRemainingAlertSettingsDialog {
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="18"/>
+            <RowDefinition Height="20"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="38"/>
         </Grid.RowDefinitions>
-        <TextBlock Grid.Row="0" Text="余量降至多少时提醒"
-                   FontSize="18" FontWeight="SemiBold" Foreground="#343A35"/>
-        <Grid Grid.Row="2">
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="使用提醒"
+                       FontSize="19" FontWeight="SemiBold" Foreground="#343A35"/>
+            <TextBlock Margin="0,5,0,0"
+                       Text="低余量和短时间快速下降分别判断，触发后通过 Windows 通知提醒。"
+                       FontSize="10.5" Foreground="#667069"/>
+        </StackPanel>
+
+        <CheckBox x:Name="LowAlertsEnabledBox"
+                  Grid.Row="2"
+                  Content="启用低余量提醒"
+                  FontSize="12"
+                  FontWeight="SemiBold"
+                  Foreground="#3B433E"/>
+        <Grid Grid.Row="4">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="34"/>
+                <ColumnDefinition Width="45"/>
             </Grid.ColumnDefinitions>
-            <TextBox x:Name="ThresholdBox" Grid.Column="0" Height="34"
-                     Padding="9,6" BorderBrush="#D8DDD7" Background="White"
-                     AutomationProperties.Name="低余量提醒阈值"/>
-            <TextBlock Grid.Column="1" Text="%" Margin="10,7,0,0"
-                       FontSize="13" Foreground="#4E5750"/>
+            <TextBlock Text="余量低于"
+                       VerticalAlignment="Center"
+                       FontSize="11"
+                       Foreground="#59635C"/>
+            <TextBox x:Name="ThresholdBox" Grid.Column="1" Height="34"
+                      Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                      AutomationProperties.Name="低余量提醒阈值"/>
+            <TextBlock Grid.Column="2" Text="%" Margin="10,7,0,0"
+                       FontSize="12" Foreground="#4E5750"/>
         </Grid>
-        <TextBlock Grid.Row="3" Margin="0,7,0,0" FontSize="10"
-                   Foreground="#7B847D" TextWrapping="Wrap"
-                   Text="可设置 1–99 的整数；Codex 与 DeepSeek 共用此阈值。"/>
-        <TextBlock x:Name="ErrorText" Grid.Row="4" Margin="0,8,0,0"
-                   Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
-        <Grid Grid.Row="5">
+
+        <Border Grid.Row="5"
+                Height="1"
+                VerticalAlignment="Center"
+                Background="#E2E5E0"/>
+
+        <CheckBox x:Name="RapidAlertsEnabledBox"
+                  Grid.Row="6"
+                  Content="启用快速下降提醒"
+                  FontSize="12"
+                  FontWeight="SemiBold"
+                  Foreground="#3B433E"/>
+
+        <Grid Grid.Row="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="45"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="判断时间范围"
+                       VerticalAlignment="Center"
+                       FontSize="11"
+                       Foreground="#59635C"/>
+            <TextBox x:Name="WindowBox" Grid.Column="1" Height="34"
+                     Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                     AutomationProperties.Name="快速下降时间范围"/>
+            <TextBlock Grid.Column="2" Text="分钟" Margin="10,7,0,0"
+                       FontSize="11" Foreground="#4E5750"/>
+        </Grid>
+
+        <Grid Grid.Row="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="45"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Codex 下降"
+                       VerticalAlignment="Center"
+                       FontSize="11"
+                       Foreground="#59635C"/>
+            <TextBox x:Name="CodexDropBox" Grid.Column="1" Height="34"
+                     Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                     AutomationProperties.Name="Codex 快速下降阈值"/>
+            <TextBlock Grid.Column="2" Text="百分点" Margin="10,7,0,0"
+                       FontSize="10" Foreground="#4E5750"/>
+        </Grid>
+
+        <Grid Grid.Row="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="112"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="45"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="DeepSeek 下降"
+                       VerticalAlignment="Center"
+                       FontSize="11"
+                       Foreground="#59635C"/>
+            <ComboBox x:Name="DeepSeekModeBox"
+                      Grid.Column="1"
+                      Height="34"
+                      Padding="7,5"
+                      BorderBrush="#D8DDD7"
+                      Background="White"
+                      AutomationProperties.Name="DeepSeek 快速下降类型">
+                <ComboBoxItem Content="百分比" Tag="Percent"/>
+                <ComboBoxItem Content="具体金额" Tag="Amount"/>
+            </ComboBox>
+            <TextBox x:Name="DeepSeekDropBox"
+                     Grid.Column="2"
+                     Height="34"
+                     Margin="8,0,0,0"
+                     Padding="9,6"
+                     BorderBrush="#D8DDD7"
+                     Background="White"
+                     AutomationProperties.Name="DeepSeek 快速下降阈值"/>
+            <TextBlock x:Name="DeepSeekUnitText"
+                       Grid.Column="3"
+                       Text="百分点"
+                       Margin="10,7,0,0"
+                       FontSize="10"
+                       Foreground="#4E5750"/>
+        </Grid>
+
+        <StackPanel Grid.Row="13" Margin="0,10,0,0">
+            <TextBlock FontSize="9.5"
+                       Foreground="#7B847D"
+                       TextWrapping="Wrap"
+                       Text="时间范围可设置 5–1440 分钟。DeepSeek 百分比模式需要先设置预算基准；金额模式直接比较账户余额。"/>
+            <TextBlock x:Name="ErrorText" Margin="0,8,0,0"
+                    Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Grid Grid.Row="14">
             <Button Width="82" Height="34" HorizontalAlignment="Right"
                     Margin="0,0,92,0" Content="取消" IsCancel="True"/>
             <Button x:Name="SaveButton" Width="82" Height="34"
@@ -985,25 +1404,94 @@ function New-LowRemainingAlertSettingsDialog {
 function Show-LowRemainingAlertSettings {
     $dialog = New-LowRemainingAlertSettingsDialog
     $dialog.Owner = $window
+    $lowEnabledBox = $dialog.FindName('LowAlertsEnabledBox')
     $thresholdBox = $dialog.FindName('ThresholdBox')
+    $rapidEnabledBox = $dialog.FindName('RapidAlertsEnabledBox')
+    $windowBox = $dialog.FindName('WindowBox')
+    $codexDropBox = $dialog.FindName('CodexDropBox')
+    $deepSeekModeBox = $dialog.FindName('DeepSeekModeBox')
+    $deepSeekDropBox = $dialog.FindName('DeepSeekDropBox')
+    $deepSeekUnitText = $dialog.FindName('DeepSeekUnitText')
     $errorText = $dialog.FindName('ErrorText')
     $saveButton = $dialog.FindName('SaveButton')
+    $lowEnabledBox.IsChecked = $script:LowRemainingAlertsEnabled
     $thresholdBox.Text = $script:LowRemainingThreshold.ToString(
         '0',
         [Globalization.CultureInfo]::CurrentCulture
     )
-    $thresholdBox.SelectAll()
+    $rapidEnabledBox.IsChecked = $script:RapidDropAlertsEnabled
+    $windowBox.Text = [string]$script:RapidDropWindowMinutes
+    $codexDropBox.Text = $script:CodexRapidDropPercent.ToString(
+        '0.#',
+        [Globalization.CultureInfo]::CurrentCulture
+    )
+    $deepSeekModeBox.SelectedIndex = if (
+        $script:DeepSeekRapidDropMode -eq 'Amount'
+    ) { 1 } else { 0 }
+    $deepSeekDropBox.Text = if ($script:DeepSeekRapidDropMode -eq 'Amount') {
+        $script:DeepSeekRapidDropAmount.ToString(
+            '0.##',
+            [Globalization.CultureInfo]::CurrentCulture
+        )
+    } else {
+        $script:DeepSeekRapidDropPercent.ToString(
+            '0.#',
+            [Globalization.CultureInfo]::CurrentCulture
+        )
+    }
+    $deepSeekUnitText.Text = if ($script:DeepSeekRapidDropMode -eq 'Amount') {
+        '金额'
+    } else {
+        '百分点'
+    }
+
+    $deepSeekModeBox.Add_SelectionChanged((
+        New-RmfEventHandler -Kind SelectionChanged -Callback {
+            $mode = [string]$deepSeekModeBox.SelectedItem.Tag
+            if ($mode -eq 'Amount') {
+                $deepSeekDropBox.Text = $script:DeepSeekRapidDropAmount.ToString(
+                    '0.##',
+                    [Globalization.CultureInfo]::CurrentCulture
+                )
+                $deepSeekUnitText.Text = '金额'
+            }
+            else {
+                $deepSeekDropBox.Text = $script:DeepSeekRapidDropPercent.ToString(
+                    '0.#',
+                    [Globalization.CultureInfo]::CurrentCulture
+                )
+                $deepSeekUnitText.Text = '百分点'
+            }
+        }
+    ))
 
     $saveButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
         $errorText.Text = ''
         try {
-            [void](Set-LowRemainingThreshold -Threshold $thresholdBox.Text)
+            $deepSeekMode = [string]$deepSeekModeBox.SelectedItem.Tag
+            $deepSeekPercent = if ($deepSeekMode -eq 'Percent') {
+                $deepSeekDropBox.Text
+            } else {
+                $script:DeepSeekRapidDropPercent
+            }
+            $deepSeekAmount = if ($deepSeekMode -eq 'Amount') {
+                $deepSeekDropBox.Text
+            } else {
+                $script:DeepSeekRapidDropAmount
+            }
+            [void](Set-UsageAlertSettings `
+                -LowAlertsEnabled ([bool]$lowEnabledBox.IsChecked) `
+                -LowThreshold $thresholdBox.Text `
+                -RapidAlertsEnabled ([bool]$rapidEnabledBox.IsChecked) `
+                -WindowMinutes $windowBox.Text `
+                -CodexPercent $codexDropBox.Text `
+                -DeepSeekMode $deepSeekMode `
+                -DeepSeekPercent $deepSeekPercent `
+                -DeepSeekAmount $deepSeekAmount)
             $dialog.DialogResult = $true
         }
         catch {
             $errorText.Text = $_.Exception.Message
-            $thresholdBox.Focus() | Out-Null
-            $thresholdBox.SelectAll()
         }
     }))
 
@@ -1024,29 +1512,31 @@ function Invoke-LowRemainingAlert {
         -not $Snapshot.Available -or
         -not $Snapshot.HasProgress
     ) {
-        return
+        return $false
     }
 
     $providerId = [string]$Snapshot.ProviderId
     $remaining = [double]$Snapshot.RemainingPercent
     if ($remaining -gt $script:LowRemainingThreshold) {
         $script:LowAlertActive[$providerId] = $false
-        return
+        return $false
     }
 
     if (
         $script:LowAlertActive.ContainsKey($providerId) -and
         [bool]$script:LowAlertActive[$providerId]
     ) {
-        return
+        return $false
     }
 
     $shouldNotify = Test-LowRemainingAlertCondition `
         -Snapshot $Snapshot `
         -PreviousSample $(if ($Insights) { $Insights.PreviousSample } else { $null }) `
         -Threshold $script:LowRemainingThreshold
-    $script:LowAlertActive[$providerId] = $true
-    if (-not $shouldNotify) { return }
+    if (-not $shouldNotify) {
+        $script:LowAlertActive[$providerId] = $true
+        return $false
+    }
 
     $title = if ($providerId -eq 'DeepSeek') {
         'DeepSeek 预算余量偏低'
@@ -1061,9 +1551,73 @@ function Invoke-LowRemainingAlert {
             $message,
             [System.Windows.Forms.ToolTipIcon]::Warning
         )
+        $script:LowAlertActive[$providerId] = $true
+        return $true
     }
     catch {
         # Notifications are best-effort and may be disabled by Windows.
+        $script:LowAlertActive[$providerId] = $false
+        return $false
+    }
+}
+
+function Invoke-RapidDropAlert {
+    param(
+        $Snapshot,
+        $Insights
+    )
+
+    if (
+        $isDiagnosticRun -or
+        $Demo -or
+        -not $script:RapidDropAlertsEnabled -or
+        -not $script:TrayNotifyIcon -or
+        -not $Snapshot.Available -or
+        -not $Insights -or
+        -not $Insights.RapidDrop
+    ) {
+        return $false
+    }
+
+    $rapidDrop = $Insights.RapidDrop
+    $alertKey = '{0}|{1}|{2}' -f
+        $rapidDrop.ProviderId,
+        $rapidDrop.MetricType,
+        $rapidDrop.Unit
+    if (-not $rapidDrop.Available -or -not $rapidDrop.IsRapid) {
+        $script:RapidDropAlertActive[$alertKey] = $false
+        return $false
+    }
+    if (
+        $script:RapidDropAlertActive.ContainsKey($alertKey) -and
+        [bool]$script:RapidDropAlertActive[$alertKey]
+    ) {
+        return $false
+    }
+    $title = '{0} 余量快速下降' -f $rapidDrop.ProviderId
+    $currentText = if ($rapidDrop.MetricType -eq 'Percent') {
+        '当前剩余 {0:0.#}%' -f $rapidDrop.CurrentValue
+    } else {
+        '当前余额 {0}' -f (
+            Format-CurrencyAmount `
+                -Amount $rapidDrop.CurrentValue `
+                -Currency $rapidDrop.Unit
+        )
+    }
+    $message = '{0} · {1}' -f $rapidDrop.Summary, $currentText
+    try {
+        $script:TrayNotifyIcon.ShowBalloonTip(
+            8000,
+            $title,
+            $message,
+            [System.Windows.Forms.ToolTipIcon]::Warning
+        )
+        $script:RapidDropAlertActive[$alertKey] = $true
+        return $true
+    }
+    catch {
+        $script:RapidDropAlertActive[$alertKey] = $false
+        return $false
     }
 }
 
@@ -1195,9 +1749,22 @@ function Update-UsageView {
     }
 
     try {
-        $insights = Update-UsageHistory -Snapshot $Snapshot
+        $insights = Update-UsageHistory `
+            -Snapshot $Snapshot `
+            -RapidDropWindowMinutes $script:RapidDropWindowMinutes `
+            -CodexRapidDropPercent $script:CodexRapidDropPercent `
+            -DeepSeekRapidDropMode $script:DeepSeekRapidDropMode `
+            -DeepSeekRapidDropPercent $script:DeepSeekRapidDropPercent `
+            -DeepSeekRapidDropAmount $script:DeepSeekRapidDropAmount
         Update-UsageInsightView -Insights $insights
-        Invoke-LowRemainingAlert -Snapshot $Snapshot -Insights $insights
+        $lowAlertShown = Invoke-LowRemainingAlert `
+            -Snapshot $Snapshot `
+            -Insights $insights
+        if (-not $lowAlertShown) {
+            [void](Invoke-RapidDropAlert `
+                -Snapshot $Snapshot `
+                -Insights $insights)
+        }
     }
     catch {
         $script:LastUsageHistoryError = $_.Exception.Message
@@ -1209,7 +1776,21 @@ function Update-UsageView {
         }
         $Trend24Text.Text = '24 小时：暂不可用'
         $Trend7Text.Text = '7 天：暂不可用'
+        $Trend24MetaText.Text = '历史记录读取失败'
+        $Trend7MetaText.Text = '历史记录读取失败'
+        $Trend24Line.Points.Clear()
+        $Trend24Area.Points.Clear()
+        $Trend7Line.Points.Clear()
+        $Trend7Area.Points.Clear()
+        $Trend24StartMarker.Visibility = 'Collapsed'
+        $Trend24EndMarker.Visibility = 'Collapsed'
+        $Trend7StartMarker.Visibility = 'Collapsed'
+        $Trend7EndMarker.Visibility = 'Collapsed'
         $PredictionText.Text = '趋势暂不可用'
+        $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#9A765E')
+        )
+        $RapidDropText.Text = '快速下降监控 · 历史记录暂不可用'
     }
     Reset-RefreshCountdown
 }

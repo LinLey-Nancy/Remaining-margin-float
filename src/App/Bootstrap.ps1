@@ -179,15 +179,15 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:AppVersion = '1.6.0'
+$script:AppVersion = '1.7.0'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
 $script:EdgeSnapDistance = 20.0
 $script:EdgeRevealDurationMs = 190
 $script:EdgeHideDurationMs = 150
-$script:ExpandedWidth = 370.0
-$script:ExpandedHeight = 500.0
+$script:ExpandedWidth = 400.0
+$script:ExpandedHeight = 560.0
 $script:RefreshIntervalSeconds = 60
 $script:SessionCache = @{}
 $script:SessionMetadataCache = @{}
@@ -216,6 +216,13 @@ $script:LastUsageHistoryError = ''
 $script:LowRemainingThreshold = 20.0
 $script:LowRemainingAlertsEnabled = $true
 $script:LowAlertActive = @{}
+$script:RapidDropAlertsEnabled = $true
+$script:RapidDropWindowMinutes = 30
+$script:CodexRapidDropPercent = 10.0
+$script:DeepSeekRapidDropMode = 'Percent'
+$script:DeepSeekRapidDropPercent = 10.0
+$script:DeepSeekRapidDropAmount = 10.0
+$script:RapidDropAlertActive = @{}
 $script:CodexSourceMenuItem = $null
 $script:DeepSeekSourceMenuItem = $null
 $script:TrayCodexSourceItem = $null

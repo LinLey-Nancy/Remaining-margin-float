@@ -93,7 +93,7 @@ function Get-DeepSeekConfiguration {
                 $result.KeyHint = [string]$saved.KeyHint
             }
             if ($saved.PSObject.Properties['Budget']) {
-                $result.Budget = [Math]::Max(0, [double]$saved.Budget)
+                $result.Budget = [Math]::Max(0.0, [double]$saved.Budget)
             }
         }
     }
@@ -131,6 +131,6 @@ function Save-DeepSeekConfiguration {
     [ordered]@{
         EncryptedApiKey = $encryptedApiKey
         KeyHint = $keyHint
-        Budget = [Math]::Max(0, $Budget)
+        Budget = [Math]::Max(0.0, $Budget)
     } | ConvertTo-Json | Set-Content -LiteralPath (Get-DeepSeekConfigPath) -Encoding UTF8
 }

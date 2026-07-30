@@ -252,7 +252,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.6.0')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.7.0')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient

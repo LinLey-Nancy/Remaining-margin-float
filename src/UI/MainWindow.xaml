@@ -5,9 +5,9 @@
     Width="80"
     Height="80"
     MinWidth="80"
-    MaxWidth="370"
+    MaxWidth="400"
     MinHeight="80"
-    MaxHeight="500"
+    MaxHeight="560"
     WindowStyle="None"
     ResizeMode="NoResize"
     AllowsTransparency="True"
@@ -83,9 +83,9 @@
         </Style>
 
         <Style x:Key="MetricTitleText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
-            <Setter Property="FontSize" Value="9.5"/>
+            <Setter Property="FontSize" Value="10"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
 
@@ -93,13 +93,26 @@
             <Setter Property="Margin" Value="0,4,0,0"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="FontFamily" Value="Segoe UI Variable Display"/>
-            <Setter Property="FontSize" Value="21"/>
+            <Setter Property="FontSize" Value="22"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
         </Style>
 
         <Style x:Key="MetricHintText" TargetType="TextBlock">
             <Setter Property="Margin" Value="0,2,0,0"/>
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="9.5"/>
+        </Style>
+
+        <Style x:Key="SectionTitleText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="ChartMetaText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
             <Setter Property="FontSize" Value="9"/>
@@ -249,16 +262,16 @@
 
                 <Grid x:Name="DetailsPanel"
                       Grid.Row="2"
-                      Margin="18,15,18,15"
+                      Margin="20,16,20,16"
                       Visibility="Collapsed"
                       Opacity="0">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="52"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="154"/>
-                        <RowDefinition Height="68"/>
+                        <RowDefinition Height="54"/>
+                        <RowDefinition Height="8"/>
+                        <RowDefinition Height="142"/>
+                        <RowDefinition Height="58"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="36"/>
+                        <RowDefinition Height="52"/>
                     </Grid.RowDefinitions>
 
                     <Grid Grid.Row="0">
@@ -311,19 +324,20 @@
                         </Button>
                     </Grid>
 
-                    <Grid Grid.Row="2">
-                        <Grid.RowDefinitions>
+                    <Border Grid.Row="2"
+                            Background="{DynamicResource SageSoft}"
+                            CornerRadius="12"
+                            Padding="14,9">
+                        <Grid>
+                            <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
-                            <RowDefinition Height="8"/>
+                            <RowDefinition Height="1"/>
                             <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
+                            </Grid.RowDefinitions>
 
-                        <Border Grid.Row="0"
-                                Background="{DynamicResource SageSoft}"
-                                BorderBrush="{DynamicResource StatusBorder}"
-                                BorderThickness="1"
-                                CornerRadius="11"
-                                Padding="13,8">
+                            <Border Grid.Row="0"
+                                    Background="Transparent"
+                                    BorderThickness="0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -352,14 +366,16 @@
                                                TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
                             </Grid>
-                        </Border>
+                            </Border>
 
-                        <Border Grid.Row="2"
-                                Background="{DynamicResource SageSoft}"
-                                BorderBrush="{DynamicResource StatusBorder}"
-                                BorderThickness="1"
-                                CornerRadius="11"
-                                Padding="13,8">
+                            <Border Grid.Row="1"
+                                    Height="1"
+                                    Margin="0"
+                                    Background="#DDE3DC"/>
+
+                            <Border Grid.Row="2"
+                                    Background="Transparent"
+                                    BorderThickness="0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -387,16 +403,17 @@
                                                ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                                 </StackPanel>
                             </Grid>
-                        </Border>
-                    </Grid>
+                            </Border>
+                        </Grid>
+                    </Border>
 
                     <Border Grid.Row="3"
                             Margin="0,8,0,0"
-                            Background="{StaticResource SurfaceSubtle}"
-                            BorderBrush="#E5E7E2"
-                            BorderThickness="1"
-                            CornerRadius="10"
-                            Padding="12,8">
+                            Background="Transparent"
+                            BorderBrush="{StaticResource Divider}"
+                            BorderThickness="0,1,0,0"
+                            CornerRadius="0"
+                            Padding="4,9,4,0">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -429,102 +446,212 @@
                         </Grid>
                     </Border>
 
-                    <Grid Grid.Row="4" Margin="1,4,1,0" VerticalAlignment="Top">
+                    <Grid Grid.Row="4" Margin="0,10,0,8">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="11"/>
-                            <RowDefinition Height="1"/>
-                            <RowDefinition Height="12"/>
-                            <RowDefinition Height="1"/>
-                            <RowDefinition Height="12"/>
-                            <RowDefinition Height="1"/>
-                            <RowDefinition Height="12"/>
+                            <RowDefinition Height="20"/>
+                            <RowDefinition Height="7"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="7"/>
+                            <RowDefinition Height="30"/>
                         </Grid.RowDefinitions>
 
                         <Grid Grid.Row="0">
+                            <TextBlock Text="使用趋势"
+                                       Style="{StaticResource SectionTitleText}"/>
+                            <TextBlock x:Name="PredictionText"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Center"
+                                       MaxWidth="250"
+                                       Text="积累 30 分钟后预测"
+                                       Foreground="{DynamicResource StatusStrong}"
+                                       FontFamily="Microsoft YaHei UI"
+                                       FontSize="9.5"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </Grid>
+
+                        <Grid Grid.Row="2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0"
+                                    Background="#F3F5F1"
+                                    CornerRadius="9"
+                                    Padding="10,7">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="17"/>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="13"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid>
+                                        <TextBlock Text="24 小时"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="9.5"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="Trend24Text"
+                                                   HorizontalAlignment="Right"
+                                                   Text="积累中"
+                                                   Foreground="{DynamicResource StatusStrong}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="10.5"
+                                                   FontWeight="SemiBold"/>
+                                    </Grid>
+                                    <Canvas x:Name="Trend24Canvas"
+                                            Grid.Row="1"
+                                            Width="150"
+                                            Height="43"
+                                            HorizontalAlignment="Center"
+                                            ClipToBounds="True">
+                                        <Border Width="150" Height="1"
+                                                Canvas.Top="21"
+                                                Background="#DDE2DC"/>
+                                        <Polygon x:Name="Trend24Area"
+                                                 Fill="#244F6B58"/>
+                                        <Polyline x:Name="Trend24Line"
+                                                  Stroke="{DynamicResource StatusStrong}"
+                                                  StrokeThickness="2"
+                                                  StrokeLineJoin="Round"/>
+                                        <Ellipse x:Name="Trend24StartMarker"
+                                                 Width="4" Height="4"
+                                                 Fill="#FFFFFF"
+                                                 Stroke="{DynamicResource StatusStrong}"
+                                                 StrokeThickness="1.5"/>
+                                        <Ellipse x:Name="Trend24EndMarker"
+                                                 Width="5" Height="5"
+                                                 Fill="{DynamicResource StatusStrong}"/>
+                                    </Canvas>
+                                    <TextBlock x:Name="Trend24MetaText"
+                                               Grid.Row="2"
+                                               Text="等待更多样本"
+                                               Style="{StaticResource ChartMetaText}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Grid.Column="2"
+                                    Background="#F3F5F1"
+                                    CornerRadius="9"
+                                    Padding="10,7">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="17"/>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="13"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid>
+                                        <TextBlock Text="近 7 日"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="9.5"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="Trend7Text"
+                                                   HorizontalAlignment="Right"
+                                                   Text="积累中"
+                                                   Foreground="{DynamicResource StatusStrong}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="10.5"
+                                                   FontWeight="SemiBold"/>
+                                    </Grid>
+                                    <Canvas x:Name="Trend7Canvas"
+                                            Grid.Row="1"
+                                            Width="150"
+                                            Height="43"
+                                            HorizontalAlignment="Center"
+                                            ClipToBounds="True">
+                                        <Border Width="150" Height="1"
+                                                Canvas.Top="21"
+                                                Background="#DDE2DC"/>
+                                        <Polygon x:Name="Trend7Area"
+                                                 Fill="#244F6B58"/>
+                                        <Polyline x:Name="Trend7Line"
+                                                  Stroke="{DynamicResource StatusStrong}"
+                                                  StrokeThickness="2"
+                                                  StrokeLineJoin="Round"/>
+                                        <Ellipse x:Name="Trend7StartMarker"
+                                                 Width="4" Height="4"
+                                                 Fill="#FFFFFF"
+                                                 Stroke="{DynamicResource StatusStrong}"
+                                                 StrokeThickness="1.5"/>
+                                        <Ellipse x:Name="Trend7EndMarker"
+                                                 Width="5" Height="5"
+                                                 Fill="{DynamicResource StatusStrong}"/>
+                                    </Canvas>
+                                    <TextBlock x:Name="Trend7MetaText"
+                                               Grid.Row="2"
+                                               Text="等待更多样本"
+                                               Style="{StaticResource ChartMetaText}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+                            </Border>
+                        </Grid>
+
+                        <Border Grid.Row="4"
+                                Background="#EEF2ED"
+                                CornerRadius="7"
+                                Padding="9,5">
+                            <Grid>
+                                <Ellipse x:Name="RapidDropStatusDot"
+                                         Width="6"
+                                         Height="6"
+                                         HorizontalAlignment="Left"
+                                         VerticalAlignment="Center"
+                                         Fill="{DynamicResource Sage}"/>
+                                <TextBlock x:Name="RapidDropText"
+                                           Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           Text="快速下降监控 · 正在积累样本"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="9.5"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Row="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="14"/>
+                            <RowDefinition Height="38"/>
+                        </Grid.RowDefinitions>
+                        <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock x:Name="SourceText"
-                                       Grid.Column="0"
                                        Margin="0,0,8,0"
                                        Text="Codex 本地会话快照"
                                        Foreground="{StaticResource TextSecondary}"
                                        FontFamily="Microsoft YaHei UI"
-                                       FontSize="8.5"
+                                       FontSize="9"
                                        TextTrimming="CharacterEllipsis"/>
                             <TextBlock x:Name="SampleTime"
                                        Grid.Column="1"
-                                       HorizontalAlignment="Right"
                                        Text="采样于 --"
                                        Foreground="{StaticResource TextMuted}"
                                        FontFamily="Microsoft YaHei UI"
-                                       FontSize="8.5"/>
-                        </Grid>
-
-                        <Grid Grid.Row="2">
-                            <TextBlock x:Name="Trend24Text"
-                                       Text="24H · 积累中"
-                                       VerticalAlignment="Center"
-                                       Foreground="{StaticResource TextSecondary}"
-                                       FontFamily="Microsoft YaHei UI"
                                        FontSize="9"/>
-                            <Canvas Width="112"
-                                    Height="11"
-                                    HorizontalAlignment="Right"
-                                    VerticalAlignment="Center"
-                                    ClipToBounds="True">
-                                <Polyline x:Name="Trend24Line"
-                                          Stroke="{DynamicResource StatusStrong}"
-                                          StrokeThickness="1.4"
-                                          StrokeLineJoin="Round"/>
-                            </Canvas>
                         </Grid>
-
-                        <Grid Grid.Row="4">
-                            <TextBlock x:Name="Trend7Text"
-                                       Text="7D · 积累中"
+                        <Grid Grid.Row="1">
+                            <TextBlock x:Name="AutoRefreshText"
                                        VerticalAlignment="Center"
-                                       Foreground="{StaticResource TextSecondary}"
+                                       Text="60 秒后自动刷新"
+                                       Foreground="{StaticResource TextMuted}"
                                        FontFamily="Microsoft YaHei UI"
-                                       FontSize="9"/>
-                            <Canvas Width="112"
-                                    Height="11"
+                                       FontSize="10"/>
+                            <Button x:Name="RefreshButton"
                                     HorizontalAlignment="Right"
-                                    VerticalAlignment="Center"
-                                    ClipToBounds="True">
-                                <Polyline x:Name="Trend7Line"
-                                          Stroke="{DynamicResource StatusStrong}"
-                                          StrokeThickness="1.4"
-                                          StrokeLineJoin="Round"/>
-                            </Canvas>
+                                    Width="96"
+                                    Style="{StaticResource SoftButton}"
+                                    Content="立即刷新"
+                                    ToolTip="重新读取当前数据源"
+                                    AutomationProperties.Name="立即刷新"/>
                         </Grid>
-
-                        <TextBlock x:Name="PredictionText"
-                                   Grid.Row="6"
-                                   Text="积累 30 分钟后预测"
-                                   VerticalAlignment="Bottom"
-                                   Foreground="{DynamicResource StatusStrong}"
-                                   FontFamily="Microsoft YaHei UI"
-                                   FontSize="9"
-                                   FontWeight="SemiBold"
-                                   TextTrimming="CharacterEllipsis"/>
-                    </Grid>
-
-                    <Grid Grid.Row="5">
-                        <TextBlock x:Name="AutoRefreshText"
-                                   VerticalAlignment="Center"
-                                   Text="60 秒后自动刷新"
-                                   Foreground="{StaticResource TextMuted}"
-                                   FontFamily="Microsoft YaHei UI"
-                                   FontSize="9.5"/>
-                        <Button x:Name="RefreshButton"
-                                HorizontalAlignment="Right"
-                                Width="88"
-                                Style="{StaticResource SoftButton}"
-                                Content="立即刷新"
-                                ToolTip="重新读取当前数据源"
-                                AutomationProperties.Name="立即刷新"/>
                     </Grid>
                 </Grid>
             </Grid>

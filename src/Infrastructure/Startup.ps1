@@ -550,12 +550,20 @@ function Get-AppSettingsSnapshot {
         CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
         LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
         LowRemainingThreshold = $script:LowRemainingThreshold
+        RapidDropAlertsEnabled = $script:RapidDropAlertsEnabled
+        RapidDropWindowMinutes = $script:RapidDropWindowMinutes
+        CodexRapidDropPercent = $script:CodexRapidDropPercent
+        DeepSeekRapidDropMode = $script:DeepSeekRapidDropMode
+        DeepSeekRapidDropPercent = $script:DeepSeekRapidDropPercent
+        DeepSeekRapidDropAmount = $script:DeepSeekRapidDropAmount
         EdgeDockEnabled = $script:EdgeDockEnabled
         EdgeDockSide = $script:EdgeDockSide
     }
 }
 
 function Save-Settings {
+    param([switch]$ThrowOnError)
+
     if ($isDiagnosticRun -or $script:IsRestoringSettings) { return }
 
     try {
@@ -564,6 +572,7 @@ function Save-Settings {
             Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
     }
     catch {
+        if ($ThrowOnError) { throw }
         # 设置持久化失败时不影响悬浮窗继续运行。
     }
 }
@@ -615,6 +624,41 @@ function Restore-Settings {
                 $script:LowRemainingThreshold = ConvertTo-LowRemainingThreshold `
                     -Value $settings.LowRemainingThreshold `
                     -Fallback $script:LowRemainingThreshold
+            }
+            if ($settings.PSObject.Properties['RapidDropAlertsEnabled']) {
+                $script:RapidDropAlertsEnabled =
+                    [bool]$settings.RapidDropAlertsEnabled
+            }
+            if ($settings.PSObject.Properties['RapidDropWindowMinutes']) {
+                $script:RapidDropWindowMinutes =
+                    ConvertTo-RapidDropWindowMinutes `
+                        -Value $settings.RapidDropWindowMinutes `
+                        -Fallback $script:RapidDropWindowMinutes
+            }
+            if ($settings.PSObject.Properties['CodexRapidDropPercent']) {
+                $script:CodexRapidDropPercent =
+                    ConvertTo-RapidDropPercent `
+                        -Value $settings.CodexRapidDropPercent `
+                        -Fallback $script:CodexRapidDropPercent
+            }
+            if (
+                $settings.PSObject.Properties['DeepSeekRapidDropMode'] -and
+                [string]$settings.DeepSeekRapidDropMode -in @('Percent', 'Amount')
+            ) {
+                $script:DeepSeekRapidDropMode =
+                    [string]$settings.DeepSeekRapidDropMode
+            }
+            if ($settings.PSObject.Properties['DeepSeekRapidDropPercent']) {
+                $script:DeepSeekRapidDropPercent =
+                    ConvertTo-RapidDropPercent `
+                        -Value $settings.DeepSeekRapidDropPercent `
+                        -Fallback $script:DeepSeekRapidDropPercent
+            }
+            if ($settings.PSObject.Properties['DeepSeekRapidDropAmount']) {
+                $script:DeepSeekRapidDropAmount =
+                    ConvertTo-RapidDropAmount `
+                        -Value $settings.DeepSeekRapidDropAmount `
+                        -Fallback $script:DeepSeekRapidDropAmount
             }
         }
     }

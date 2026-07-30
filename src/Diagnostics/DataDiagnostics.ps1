@@ -695,6 +695,7 @@ if ($CheckUsageHistory) {
         param(
             [double]$HoursAgo,
             [double]$Value,
+            [string]$ProviderId = 'Codex',
             [string]$MetricType = 'Percent',
             [string]$Unit = '%',
             [string]$ResetAtUtc = ''
@@ -702,7 +703,7 @@ if ($CheckUsageHistory) {
 
         return [pscustomobject]@{
             Version = 1
-            ProviderId = 'Codex'
+            ProviderId = $ProviderId
             ObservedAtUtc = $now.AddHours(-$HoursAgo)
             MetricType = $MetricType
             RemainingValue = $Value
@@ -768,6 +769,122 @@ if ($CheckUsageHistory) {
     }
     $customThresholdPreviousSample =
         New-HistoryCheckSample -HoursAgo 1 -Value 36
+
+    $codexRapidSnapshot = [pscustomobject]@{
+        ProviderId = 'Codex'
+        Available = $true
+        HasProgress = $true
+        RemainingPercent = 65
+    }
+    $codexRapidSamples = @(
+        (New-HistoryCheckSample -HoursAgo 0.5 -Value 80),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 65)
+    )
+    $codexRapidDrop = Measure-RapidUsageDrop `
+        -Samples $codexRapidSamples `
+        -Snapshot $codexRapidSnapshot `
+        -WindowMinutes 30 `
+        -CodexPercent 10 `
+        -Now $now
+    $codexRapidDropBelowThreshold = Measure-RapidUsageDrop `
+        -Samples $codexRapidSamples `
+        -Snapshot $codexRapidSnapshot `
+        -WindowMinutes 30 `
+        -CodexPercent 20 `
+        -Now $now
+    $codexWithoutProgress = $codexRapidSnapshot.PSObject.Copy()
+    $codexWithoutProgress.HasProgress = $false
+    $codexWithoutProgressRapidDrop = Measure-RapidUsageDrop `
+        -Samples $codexRapidSamples `
+        -Snapshot $codexWithoutProgress `
+        -Now $now
+    $codexWindowSamples = @(
+        (New-HistoryCheckSample -HoursAgo 0.75 -Value 90),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 65)
+    )
+    $codexShortWindowDrop = Measure-RapidUsageDrop `
+        -Samples $codexWindowSamples `
+        -Snapshot $codexRapidSnapshot `
+        -WindowMinutes 30 `
+        -Now $now
+    $codexLongWindowDrop = Measure-RapidUsageDrop `
+        -Samples $codexWindowSamples `
+        -Snapshot $codexRapidSnapshot `
+        -WindowMinutes 60 `
+        -Now $now
+
+    $deepSeekRapidSnapshot = [pscustomobject]@{
+        ProviderId = 'DeepSeek'
+        Available = $true
+        HasProgress = $true
+        RemainingPercent = 72
+        TotalBalance = 86.4
+        Currency = 'CNY'
+    }
+    $deepSeekBalanceSamples = @(
+        (New-HistoryCheckSample `
+            -ProviderId 'DeepSeek' `
+            -HoursAgo 0.5 `
+            -Value 100 `
+            -MetricType 'Balance' `
+            -Unit 'CNY'),
+        (New-HistoryCheckSample `
+            -ProviderId 'DeepSeek' `
+            -HoursAgo 0 `
+            -Value 86.4 `
+            -MetricType 'Balance' `
+            -Unit 'CNY')
+    )
+    $deepSeekAmountRapidDrop = Measure-RapidUsageDrop `
+        -Samples $deepSeekBalanceSamples `
+        -Snapshot $deepSeekRapidSnapshot `
+        -WindowMinutes 30 `
+        -DeepSeekMode 'Amount' `
+        -DeepSeekAmount 10 `
+        -Now $now
+    $deepSeekPercentSamples = @(
+        (New-HistoryCheckSample `
+            -ProviderId 'DeepSeek' `
+            -HoursAgo 0.5 `
+            -Value 80),
+        (New-HistoryCheckSample `
+            -ProviderId 'DeepSeek' `
+            -HoursAgo 0 `
+            -Value 68)
+    )
+    $deepSeekPercentRapidDrop = Measure-RapidUsageDrop `
+        -Samples $deepSeekPercentSamples `
+        -Snapshot $deepSeekRapidSnapshot `
+        -WindowMinutes 30 `
+        -DeepSeekMode 'Percent' `
+        -DeepSeekPercent 10 `
+        -Now $now
+    $deepSeekWithoutBudget = [pscustomobject]@{
+        ProviderId = 'DeepSeek'
+        Available = $true
+        HasProgress = $false
+        TotalBalance = 86.4
+        Currency = 'CNY'
+    }
+    $deepSeekPercentUnavailable = Measure-RapidUsageDrop `
+        -Samples @() `
+        -Snapshot $deepSeekWithoutBudget `
+        -DeepSeekMode 'Percent' `
+        -Now $now
+    $deepSeekHistorySamples = @(
+        ConvertTo-UsageHistorySamples `
+            -Snapshot $deepSeekRapidSnapshot `
+            -ObservedAt $now
+    )
+    $fractionalPercentSnapshot = $codexRapidSnapshot.PSObject.Copy()
+    $fractionalPercentSnapshot.RemainingPercent = 72.4
+    $fractionalPercentSample = ConvertTo-UsageHistorySample `
+        -Snapshot $fractionalPercentSnapshot `
+        -ObservedAt $now
+    $fractionalBalanceSnapshot = $deepSeekWithoutBudget.PSObject.Copy()
+    $fractionalBalanceSample = ConvertTo-UsageHistorySample `
+        -Snapshot $fractionalBalanceSnapshot `
+        -ObservedAt $now
 
     $historyTestPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.HistoryDiagnostic.{0}.jsonl' -f $PID
@@ -990,6 +1107,70 @@ if ($CheckUsageHistory) {
                 -Snapshot $customThresholdSnapshot `
                 -PreviousSample $customThresholdPreviousSample `
                 -Threshold 35
+        CodexRapidDropDetected = (
+            [bool]$codexRapidDrop.Available -and
+            [bool]$codexRapidDrop.IsRapid -and
+            [Math]::Abs([double]$codexRapidDrop.Drop - 15) -lt 0.0001
+        )
+        CodexRapidDropThresholdRespected = -not (
+            [bool]$codexRapidDropBelowThreshold.IsRapid
+        )
+        CodexRapidDropRequiresProgress = -not (
+            [bool]$codexWithoutProgressRapidDrop.Available
+        )
+        RapidDropTimeWindowRespected = (
+            -not [bool]$codexShortWindowDrop.Available -and
+            [bool]$codexLongWindowDrop.Available -and
+            [bool]$codexLongWindowDrop.IsRapid -and
+            [Math]::Abs([double]$codexLongWindowDrop.Drop - 25) -lt 0.0001
+        )
+        DeepSeekAmountRapidDropDetected = (
+            [bool]$deepSeekAmountRapidDrop.Available -and
+            [bool]$deepSeekAmountRapidDrop.IsRapid -and
+            $deepSeekAmountRapidDrop.MetricType -eq 'Balance' -and
+            [Math]::Abs(
+                [double]$deepSeekAmountRapidDrop.Drop - 13.6
+            ) -lt 0.0001
+        )
+        DeepSeekPercentRapidDropDetected = (
+            [bool]$deepSeekPercentRapidDrop.Available -and
+            [bool]$deepSeekPercentRapidDrop.IsRapid -and
+            [Math]::Abs(
+                [double]$deepSeekPercentRapidDrop.Drop - 12
+            ) -lt 0.0001
+        )
+        DeepSeekPercentRequiresBudget = (
+            -not [bool]$deepSeekPercentUnavailable.Available
+        )
+        DeepSeekDualMetricHistory = (
+            $deepSeekHistorySamples.Count -eq 2 -and
+            @($deepSeekHistorySamples.MetricType) -contains 'Percent' -and
+            @($deepSeekHistorySamples.MetricType) -contains 'Balance'
+        )
+        FractionalHistoryPrecision = (
+            [Math]::Abs(
+                [double]$fractionalPercentSample.RemainingValue - 72.4
+            ) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$fractionalBalanceSample.RemainingValue - 86.4
+            ) -lt 0.0001
+        )
+        RapidDropWindowValidation = (
+            (ConvertTo-RapidDropWindowMinutes `
+                -Value 45 `
+                -Fallback 30) -eq 45 -and
+            (ConvertTo-RapidDropWindowMinutes `
+                -Value 'invalid' `
+                -Fallback 30) -eq 30
+        )
+        RapidDropThresholdValidation = (
+            (ConvertTo-RapidDropPercent `
+                -Value 12.5 `
+                -Fallback 10) -eq 12.5 -and
+            (ConvertTo-RapidDropAmount `
+                -Value 8.5 `
+                -Fallback 10) -eq 8.5
+        )
         PersistenceRoundTrip = $persistenceRoundTrip
         RestartReloadRoundTrip = $restartReloadRoundTrip
         LegacyHistoryMigration = $legacyMigration

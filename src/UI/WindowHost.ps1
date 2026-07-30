@@ -10,6 +10,7 @@ using System.ComponentModel;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
@@ -292,6 +293,13 @@ public sealed class RemainingMarginRunspaceEventBridge
         };
     }
 
+    public SelectionChangedEventHandler SelectionChanged(ScriptBlock callback)
+    {
+        return delegate(object sender, SelectionChangedEventArgs e) {
+            Invoke(callback, sender, e);
+        };
+    }
+
     public MouseEventHandler Mouse(ScriptBlock callback)
     {
         return delegate(object sender, MouseEventArgs e) {
@@ -336,6 +344,7 @@ public sealed class RemainingMarginRunspaceEventBridge
     [Management.Automation.PowerShell].Assembly.Location
     [Windows.Threading.Dispatcher].Assembly.Location
     [Windows.UIElement].Assembly.Location
+    [Windows.Controls.ComboBox].Assembly.Location
     [Windows.Forms.NotifyIcon].Assembly.Location
     [ComponentModel.CancelEventHandler].Assembly.Location
 )
@@ -421,6 +430,7 @@ function New-RmfEventHandler {
         [ValidateSet(
             'Event',
             'Routed',
+            'SelectionChanged',
             'Mouse',
             'MouseButton',
             'Key',
@@ -437,6 +447,9 @@ function New-RmfEventHandler {
     switch ($Kind) {
         'Event' { return $script:RunspaceEventBridge.Event($Callback) }
         'Routed' { return $script:RunspaceEventBridge.Routed($Callback) }
+        'SelectionChanged' {
+            return $script:RunspaceEventBridge.SelectionChanged($Callback)
+        }
         'Mouse' { return $script:RunspaceEventBridge.Mouse($Callback) }
         'MouseButton' {
             return $script:RunspaceEventBridge.MouseButton($Callback)
@@ -573,7 +586,11 @@ $names = @(
     'TodayTokens', 'MetricThreeTitle', 'LastTurnTokens', 'ContextText',
     'MetricFourTitle', 'CacheHit', 'BreakdownTitle', 'SecondaryMetricTitle',
     'CacheTokenText', 'ResetCount', 'TokenBreakdown', 'SourceText', 'SampleTime',
-    'Trend24Text', 'Trend24Line', 'Trend7Text', 'Trend7Line', 'PredictionText',
+    'Trend24Text', 'Trend24Canvas', 'Trend24Area', 'Trend24Line',
+    'Trend24StartMarker', 'Trend24EndMarker', 'Trend24MetaText',
+    'Trend7Text', 'Trend7Canvas', 'Trend7Area', 'Trend7Line',
+    'Trend7StartMarker', 'Trend7EndMarker', 'Trend7MetaText',
+    'PredictionText', 'RapidDropStatusDot', 'RapidDropText',
     'AutoRefreshText', 'RefreshButton'
 )
 foreach ($name in $names) {
