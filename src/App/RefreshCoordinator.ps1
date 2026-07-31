@@ -95,11 +95,17 @@ function Start-CodexRefresh {
         $script:CodexOfficialUsageCache -and
         ($now - $script:CodexOfficialUsageCache.SampledAt).TotalSeconds -lt 15
     ) {
+        $observationContext = if (
+            $script:UsageSyncSession.AwaitingInitialOfficial
+        ) { 'StartupOfficial' } else { 'Normal' }
         Update-UsageView -Snapshot (
             Get-CodexUsageSnapshot `
                 -OfficialUsageOverride $script:CodexOfficialUsageCache `
                 -SkipOfficialRequest
-        )
+        ) -ObservationContext $observationContext
+        if ($observationContext -eq 'StartupOfficial') {
+            $script:UsageSyncSession.AwaitingInitialOfficial = $false
+        }
         Set-RefreshBusy -Busy $false
         return
     }
@@ -159,11 +165,17 @@ function Complete-CodexRefresh {
 
         $script:CodexOfficialUsageCache = $usage
         if ($script:ActiveProvider -eq 'Codex') {
+            $observationContext = if (
+                $script:UsageSyncSession.AwaitingInitialOfficial
+            ) { 'StartupOfficial' } else { 'Normal' }
             Update-UsageView -Snapshot (
                 Get-CodexUsageSnapshot `
                     -OfficialUsageOverride $usage `
                     -SkipOfficialRequest
-            )
+            ) -ObservationContext $observationContext
+            if ($observationContext -eq 'StartupOfficial') {
+                $script:UsageSyncSession.AwaitingInitialOfficial = $false
+            }
         }
         Set-RuntimeDiagnosticStatus `
             -Area 'Refresh' `
@@ -252,7 +264,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.8.0')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.8.1')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -446,6 +458,7 @@ function Set-ActiveProvider {
     )
 
     if ($script:ActiveProvider -ne $Provider) {
+        Reset-ProviderRapidDropSession -ProviderId $Provider
         if ($script:AppContext.Refresh.DeepSeek.RequestTask) {
             Cancel-DeepSeekRefresh
         }
@@ -498,6 +511,10 @@ function Set-CodexOfficialAccess {
     $script:CodexOfficialAccessEnabled = $Enabled
     if (-not $Enabled) {
         $script:CodexOfficialUsageCache = $null
+        $script:UsageSyncSession.AwaitingInitialOfficial = $false
+    }
+    elseif (-not $script:UsageSyncSession.OfficialNotificationShown) {
+        $script:UsageSyncSession.AwaitingInitialOfficial = $true
     }
     Sync-ProviderMenuState
     Save-Settings
@@ -664,15 +681,26 @@ function Invoke-Refresh {
             -Message '正在刷新'
         Set-RefreshBusy -Busy $true
         if ($script:ActiveProvider -eq 'DeepSeek') {
+            $script:UsageSyncSession.InitialRefreshStarted = $true
             Start-DeepSeekRefresh
             return
         }
 
+        $observationContext = 'Normal'
+        if (-not $script:UsageSyncSession.InitialRefreshStarted) {
+            $script:UsageSyncSession.InitialRefreshStarted = $true
+            $script:UsageSyncSession.AwaitingInitialOfficial =
+                [bool]$script:CodexOfficialAccessEnabled
+            $observationContext = 'StartupLocal'
+        }
+        elseif ($script:CodexOfficialAccessEnabled) {
+            $observationContext = 'LocalPreview'
+        }
         Update-UsageView -Snapshot (
             Get-CodexUsageSnapshot `
                 -OfficialUsageOverride $null `
                 -SkipOfficialRequest
-        )
+        ) -ObservationContext $observationContext
         Set-RuntimeDiagnosticStatus `
             -Area 'Refresh' `
             -Status 'Healthy' `

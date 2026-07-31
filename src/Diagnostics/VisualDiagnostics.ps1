@@ -342,9 +342,109 @@ if ($CheckTransitions) {
     )
     $trend24PointCount = $Trend24Line.Points.Count
     $trend7PointCount = $Trend7Line.Points.Count
-    $trend24MetaText = $Trend24MetaText.Text
-    $trend7MetaText = $Trend7MetaText.Text
-    $rapidDropStatusText = $RapidDropText.Text
+    $trend24MetaTextValue = $Trend24MetaText.Text
+    $trend7MetaTextValue = $Trend7MetaText.Text
+    $rapidDropStatusTextValue = $RapidDropText.Text
+
+    $script:UsageSyncSession.RapidSamples = @()
+    $script:UsageSyncSession.RapidChannels = @{}
+    $startupLocalSnapshot = $deepSeekCheckSnapshot.PSObject.Copy()
+    $startupLocalSnapshot.ProviderId = 'Codex'
+    $startupLocalSnapshot.HasProgress = $true
+    $startupLocalSnapshot.RemainingPercent = 87
+    $startupLocalSnapshot | Add-Member `
+        -NotePropertyName TodayCachedTokens `
+        -NotePropertyValue 640000 `
+        -Force
+    $startupLocalSnapshot | Add-Member `
+        -NotePropertyName TodayOutputTokens `
+        -NotePropertyValue 120000 `
+        -Force
+    $startupLocalSnapshot | Add-Member `
+        -NotePropertyName TodayCacheHitPercent `
+        -NotePropertyValue 64.0 `
+        -Force
+    $startupLocalSnapshot.WindowLabel = '本周余量'
+    $startupLocalSnapshot.Plan = 'Pro'
+    $startupLocalSnapshot.Source = '本地会话余量快照'
+    $startupLocalSnapshot.SampledAt = $diagnosticNow.AddHours(-8)
+    Update-UsageView `
+        -Snapshot $startupLocalSnapshot `
+        -ObservationContext 'StartupLocal'
+    $startupLocalRapidSuppressed = (
+        [string]$RapidDropText.Text -match '本地快照不计入快速下降'
+    )
+    $startupLocalMessage = Format-StartupUsageSnapshotMessage `
+        -Snapshot $startupLocalSnapshot `
+        -ObservationContext 'StartupLocal'
+
+    $startupOfficialSnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $startupOfficialSnapshot.RemainingPercent = 56
+    $startupOfficialSnapshot.Source = '官方用量接口 · 本地令牌汇总'
+    $startupOfficialSnapshot.SampledAt = $diagnosticNow
+    Update-UsageView `
+        -Snapshot $startupOfficialSnapshot `
+        -ObservationContext 'StartupOfficial'
+    $startupOfficialRapidSuppressed = (
+        [string]$RapidDropText.Text -match '正在建立连续使用基线'
+    )
+    $startupOfficialMessage = Format-StartupUsageSnapshotMessage `
+        -Snapshot $startupOfficialSnapshot `
+        -ObservationContext 'StartupOfficial'
+
+    $localPreviewSnapshot = $startupOfficialSnapshot.PSObject.Copy()
+    $localPreviewSnapshot.RemainingPercent = 20
+    $localPreviewSnapshot.Source = '本地会话余量快照'
+    Update-UsageView `
+        -Snapshot $localPreviewSnapshot `
+        -ObservationContext 'LocalPreview'
+    $localPreviewRapidSuppressed = (
+        [string]$RapidDropText.Text -match '本地快照不计入快速下降'
+    )
+
+    $continuousOfficialSnapshot = $startupOfficialSnapshot.PSObject.Copy()
+    $continuousOfficialSnapshot.RemainingPercent = 39
+    $continuousOfficialSnapshot.SampledAt = $diagnosticNow.AddMinutes(1)
+    Update-UsageView -Snapshot $continuousOfficialSnapshot
+    $continuousRapidDropDetected = (
+        [string]$RapidDropText.Text -match '检测到快速下降' -and
+        [string]$RapidDropText.Text -match '下降 17pp'
+    )
+    $gapSnapshot = $continuousOfficialSnapshot.PSObject.Copy()
+    $gapSnapshot.RemainingPercent = 20
+    $gapInsights = [pscustomobject]@{ RapidDrop = $null }
+    $gapInsights = Set-SessionRapidDropInsight `
+        -Snapshot $gapSnapshot `
+        -Insights $gapInsights `
+        -ObservedAt ([DateTimeOffset]::Now.AddMinutes(10))
+    $continuityGapReset = (
+        -not [bool]$gapInsights.RapidDrop.IsRapid -and
+        [string]$gapInsights.RapidDrop.Summary -match '监控间隔中断'
+    )
+    $startupSnapshotMessagesReady = (
+        $startupLocalMessage -match '本地快照.*余量 87%.*\d{2}:\d{2}:\d{2}' -and
+        $startupOfficialMessage -match '官方接口.*余量 56%.*\d{2}:\d{2}:\d{2}'
+    )
+    if (
+        -not $startupLocalRapidSuppressed -or
+        -not $startupOfficialRapidSuppressed -or
+        -not $localPreviewRapidSuppressed -or
+        -not $continuousRapidDropDetected -or
+        -not $continuityGapReset -or
+        -not $startupSnapshotMessagesReady
+    ) {
+        throw (
+            'Startup synchronization alert policy failed: local={0}, ' +
+            'official={1}, preview={2}, continuous={3}, gap={4}, messages={5}.'
+        ) -f
+            $startupLocalRapidSuppressed,
+            $startupOfficialRapidSuppressed,
+            $localPreviewRapidSuppressed,
+            $continuousRapidDropDetected,
+            $continuityGapReset,
+            $startupSnapshotMessagesReady
+    }
+
     Set-Progress -Percent 82
     Set-ExpandedState -Expanded $false -Immediate
     $anchorLeft = $window.Left
@@ -355,6 +455,38 @@ if ($CheckTransitions) {
     $expandedWidth = $window.ActualWidth
     $expandedHeight = $window.ActualHeight
     $expandedVisibility = [string]$DetailsPanel.Visibility
+    $window.UpdateLayout()
+    $trendContentBottom = (
+        @(
+            $Trend24Canvas.TranslatePoint(
+                (New-Object Windows.Point(0, $Trend24Canvas.ActualHeight)),
+                $DetailsPanel
+            ).Y,
+            $Trend7Canvas.TranslatePoint(
+                (New-Object Windows.Point(0, $Trend7Canvas.ActualHeight)),
+                $DetailsPanel
+            ).Y,
+            $Trend24MetaText.TranslatePoint(
+                (New-Object Windows.Point(0, $Trend24MetaText.ActualHeight)),
+                $DetailsPanel
+            ).Y,
+            $Trend7MetaText.TranslatePoint(
+                (New-Object Windows.Point(0, $Trend7MetaText.ActualHeight)),
+                $DetailsPanel
+            ).Y
+        ) | Measure-Object -Maximum
+    ).Maximum
+    $rapidDropTextTop = $RapidDropText.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $DetailsPanel
+    ).Y
+    $trendRapidDropGap = $rapidDropTextTop - $trendContentBottom
+    if ($trendRapidDropGap -lt 6) {
+        throw (
+            'Trend content overlaps rapid-drop status: gap={0:0.##}.' -f
+                $trendRapidDropGap
+        )
+    }
 
     # Reopen while collapse is still animating. A stale collapse callback must
     # never force the expanded window back to compact height.
@@ -711,10 +843,17 @@ if ($CheckTransitions) {
         Trend7Text = $Trend7Text.Text
         Trend24PointCount = $trend24PointCount
         Trend7PointCount = $trend7PointCount
-        Trend24MetaText = $trend24MetaText
-        Trend7MetaText = $trend7MetaText
+        Trend24MetaText = $trend24MetaTextValue
+        Trend7MetaText = $trend7MetaTextValue
         PredictionText = $PredictionText.Text
-        RapidDropStatusText = $rapidDropStatusText
+        RapidDropStatusText = $rapidDropStatusTextValue
+        StartupLocalRapidSuppressed = $startupLocalRapidSuppressed
+        StartupOfficialRapidSuppressed = $startupOfficialRapidSuppressed
+        LocalPreviewRapidSuppressed = $localPreviewRapidSuppressed
+        ContinuousRapidDropDetected = $continuousRapidDropDetected
+        ContinuityGapReset = $continuityGapReset
+        StartupSnapshotMessagesReady = $startupSnapshotMessagesReady
+        TrendRapidDropGap = $trendRapidDropGap
         UsageHistoryError = $script:LastUsageHistoryError
         LowAlertMenuChecked = [bool]$script:LowAlertsMenuItem.IsChecked
         LowAlertThresholdMenuText = $lowAlertThresholdMenuText

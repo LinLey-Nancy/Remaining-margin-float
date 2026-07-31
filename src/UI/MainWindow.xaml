@@ -85,24 +85,27 @@
         <Style x:Key="MetricTitleText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
-            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontSize" Value="9.5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="LineHeight" Value="13"/>
         </Style>
 
         <Style x:Key="MetricValueText" TargetType="TextBlock">
-            <Setter Property="Margin" Value="0,4,0,0"/>
+            <Setter Property="Margin" Value="0,2,0,0"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="FontFamily" Value="Segoe UI Variable Display"/>
-            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="FontSize" Value="21"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="LineHeight" Value="28"/>
             <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
         </Style>
 
         <Style x:Key="MetricHintText" TargetType="TextBlock">
-            <Setter Property="Margin" Value="0,2,0,0"/>
+            <Setter Property="Margin" Value="0"/>
             <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
-            <Setter Property="FontSize" Value="9.5"/>
+            <Setter Property="FontSize" Value="9"/>
+            <Setter Property="LineHeight" Value="13"/>
         </Style>
 
         <Style x:Key="SectionTitleText" TargetType="TextBlock">
@@ -262,14 +265,14 @@
 
                 <Grid x:Name="DetailsPanel"
                       Grid.Row="2"
-                      Margin="20,16,20,16"
+                      Margin="20,12,20,12"
                       Visibility="Collapsed"
                       Opacity="0">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="54"/>
-                        <RowDefinition Height="8"/>
-                        <RowDefinition Height="142"/>
-                        <RowDefinition Height="58"/>
+                        <RowDefinition Height="46"/>
+                        <RowDefinition Height="4"/>
+                        <RowDefinition Height="132"/>
+                        <RowDefinition Height="52"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="52"/>
                     </Grid.RowDefinitions>
@@ -327,12 +330,12 @@
                     <Border Grid.Row="2"
                             Background="{DynamicResource SageSoft}"
                             CornerRadius="12"
-                            Padding="14,9">
+                            Padding="14,6">
                         <Grid>
                             <Grid.RowDefinitions>
-                            <RowDefinition Height="*"/>
-                            <RowDefinition Height="1"/>
-                            <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="5"/>
+                                <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
                             <Border Grid.Row="0"
@@ -370,8 +373,8 @@
 
                             <Border Grid.Row="1"
                                     Height="1"
-                                    Margin="0"
-                                    Background="#DDE3DC"/>
+                                    VerticalAlignment="Center"
+                                    Background="#E0E5DF"/>
 
                             <Border Grid.Row="2"
                                     Background="Transparent"
@@ -450,7 +453,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="20"/>
                             <RowDefinition Height="7"/>
-                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="*" MinHeight="87"/>
                             <RowDefinition Height="7"/>
                             <RowDefinition Height="30"/>
                         </Grid.RowDefinitions>

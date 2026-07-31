@@ -23,6 +23,15 @@
     return [System.Windows.SystemParameters]::WorkArea
 }
 
+$script:UsageSyncSession = [pscustomobject]@{
+    InitialRefreshStarted = $false
+    AwaitingInitialOfficial = $false
+    LocalNotificationShown = $false
+    OfficialNotificationShown = $false
+    RapidSamples = @()
+    RapidChannels = @{}
+}
+
 function Get-EdgeDockWorkArea {
     if ($null -eq $script:EdgeDockWorkArea) {
         $workArea = Get-WindowWorkArea
@@ -1118,6 +1127,241 @@ function Update-UsageInsightView {
     }
 }
 
+function Get-UsageSnapshotChannel {
+    param($Snapshot)
+
+    if (-not $Snapshot) { return '' }
+    if ([string]$Snapshot.ProviderId -eq 'DeepSeek') {
+        return 'DeepSeekOfficial'
+    }
+
+    $source = [string]$Snapshot.Source
+    if ($source.StartsWith('官方用量接口', [StringComparison]::Ordinal)) {
+        return 'CodexOfficial'
+    }
+    if ($source.StartsWith('官方用量缓存', [StringComparison]::Ordinal)) {
+        return 'CodexOfficialCache'
+    }
+    return 'CodexLocal'
+}
+
+function Reset-ProviderRapidDropSession {
+    param(
+        [string]$ProviderId,
+        [string]$Channel = ''
+    )
+
+    $script:UsageSyncSession.RapidSamples = @(
+        $script:UsageSyncSession.RapidSamples | Where-Object {
+            [string]$_.ProviderId -ne $ProviderId
+        }
+    )
+    if ([string]::IsNullOrWhiteSpace($Channel)) {
+        [void]$script:UsageSyncSession.RapidChannels.Remove($ProviderId)
+    }
+    else {
+        $script:UsageSyncSession.RapidChannels[$ProviderId] = $Channel
+    }
+}
+
+function Set-SessionRapidDropInsight {
+    param(
+        $Snapshot,
+        $Insights,
+        [ValidateSet(
+            'Normal',
+            'LocalPreview',
+            'StartupLocal',
+            'StartupOfficial'
+        )]
+        [string]$ObservationContext = 'Normal',
+        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now
+    )
+
+    if (-not $Insights -or -not $Snapshot) { return $Insights }
+
+    $providerId = [string]$Snapshot.ProviderId
+    $channel = Get-UsageSnapshotChannel -Snapshot $Snapshot
+    $existingChannel = if (
+        $script:UsageSyncSession.RapidChannels.ContainsKey($providerId)
+    ) {
+        [string]$script:UsageSyncSession.RapidChannels[$providerId]
+    }
+    else { '' }
+
+    $summaryOverride = ''
+    $excludeCurrentSample = $false
+    if ($ObservationContext -eq 'StartupLocal') {
+        Reset-ProviderRapidDropSession -ProviderId $providerId
+        $excludeCurrentSample = $true
+        $summaryOverride = '启动同步中，本地快照不计入快速下降'
+    }
+    elseif ($ObservationContext -eq 'LocalPreview') {
+        $excludeCurrentSample = $true
+        $summaryOverride = '等待官方同步，本地快照不计入快速下降'
+    }
+    elseif ($channel -eq 'CodexOfficialCache') {
+        $excludeCurrentSample = $true
+        $summaryOverride = '官方缓存不计入快速下降'
+    }
+    elseif (
+        $ObservationContext -eq 'StartupOfficial' -or
+        (
+            -not [string]::IsNullOrWhiteSpace($existingChannel) -and
+            $existingChannel -ne $channel
+        )
+    ) {
+        Reset-ProviderRapidDropSession `
+            -ProviderId $providerId `
+            -Channel $channel
+        $summaryOverride = if ($ObservationContext -eq 'StartupOfficial') {
+            '已同步官方数据，正在建立连续使用基线'
+        }
+        else {
+            '数据通道已切换，正在建立连续使用基线'
+        }
+    }
+    elseif ([string]::IsNullOrWhiteSpace($existingChannel)) {
+        $script:UsageSyncSession.RapidChannels[$providerId] = $channel
+        $summaryOverride = '正在建立连续使用基线'
+    }
+
+    if (
+        -not $excludeCurrentSample -and
+        $ObservationContext -eq 'Normal' -and
+        $existingChannel -eq $channel
+    ) {
+        $lastSessionSample = @(
+            $script:UsageSyncSession.RapidSamples | Where-Object {
+                [string]$_.ProviderId -eq $providerId
+            } | Sort-Object ObservedAtUtc
+        ) | Select-Object -Last 1
+        $continuityLimitSeconds = [Math]::Max(
+            180,
+            $script:RefreshIntervalSeconds * 3
+        )
+        if (
+            $lastSessionSample -and
+            (
+                $ObservedAt.ToUniversalTime() -
+                $lastSessionSample.ObservedAtUtc
+            ).TotalSeconds -gt $continuityLimitSeconds
+        ) {
+            Reset-ProviderRapidDropSession `
+                -ProviderId $providerId `
+                -Channel $channel
+            $summaryOverride = '监控间隔中断，正在重新建立连续使用基线'
+        }
+    }
+
+    if (-not $excludeCurrentSample) {
+        $newSamples = @(
+            ConvertTo-UsageHistorySamples `
+                -Snapshot $Snapshot `
+                -ObservedAt $ObservedAt
+        )
+        $cutoff = $ObservedAt.ToUniversalTime().AddMinutes(
+            -1 * ([Math]::Max(5, $script:RapidDropWindowMinutes) + 5)
+        )
+        $script:UsageSyncSession.RapidSamples = @(
+            @($script:UsageSyncSession.RapidSamples + $newSamples) |
+                Where-Object {
+                    $_.ObservedAtUtc -ge $cutoff
+                }
+        )
+    }
+
+    $rapidDrop = Measure-RapidUsageDrop `
+        -Samples @($script:UsageSyncSession.RapidSamples) `
+        -Snapshot $Snapshot `
+        -WindowMinutes $script:RapidDropWindowMinutes `
+        -CodexPercent $script:CodexRapidDropPercent `
+        -DeepSeekMode $script:DeepSeekRapidDropMode `
+        -DeepSeekPercent $script:DeepSeekRapidDropPercent `
+        -DeepSeekAmount $script:DeepSeekRapidDropAmount `
+        -Now $ObservedAt
+    if ($excludeCurrentSample) {
+        $rapidDrop.Available = $false
+        $rapidDrop.IsRapid = $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($summaryOverride)) {
+        $rapidDrop.Summary = $summaryOverride
+    }
+    $Insights.RapidDrop = $rapidDrop
+    return $Insights
+}
+
+function Format-StartupUsageSnapshotMessage {
+    param(
+        $Snapshot,
+        [ValidateSet('StartupLocal', 'StartupOfficial')]
+        [string]$ObservationContext
+    )
+
+    $sourceLabel = if ($ObservationContext -eq 'StartupOfficial') {
+        '官方接口'
+    }
+    else {
+        '本地快照'
+    }
+    $remainingText = if ($Snapshot -and [bool]$Snapshot.HasProgress) {
+        '余量 {0:0.#}%' -f [double]$Snapshot.RemainingPercent
+    }
+    else {
+        '余量未知'
+    }
+    $sampledAt = if ($Snapshot -and $Snapshot.SampledAt) {
+        ([DateTimeOffset]$Snapshot.SampledAt).ToLocalTime()
+    }
+    else {
+        [DateTimeOffset]::Now
+    }
+    return '{0} · {1} · {2}' -f
+        $sourceLabel,
+        $remainingText,
+        $sampledAt.ToString('M月d日 HH:mm:ss')
+}
+
+function Invoke-StartupUsageSnapshotNotification {
+    param(
+        $Snapshot,
+        [ValidateSet('StartupLocal', 'StartupOfficial')]
+        [string]$ObservationContext
+    )
+
+    if (-not $Snapshot -or [string]$Snapshot.ProviderId -ne 'Codex') {
+        return $false
+    }
+    if ($ObservationContext -eq 'StartupLocal') {
+        if ($script:UsageSyncSession.LocalNotificationShown) { return $false }
+        $script:UsageSyncSession.LocalNotificationShown = $true
+        $title = 'Codex 本地余量快照'
+    }
+    else {
+        if ($script:UsageSyncSession.OfficialNotificationShown) { return $false }
+        $script:UsageSyncSession.OfficialNotificationShown = $true
+        $title = 'Codex 官方余量已同步'
+    }
+
+    if ($isDiagnosticRun -or $Demo -or -not $script:TrayNotifyIcon) {
+        return $false
+    }
+    try {
+        $script:TrayNotifyIcon.ShowBalloonTip(
+            8000,
+            $title,
+            (Format-StartupUsageSnapshotMessage `
+                -Snapshot $Snapshot `
+                -ObservationContext $ObservationContext),
+            [System.Windows.Forms.ToolTipIcon]::Info
+        )
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-LowRemainingAlertMenuText {
     return '低余量提醒（≤{0:0}%）' -f $script:LowRemainingThreshold
 }
@@ -1622,7 +1866,16 @@ function Invoke-RapidDropAlert {
 }
 
 function Update-UsageView {
-    param($Snapshot)
+    param(
+        $Snapshot,
+        [ValidateSet(
+            'Normal',
+            'LocalPreview',
+            'StartupLocal',
+            'StartupOfficial'
+        )]
+        [string]$ObservationContext = 'Normal'
+    )
 
     Assert-UsageSnapshotContract -Snapshot $Snapshot
     $script:LastSnapshot = $Snapshot
@@ -1756,14 +2009,25 @@ function Update-UsageView {
             -DeepSeekRapidDropMode $script:DeepSeekRapidDropMode `
             -DeepSeekRapidDropPercent $script:DeepSeekRapidDropPercent `
             -DeepSeekRapidDropAmount $script:DeepSeekRapidDropAmount
-        Update-UsageInsightView -Insights $insights
-        $lowAlertShown = Invoke-LowRemainingAlert `
+        $insights = Set-SessionRapidDropInsight `
             -Snapshot $Snapshot `
-            -Insights $insights
-        if (-not $lowAlertShown) {
-            [void](Invoke-RapidDropAlert `
+            -Insights $insights `
+            -ObservationContext $ObservationContext
+        Update-UsageInsightView -Insights $insights
+        if ($ObservationContext -in @('StartupLocal', 'StartupOfficial')) {
+            [void](Invoke-StartupUsageSnapshotNotification `
                 -Snapshot $Snapshot `
-                -Insights $insights)
+                -ObservationContext $ObservationContext)
+        }
+        elseif ($ObservationContext -eq 'Normal') {
+            $lowAlertShown = Invoke-LowRemainingAlert `
+                -Snapshot $Snapshot `
+                -Insights $insights
+            if (-not $lowAlertShown) {
+                [void](Invoke-RapidDropAlert `
+                    -Snapshot $Snapshot `
+                    -Insights $insights)
+            }
         }
     }
     catch {
