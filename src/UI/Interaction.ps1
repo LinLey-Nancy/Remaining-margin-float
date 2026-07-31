@@ -317,6 +317,31 @@ $importHistoryMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$dataMenu.Items.Add((New-Object Windows.Controls.Separator))
 [void]$dataMenu.Items.Add($exportHistoryMenuItem)
 [void]$dataMenu.Items.Add($importHistoryMenuItem)
+$updateMenu = New-Object Windows.Controls.MenuItem
+$updateMenu.Header = '软件更新'
+$script:UpdateMenuItem = New-Object Windows.Controls.MenuItem
+$script:UpdateMenuItem.Header = '检查更新…'
+$script:UpdateMenuItem.Add_Click((
+    New-RmfEventHandler -Kind Routed -Callback {
+        Start-UpdateCheck -Manual
+    }
+))
+$script:AutoUpdateMenuItem = New-Object Windows.Controls.MenuItem
+$script:AutoUpdateMenuItem.Header = '自动更新并重启（仅合适网络）'
+$script:AutoUpdateMenuItem.IsCheckable = $true
+$script:AutoUpdateMenuItem.IsChecked = $script:AutoUpdateEnabled
+$script:AutoUpdateMenuItem.ToolTip = (
+    '仅在 Windows 判定为非按流量计费、非漫游且未受流量限制时执行'
+)
+$script:AutoUpdateMenuItem.Add_Click((
+    New-RmfEventHandler -Kind Routed -Callback {
+        $enabled = [bool]$script:AutoUpdateMenuItem.IsChecked
+        [void](Set-AutoUpdateEnabled -Enabled $enabled -Confirm:$enabled)
+    }
+))
+[void]$updateMenu.Items.Add($script:UpdateMenuItem)
+[void]$updateMenu.Items.Add((New-Object Windows.Controls.Separator))
+[void]$updateMenu.Items.Add($script:AutoUpdateMenuItem)
 $startupMenu = New-Object Windows.Controls.MenuItem
 $startupMenu.Header = '设置开机启动'
 $startupClickHandler = {
@@ -382,6 +407,7 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$contextMenu.Items.Add($script:LowAlertThresholdMenuItem)
 [void]$contextMenu.Items.Add($script:EdgeDockMenuItem)
 [void]$contextMenu.Items.Add($dataMenu)
+[void]$contextMenu.Items.Add($updateMenu)
 [void]$contextMenu.Items.Add($startupMenu)
 [void]$contextMenu.Items.Add($resetPositionMenu)
 [void]$contextMenu.Items.Add($separator)

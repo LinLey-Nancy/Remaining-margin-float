@@ -61,6 +61,7 @@ Name: "{group}\Remaining Margin Float"; Filename: "{app}\RemainingMarginFloat.ex
 Name: "{autodesktop}\Remaining Margin Float"; Filename: "{app}\RemainingMarginFloat.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\RemainingMarginFloat.exe"; WorkingDir: "{app}"; Flags: nowait; Check: ShouldRestartAfterAutomaticUpdate
 Filename: "{app}\RemainingMarginFloat.exe"; Description: "{cm:LaunchProgram,Remaining Margin Float}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
@@ -69,3 +70,19 @@ Filename: "{sys}\reg.exe"; Parameters: "DELETE ""HKCU\Software\Microsoft\Windows
 
 [UninstallDelete]
 Type: files; Name: "{userstartup}\Remaining Margin Float.lnk"
+
+[Code]
+function ShouldRestartAfterAutomaticUpdate: Boolean;
+var
+  Index: Integer;
+begin
+  Result := False;
+  for Index := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(Index), '/RMFAUTORESTART=1') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;

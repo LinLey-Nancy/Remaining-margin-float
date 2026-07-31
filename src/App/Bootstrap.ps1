@@ -180,7 +180,7 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:AppVersion = '1.8.1'
+$script:AppVersion = '1.8.2'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -212,8 +212,16 @@ $script:CodexHttpClient = $null
 $script:CodexOfficialUsageCache = $null
 $script:DeepSeekHttpClient = $null
 $script:UpdateHttpClient = $null
+$script:UpdateMenuItem = $null
 $script:TrayUpdateItem = $null
+$script:AutoUpdateMenuItem = $null
+$script:TrayAutoUpdateItem = $null
+$script:AutoUpdateEnabled = $false
 $script:NextAutomaticUpdateCheckAt = $null
+$script:NextAutoUpdateNetworkRetryAt = $null
+$script:DeferredAutoUpdateRelease = $null
+$script:DeferredAutoUpdateInstaller = $null
+$script:AutoUpdateDeferredNotifications = @{}
 $script:PromptedUpdateVersions = @{}
 $script:UpdateDiagnosticMode = $false
 $script:UpdateDiagnosticMessages = @()
@@ -221,10 +229,16 @@ $script:UpdateDiagnosticUpdatesRoot = $null
 $script:UpdateDiagnosticInstallerPath = $null
 $script:UpdateDiagnosticInstallerVersion = $null
 $script:UpdateDiagnosticFileVersionInfo = $null
+$script:UpdateDiagnosticNetworkState = $null
+$script:UpdateDiagnosticInstalledMode = $null
+$script:UpdateDiagnosticInstallerArguments = ''
+$script:UpdateDiagnosticAutomaticInstall = $false
+$script:UpdateDiagnosticWindowCloseRequested = $false
 $script:UpdateTrustedSignerThumbprints = @()
 $script:UpdateContext = [pscustomobject]@{
     IsBusy = $false
     Manual = $false
+    AutomaticInstall = $false
     Phase = 'Idle'
     ReleaseTask = $null
     InstallerTask = $null

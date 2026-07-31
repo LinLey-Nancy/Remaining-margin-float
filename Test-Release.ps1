@@ -119,6 +119,19 @@ foreach ($requiredInstallerPattern in @(
         )
     }
 }
+foreach ($automaticUpdatePattern in @(
+    '(?m)^\[Code\]\r?$'
+    'ShouldRestartAfterAutomaticUpdate'
+    '/RMFAUTORESTART=1'
+    '(?m)^RestartApplications=no\r?$'
+)) {
+    if ($installerScriptText -notmatch $automaticUpdatePattern) {
+        throw (
+            'Installer is missing the controlled automatic-update restart ' +
+            "contract: $automaticUpdatePattern"
+        )
+    }
+}
 
 $componentManifest = Import-PowerShellDataFile -LiteralPath $componentManifestPath
 $componentPaths = @($componentManifest.Components)

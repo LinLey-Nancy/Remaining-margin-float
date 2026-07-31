@@ -276,6 +276,13 @@ foreach ($propertyName in @(
     'PartialDownloadFailureReset'
     'SuccessfulDownloadCompleted'
     'CancelledReleaseReset'
+    'UnrestrictedAutoUpdateAllowed'
+    'MeteredAutoUpdateDeferred'
+    'RestrictedAutoUpdateBlocked'
+    'SourceModeAutoUpdateRejected'
+    'AutoDownloadIntentPreserved'
+    'AutomaticInstallerArgumentsSafe'
+    'AutomaticRestartRequested'
 )) {
     Assert-Diagnostic `
         -Condition ([bool]$updates.$propertyName) `
@@ -408,6 +415,7 @@ Assert-Diagnostic -Condition (
 ) -Message 'Custom low-alert threshold menu UI'
 Assert-Diagnostic -Condition (
     [bool]$transitions.LowAlertThresholdPersisted -and
+    [bool]$transitions.AutoUpdateSettingPersisted -and
     [bool]$transitions.RapidDropSettingsPersisted -and
     [bool]$transitions.LowAlertThresholdInvalidFallback -and
     [bool]$transitions.LowAlertThresholdDialogReady -and

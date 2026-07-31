@@ -601,6 +601,7 @@ function Get-AppSettingsSnapshot {
         Topmost = $window.Topmost
         Provider = $script:ActiveProvider
         CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
+        AutoUpdateEnabled = $script:AutoUpdateEnabled
         LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
         LowRemainingThreshold = $script:LowRemainingThreshold
         RapidDropAlertsEnabled = $script:RapidDropAlertsEnabled
@@ -669,6 +670,10 @@ function Restore-Settings {
                 $script:CodexOfficialAccessEnabled =
                     [bool]$settings.CodexOfficialAccessEnabled
             }
+            if ($settings.PSObject.Properties['AutoUpdateEnabled']) {
+                $script:AutoUpdateEnabled =
+                    [bool]$settings.AutoUpdateEnabled
+            }
             if ($settings.PSObject.Properties['LowRemainingAlertsEnabled']) {
                 $script:LowRemainingAlertsEnabled =
                     [bool]$settings.LowRemainingAlertsEnabled
@@ -717,6 +722,13 @@ function Restore-Settings {
     }
     catch {
         $script:IsExpanded = $false
+    }
+
+    if (
+        $script:AutoUpdateEnabled -and
+        -not (Test-AutoUpdateInstalledMode)
+    ) {
+        $script:AutoUpdateEnabled = $false
     }
 
     if ($Demo) {
