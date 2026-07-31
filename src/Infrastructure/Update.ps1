@@ -3,6 +3,10 @@ $script:UpdateApiUri = (
     'https://api.github.com/repos/{0}/releases/latest' -f
         $script:UpdateRepository
 )
+$script:UpdateLatestReleaseUri = (
+    'https://github.com/{0}/releases/latest' -f
+        $script:UpdateRepository
+)
 $script:UpdateCheckInterval = [TimeSpan]::FromHours(6)
 
 function ConvertTo-RmfVersion {
@@ -149,6 +153,118 @@ function ConvertFrom-GitHubRelease {
         ChecksumUrl = $checksumUrl
         InstallerSize = $installerSize
         ChecksumSize = $checksumSize
+        HasInstaller = [bool]$hasInstaller
+    }
+}
+
+function Get-GitHubRedirectReleaseTag {
+    param($Response)
+
+    if (-not $Response -or -not $Response.IsSuccessStatusCode) {
+        throw 'GitHub 最新 Release 页面不可用。'
+    }
+    $finalUri = $Response.RequestMessage.RequestUri
+    if (-not $finalUri) {
+        throw 'GitHub 最新 Release 重定向缺少目标地址。'
+    }
+    $pathPrefix = '/{0}/releases/tag/' -f $script:UpdateRepository
+    $path = [Uri]::UnescapeDataString($finalUri.AbsolutePath)
+    if (
+        $finalUri.Scheme -ne [Uri]::UriSchemeHttps -or
+        -not $finalUri.Host.Equals(
+            'github.com',
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $path.StartsWith(
+            $pathPrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw 'GitHub 最新 Release 重定向地址不符合预期。'
+    }
+    $tag = $path.Substring($pathPrefix.Length)
+    if ([string]::IsNullOrWhiteSpace($tag) -or $tag.Contains('/')) {
+        throw 'GitHub 最新 Release 标签无效。'
+    }
+    [void](ConvertTo-RmfVersion -Value $tag)
+    $expectedUrl = 'https://github.com/{0}/releases/tag/{1}' -f
+        $script:UpdateRepository,
+        $tag
+    if (-not $finalUri.AbsoluteUri.Equals(
+        $expectedUrl,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'GitHub 最新 Release 页面地址不符合预期。'
+    }
+    return $tag
+}
+
+function Get-GitHubAssetResponseSize {
+    param(
+        $Response,
+        [long]$MaximumSize
+    )
+
+    if (-not $Response -or -not $Response.IsSuccessStatusCode) {
+        return 0L
+    }
+    $contentLength = $Response.Content.Headers.ContentLength
+    if (
+        $null -eq $contentLength -or
+        [long]$contentLength -le 0 -or
+        [long]$contentLength -gt $MaximumSize
+    ) {
+        return 0L
+    }
+    return [long]$contentLength
+}
+
+function New-GitHubRedirectRelease {
+    param(
+        [string]$Tag,
+        [long]$InstallerSize,
+        [long]$ChecksumSize
+    )
+
+    $version = (ConvertTo-RmfVersion -Value $Tag).ToString()
+    $installerName = "Remaining-Margin-Float-v$version-Setup.exe"
+    $checksumName = "$installerName.sha256"
+    $releaseUrl = 'https://github.com/{0}/releases/tag/{1}' -f
+        $script:UpdateRepository,
+        $Tag
+    $installerUrl = 'https://github.com/{0}/releases/download/{1}/{2}' -f
+        $script:UpdateRepository,
+        $Tag,
+        $installerName
+    $checksumUrl = 'https://github.com/{0}/releases/download/{1}/{2}' -f
+        $script:UpdateRepository,
+        $Tag,
+        $checksumName
+    $hasInstaller = (
+        $InstallerSize -gt 0 -and
+        $InstallerSize -le 50MB -and
+        $ChecksumSize -gt 0 -and
+        $ChecksumSize -le 4KB -and
+        (Test-GitHubUpdateAssetUrl `
+            -Url $installerUrl `
+            -Tag $Tag `
+            -FileName $installerName) -and
+        (Test-GitHubUpdateAssetUrl `
+            -Url $checksumUrl `
+            -Tag $Tag `
+            -FileName $checksumName)
+    )
+
+    return [pscustomobject]@{
+        Tag = $Tag
+        Version = $version
+        ReleaseUrl = $releaseUrl
+        InstallerName = $installerName
+        InstallerUrl = $installerUrl
+        ChecksumName = $checksumName
+        ChecksumUrl = $checksumUrl
+        InstallerSize = $InstallerSize
+        ChecksumSize = $ChecksumSize
         HasInstaller = [bool]$hasInstaller
     }
 }
@@ -530,6 +646,8 @@ function Sync-UpdateMenuState {
     $enabled = -not $script:UpdateContext.IsBusy
     $text = switch ($script:UpdateContext.Phase) {
         'Release' { '正在检查更新…' }
+        'ReleaseFallback' { '正在检查更新…' }
+        'ReleaseAssets' { '正在检查更新…' }
         'Download' { '正在下载安装程序…' }
         default { '检查更新…' }
     }
@@ -549,6 +667,7 @@ function Reset-UpdateContext {
     $script:UpdateContext.Manual = $false
     $script:UpdateContext.AutomaticInstall = $false
     $script:UpdateContext.Phase = 'Idle'
+    $script:UpdateContext.Client = $null
     $script:UpdateContext.ReleaseTask = $null
     $script:UpdateContext.InstallerTask = $null
     $script:UpdateContext.ChecksumTask = $null
@@ -611,8 +730,10 @@ function Start-UpdateCheck {
         $script:UpdateContext.IsBusy = $true
         $script:UpdateContext.Manual = [bool]$Manual
         $script:UpdateContext.Phase = 'Release'
-        $script:UpdateContext.ReleaseTask = $Client.GetStringAsync(
-            $script:UpdateApiUri
+        $script:UpdateContext.Client = $Client
+        $script:UpdateContext.ReleaseTask = $Client.GetAsync(
+            $script:UpdateApiUri,
+            [Net.Http.HttpCompletionOption]::ResponseHeadersRead
         )
         $script:NextAutomaticUpdateCheckAt = (
             [DateTimeOffset]::Now + $script:UpdateCheckInterval
@@ -622,6 +743,60 @@ function Start-UpdateCheck {
     catch {
         Stop-UpdateOperation -Message (
             "无法开始检查更新。`n`n$($_.Exception.Message)"
+        )
+    }
+}
+
+function Start-GitHubReleaseFallback {
+    param($Client)
+
+    if (-not $Client) {
+        throw '无法启动 GitHub Release 回退检查。'
+    }
+    $script:UpdateContext.Phase = 'ReleaseFallback'
+    $script:UpdateContext.ReleaseTask = $Client.GetAsync(
+        $script:UpdateLatestReleaseUri,
+        [Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    )
+    Sync-UpdateMenuState
+}
+
+function Start-GitHubAssetMetadataFallback {
+    param(
+        $Client,
+        [string]$Tag
+    )
+
+    $release = New-GitHubRedirectRelease `
+        -Tag $Tag `
+        -InstallerSize 0 `
+        -ChecksumSize 0
+    $script:UpdateContext.Phase = 'ReleaseAssets'
+    $script:UpdateContext.Release = $release
+    $script:UpdateContext.InstallerTask = $Client.GetAsync(
+        $release.InstallerUrl,
+        [Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    )
+    $script:UpdateContext.ChecksumTask = $Client.GetAsync(
+        $release.ChecksumUrl,
+        [Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    )
+    Sync-UpdateMenuState
+}
+
+function Complete-ResolvedUpdateRelease {
+    param($Release)
+
+    $manual = $script:UpdateContext.Manual
+    Reset-UpdateContext
+    if (Test-RmfUpdateAvailable `
+        -CurrentVersion $script:AppVersion `
+        -LatestVersion $Release.Version) {
+        Show-UpdateAvailable -Release $Release -Manual:$manual
+    }
+    elseif ($manual) {
+        Show-UpdateMessage -Message (
+            "当前已是最新版本 v$($script:AppVersion)。"
         )
     }
 }
@@ -1025,28 +1200,104 @@ function Complete-UpdateOperation {
     if ($script:UpdateContext.Phase -eq 'Release') {
         $task = $script:UpdateContext.ReleaseTask
         if (-not $task -or -not $task.IsCompleted) { return }
+        $response = $null
         try {
-            $releaseJson = $task.GetAwaiter().GetResult()
+            $response = $task.GetAwaiter().GetResult()
+            if ([int]$response.StatusCode -in @(403, 429)) {
+                $client = $script:UpdateContext.Client
+                $response.Dispose()
+                $response = $null
+                Start-GitHubReleaseFallback -Client $client
+                return
+            }
+            [void]$response.EnsureSuccessStatusCode()
+            $releaseJson = (
+                $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            )
             $release = ConvertFrom-GitHubRelease -Release (
                 $releaseJson | ConvertFrom-Json
             )
-            $manual = $script:UpdateContext.Manual
-            Reset-UpdateContext
-            if (Test-RmfUpdateAvailable `
-                -CurrentVersion $script:AppVersion `
-                -LatestVersion $release.Version) {
-                Show-UpdateAvailable -Release $release -Manual:$manual
-            }
-            elseif ($manual) {
-                Show-UpdateMessage -Message (
-                    "当前已是最新版本 v$($script:AppVersion)。"
-                )
-            }
+            Complete-ResolvedUpdateRelease -Release $release
         }
         catch {
             Stop-UpdateOperation -Message (
                 "检查更新失败。`n`n$($_.Exception.Message)"
             )
+        }
+        finally {
+            if ($response) {
+                $response.Dispose()
+            }
+        }
+        return
+    }
+
+    if ($script:UpdateContext.Phase -eq 'ReleaseFallback') {
+        $task = $script:UpdateContext.ReleaseTask
+        if (-not $task -or -not $task.IsCompleted) { return }
+        $response = $null
+        try {
+            $response = $task.GetAwaiter().GetResult()
+            $tag = Get-GitHubRedirectReleaseTag -Response $response
+            Start-GitHubAssetMetadataFallback `
+                -Client $script:UpdateContext.Client `
+                -Tag $tag
+        }
+        catch {
+            Stop-UpdateOperation -Message (
+                'GitHub API 请求受限，且公共 Release 回退检查失败。' +
+                "`n`n$($_.Exception.Message)"
+            )
+        }
+        finally {
+            if ($response) {
+                $response.Dispose()
+            }
+        }
+        return
+    }
+
+    if ($script:UpdateContext.Phase -eq 'ReleaseAssets') {
+        $installerTask = $script:UpdateContext.InstallerTask
+        $checksumTask = $script:UpdateContext.ChecksumTask
+        if (
+            -not $installerTask -or
+            -not $checksumTask -or
+            -not $installerTask.IsCompleted -or
+            -not $checksumTask.IsCompleted
+        ) {
+            return
+        }
+        $installerResponse = $null
+        $checksumResponse = $null
+        try {
+            $installerResponse = $installerTask.GetAwaiter().GetResult()
+            $checksumResponse = $checksumTask.GetAwaiter().GetResult()
+            $installerSize = Get-GitHubAssetResponseSize `
+                -Response $installerResponse `
+                -MaximumSize 50MB
+            $checksumSize = Get-GitHubAssetResponseSize `
+                -Response $checksumResponse `
+                -MaximumSize 4KB
+            $release = New-GitHubRedirectRelease `
+                -Tag $script:UpdateContext.Release.Tag `
+                -InstallerSize $installerSize `
+                -ChecksumSize $checksumSize
+            Complete-ResolvedUpdateRelease -Release $release
+        }
+        catch {
+            Stop-UpdateOperation -Message (
+                'GitHub API 请求受限，且 Release 资产检查失败。' +
+                "`n`n$($_.Exception.Message)"
+            )
+        }
+        finally {
+            if ($installerResponse) {
+                $installerResponse.Dispose()
+            }
+            if ($checksumResponse) {
+                $checksumResponse.Dispose()
+            }
         }
         return
     }
@@ -1113,18 +1364,24 @@ function Invoke-UpdateTimerTick {
 
 function New-UpdateDiagnosticClient {
     param(
-        $StringTask = $null,
+        [object[]]$ResponseTasks = @(),
         [object[]]$ByteTasks = @()
     )
 
     $client = [pscustomobject]@{
-        StringTask = $StringTask
+        ResponseTasks = @($ResponseTasks)
+        ResponseTaskIndex = 0
         ByteTasks = @($ByteTasks)
         ByteTaskIndex = 0
     }
-    $client | Add-Member -MemberType ScriptMethod -Name GetStringAsync -Value {
-        param([string]$Url)
-        return $this.StringTask
+    $client | Add-Member -MemberType ScriptMethod -Name GetAsync -Value {
+        param(
+            [string]$Url,
+            $CompletionOption = $null
+        )
+        $task = $this.ResponseTasks[$this.ResponseTaskIndex]
+        $this.ResponseTaskIndex++
+        return $task
     }
     $client | Add-Member `
         -MemberType ScriptMethod `
@@ -1235,6 +1492,9 @@ function Invoke-UpdateDiagnostic {
 
     $releaseStateStarted = $false
     $releaseStateCompleted = $false
+    $rateLimitFallbackCompleted = $false
+    $fallbackInstallerSelected = $false
+    $untrustedReleaseRedirectRejected = $false
     $downloadStateStarted = $false
     $partialDownloadFailureReset = $false
     $successfulDownloadCompleted = $false
@@ -1311,12 +1571,24 @@ function Invoke-UpdateDiagnostic {
             Text = '检查更新…'
         }
 
-        $releaseCompletion = New-Object (
-            'Threading.Tasks.TaskCompletionSource[string]'
+        $releaseResponse = New-Object Net.Http.HttpResponseMessage(
+            [Net.HttpStatusCode]::OK
         )
-        $releaseCompletion.SetResult(($release | ConvertTo-Json -Depth 6))
+        $releaseResponse.Content = New-Object Net.Http.StringContent(
+            ($release | ConvertTo-Json -Depth 6)
+        )
+        $releaseResponse.RequestMessage =
+            New-Object Net.Http.HttpRequestMessage(
+                [Net.Http.HttpMethod]::Get,
+                $script:UpdateApiUri
+            )
+        $releaseCompletion = New-Object (
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
+        )
+        $releaseCompletion.SetResult($releaseResponse)
         $releaseClient = New-UpdateDiagnosticClient `
-            -StringTask $releaseCompletion.Task
+            -ResponseTasks @($releaseCompletion.Task)
         Start-UpdateCheck -Client $releaseClient
         $releaseStateStarted = (
             $script:UpdateContext.IsBusy -and
@@ -1331,6 +1603,101 @@ function Invoke-UpdateDiagnostic {
             $script:TrayUpdateItem.Enabled -and
             $script:TrayUpdateItem.Text -eq '检查更新…'
         )
+
+        $rateLimitResponse = New-Object Net.Http.HttpResponseMessage(
+            [Net.HttpStatusCode]::Forbidden
+        )
+        $rateLimitResponse.RequestMessage =
+            New-Object Net.Http.HttpRequestMessage(
+                [Net.Http.HttpMethod]::Get,
+                $script:UpdateApiUri
+            )
+        $redirectResponse = New-Object Net.Http.HttpResponseMessage(
+            [Net.HttpStatusCode]::OK
+        )
+        $redirectResponse.RequestMessage =
+            New-Object Net.Http.HttpRequestMessage(
+                [Net.Http.HttpMethod]::Get,
+                (
+                    'https://github.com/LinLey-Nancy/' +
+                    'Remaining-margin-float/releases/tag/v1.8.0'
+                )
+            )
+        $fallbackInstallerResponse =
+            New-Object Net.Http.HttpResponseMessage(
+                [Net.HttpStatusCode]::OK
+        )
+        $fallbackInstallerResponse.Content =
+            New-Object Net.Http.ByteArrayContent -ArgumentList (,$payloadBytes)
+        $fallbackChecksumResponse =
+            New-Object Net.Http.HttpResponseMessage(
+                [Net.HttpStatusCode]::OK
+        )
+        $fallbackChecksumResponse.Content =
+            New-Object Net.Http.ByteArrayContent `
+                -ArgumentList (,$payloadChecksumBytes)
+        $diagnosticFallbackRelease = New-GitHubRedirectRelease `
+            -Tag 'v1.8.0' `
+            -InstallerSize $payloadBytes.LongLength `
+            -ChecksumSize $payloadChecksumBytes.LongLength
+        $fallbackInstallerSelected = (
+            $diagnosticFallbackRelease.HasInstaller -and
+            $diagnosticFallbackRelease.InstallerName -eq
+                'Remaining-Margin-Float-v1.8.0-Setup.exe'
+        )
+        $fallbackTasks = @()
+        foreach ($fallbackResponse in @(
+            $rateLimitResponse
+            $redirectResponse
+            $fallbackInstallerResponse
+            $fallbackChecksumResponse
+        )) {
+            $completion = New-Object (
+                'Threading.Tasks.TaskCompletionSource[' +
+                'System.Net.Http.HttpResponseMessage]'
+            )
+            $completion.SetResult($fallbackResponse)
+            $fallbackTasks += $completion.Task
+        }
+        $fallbackClient = New-UpdateDiagnosticClient `
+            -ResponseTasks $fallbackTasks
+        Start-UpdateCheck -Client $fallbackClient
+        Complete-UpdateOperation
+        $rateLimitFallbackStarted = (
+            $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'ReleaseFallback'
+        )
+        Complete-UpdateOperation
+        $rateLimitAssetProbeStarted = (
+            $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'ReleaseAssets'
+        )
+        Complete-UpdateOperation
+        $rateLimitFallbackCompleted = (
+            $rateLimitFallbackStarted -and
+            $rateLimitAssetProbeStarted -and
+            -not $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'Idle' -and
+            $script:UpdateDiagnosticMessages.Count -eq 0
+        )
+        $untrustedRedirect = New-Object Net.Http.HttpResponseMessage(
+            [Net.HttpStatusCode]::OK
+        )
+        $untrustedRedirect.RequestMessage =
+            New-Object Net.Http.HttpRequestMessage(
+                [Net.Http.HttpMethod]::Get,
+                'https://example.com/releases/tag/v1.8.0'
+            )
+        $untrustedReleaseRedirectRejected = try {
+            [void](Get-GitHubRedirectReleaseTag -Response $untrustedRedirect)
+            $false
+        }
+        catch {
+            $true
+        }
+        finally {
+            $untrustedRedirect.Dispose()
+        }
 
         $installerCompletion = New-Object (
             'Threading.Tasks.TaskCompletionSource[byte[]]'
@@ -1400,11 +1767,12 @@ function Invoke-UpdateDiagnostic {
         )
 
         $cancelledRelease = New-Object (
-            'Threading.Tasks.TaskCompletionSource[string]'
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
         )
         $cancelledRelease.SetCanceled()
         $cancelledClient = New-UpdateDiagnosticClient `
-            -StringTask $cancelledRelease.Task
+            -ResponseTasks @($cancelledRelease.Task)
         Start-UpdateCheck -Client $cancelledClient
         Complete-UpdateOperation
         $cancelledReleaseReset = (
@@ -1605,6 +1973,11 @@ function Invoke-UpdateDiagnostic {
         )
         ReleaseStateStarted = $releaseStateStarted
         ReleaseStateCompleted = $releaseStateCompleted
+        RateLimitFallbackCompleted = $rateLimitFallbackCompleted
+        FallbackInstallerSelected = $fallbackInstallerSelected
+        UntrustedReleaseRedirectRejected = (
+            $untrustedReleaseRedirectRejected
+        )
         DownloadStateStarted = $downloadStateStarted
         PartialDownloadFailureReset = $partialDownloadFailureReset
         SuccessfulDownloadCompleted = $successfulDownloadCompleted
