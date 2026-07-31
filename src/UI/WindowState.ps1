@@ -1400,6 +1400,22 @@ function Set-LowRemainingAlertsEnabled {
     Save-Settings
 }
 
+function Refresh-RapidDropStatusView {
+    if (-not $script:LastSnapshot -or -not $script:LastUsageInsights) {
+        return
+    }
+
+    $script:LastUsageInsights.RapidDrop = Measure-RapidUsageDrop `
+        -Samples @($script:UsageSyncSession.RapidSamples) `
+        -Snapshot $script:LastSnapshot `
+        -WindowMinutes $script:RapidDropWindowMinutes `
+        -CodexPercent $script:CodexRapidDropPercent `
+        -DeepSeekMode $script:DeepSeekRapidDropMode `
+        -DeepSeekPercent $script:DeepSeekRapidDropPercent `
+        -DeepSeekAmount $script:DeepSeekRapidDropAmount
+    Update-UsageInsightView -Insights $script:LastUsageInsights
+}
+
 function Set-UsageAlertSettings {
     param(
         [bool]$LowAlertsEnabled,
@@ -1473,6 +1489,7 @@ function Set-UsageAlertSettings {
     }
     $script:LowAlertActive = @{}
     $script:RapidDropAlertActive = @{}
+    Refresh-RapidDropStatusView
     return Get-AppSettingsSnapshot
 }
 
@@ -2013,6 +2030,7 @@ function Update-UsageView {
             -Snapshot $Snapshot `
             -Insights $insights `
             -ObservationContext $ObservationContext
+        $script:LastUsageInsights = $insights
         Update-UsageInsightView -Insights $insights
         if ($ObservationContext -in @('StartupLocal', 'StartupOfficial')) {
             [void](Invoke-StartupUsageSnapshotNotification `

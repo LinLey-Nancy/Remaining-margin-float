@@ -248,6 +248,7 @@ $script:UpdateContext = [pscustomobject]@{
 }
 $script:LastDeepSeekSnapshot = $null
 $script:UsageHistoryCache = $null
+$script:LastUsageInsights = $null
 $script:LastUsageHistoryError = ''
 $script:LowRemainingThreshold = 20.0
 $script:LowRemainingAlertsEnabled = $true

@@ -434,6 +434,9 @@ Assert-Diagnostic -Condition (
         [string]$transitions.RapidDropStatusText
     )
 ) -Message 'Custom low-alert threshold persistence'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.RapidDropStatusUpdatedImmediately) `
+    -Message 'Custom rapid-drop settings update the detail status immediately'
 
 $refresh = Invoke-JsonDiagnostic -Name 'CheckRefreshCoordinator'
 Assert-Diagnostic -Condition ([bool]$refresh.ManualRefreshSucceeded) `

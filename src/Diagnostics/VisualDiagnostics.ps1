@@ -726,6 +726,22 @@ if ($CheckTransitions) {
         throw 'Existing-instance activation did not reveal the edge-docked window.'
     }
     Clear-EdgeDock
+    $script:RapidDropWindowMinutes = 30
+    $script:CodexRapidDropPercent = 10.0
+    $settingsBaselineSnapshot = $startupOfficialSnapshot.PSObject.Copy()
+    $settingsBaselineSnapshot.RemainingPercent = 56
+    $settingsCurrentSnapshot = $startupOfficialSnapshot.PSObject.Copy()
+    $settingsCurrentSnapshot.RemainingPercent = 55
+    $script:UsageSyncSession.RapidSamples = @(
+        ConvertTo-UsageHistorySamples `
+            -Snapshot $settingsBaselineSnapshot `
+            -ObservedAt ([DateTimeOffset]::Now.AddMinutes(-1))
+    )
+    $script:UsageSyncSession.RapidChannels = @{
+        Codex = 'CodexOfficial'
+    }
+    Update-UsageView -Snapshot $settingsCurrentSnapshot
+    $rapidDropStatusBeforeSettings = [string]$RapidDropText.Text
     [void](Set-UsageAlertSettings `
         -LowAlertsEnabled $true `
         -LowThreshold 35 `
@@ -735,6 +751,7 @@ if ($CheckTransitions) {
         -DeepSeekMode 'Amount' `
         -DeepSeekPercent 11.5 `
         -DeepSeekAmount 8.5)
+    $rapidDropStatusAfterSettings = [string]$RapidDropText.Text
     $lowAlertThresholdMenuText = [string]$script:LowAlertsMenuItem.Header
     $usageAlertSettingsMenuText =
         [string]$script:LowAlertThresholdMenuItem.Header
@@ -881,6 +898,20 @@ if ($CheckTransitions) {
             [string]$lowAlertSettingsSnapshot.DeepSeekRapidDropMode -eq 'Amount' -and
             [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropPercent -eq 11.5 -and
             [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropAmount -eq 8.5
+        )
+        RapidDropStatusBeforeSettings = $rapidDropStatusBeforeSettings
+        RapidDropStatusAfterSettings = $rapidDropStatusAfterSettings
+        RapidDropStatusUpdatedImmediately = (
+            [string]::Equals(
+                $rapidDropStatusBeforeSettings,
+                '30 分钟内下降 1pp · 阈值 10pp',
+                [StringComparison]::Ordinal
+            ) -and
+            [string]::Equals(
+                $rapidDropStatusAfterSettings,
+                '45 分钟内下降 1pp · 阈值 12.5pp',
+                [StringComparison]::Ordinal
+            )
         )
         LowAlertThresholdInvalidFallback = (
             (ConvertTo-LowRemainingThreshold `
