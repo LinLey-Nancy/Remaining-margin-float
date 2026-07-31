@@ -350,7 +350,7 @@ Assert-Diagnostic -Condition (
         $_ -ne 'Segoe UI Variable Display'
     }).Count -eq 0 -and
     @($transitions.MetricValueFontSizes | Where-Object {
-        [double]$_ -ne 22
+        [double]$_ -ne 21
     }).Count -eq 0 -and
     @($transitions.MetricValueFontWeights | Where-Object {
         $_ -ne 'SemiBold'
