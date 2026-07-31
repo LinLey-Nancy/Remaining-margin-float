@@ -266,8 +266,11 @@ try {
                 '/CLOSEAPPLICATIONS'
                 '/RMFAUTORESTART=1'
             ) `
-            -Wait `
             -PassThru
+        if (-not $upgradeProcess.WaitForExit(60000)) {
+            Stop-Process -Id $upgradeProcess.Id -Force
+            throw 'Silent in-place upgrade did not exit within 60 seconds.'
+        }
     }
     finally {
         [Environment]::SetEnvironmentVariable(
