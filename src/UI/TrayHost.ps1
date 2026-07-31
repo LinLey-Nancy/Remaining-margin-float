@@ -114,9 +114,7 @@ $script:TrayUpdateItem.Text = '检查更新…'
 $script:TrayUpdateItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Start-UpdateCheck -Manual
 }))
-$script:TrayAutoUpdateItem = New-Object (
-    System.Windows.Forms.ToolStripMenuItem
-)
+$script:TrayAutoUpdateItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayAutoUpdateItem.Text = '自动更新并重启（仅合适网络）'
 $script:TrayAutoUpdateItem.CheckOnClick = $true
 $script:TrayAutoUpdateItem.Checked = $script:AutoUpdateEnabled
