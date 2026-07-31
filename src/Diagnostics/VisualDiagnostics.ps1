@@ -543,11 +543,15 @@ if ($CheckTransitions) {
     )
     $outlineThickness = $UltraProgressOutline.BorderThickness
     $outlineCorners = $UltraProgressOutline.CornerRadius
+    $horizontalEnergyInset = $energyFillOrigin.X + $energyFillRightInset
+    $verticalEnergyInset = $energyFillOrigin.Y + $energyFillBottomInset
     $energyContainedByOutline = (
-        [Math]::Abs($energyFillOrigin.X - 1) -lt 0.01 -and
-        [Math]::Abs($energyFillOrigin.Y - 1) -lt 0.01 -and
-        [Math]::Abs($energyFillRightInset - 1) -lt 0.01 -and
-        [Math]::Abs($energyFillBottomInset - 1) -lt 0.01 -and
+        $energyFillOrigin.X -gt 0 -and
+        $energyFillOrigin.Y -gt 0 -and
+        $energyFillRightInset -gt 0 -and
+        $energyFillBottomInset -gt 0 -and
+        [Math]::Abs($horizontalEnergyInset - 2) -lt 0.01 -and
+        [Math]::Abs($verticalEnergyInset - 2) -lt 0.01 -and
         $outlineThickness.Left -eq 1 -and
         $outlineThickness.Top -eq 1 -and
         $outlineThickness.Right -eq 1 -and
@@ -750,6 +754,7 @@ if ($CheckTransitions) {
     $lowAlertThresholdDialog.Close()
 
     $result = [pscustomobject]@{
+        VersionText = [string]$AppVersionText.Text
         ExpandedWidth = $expandedWidth
         ExpandedHeight = $expandedHeight
         ExpandedVisibility = $expandedVisibility

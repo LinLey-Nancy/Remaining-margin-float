@@ -641,12 +641,30 @@
                                        FontSize="9"/>
                         </Grid>
                         <Grid Grid.Row="1">
-                            <TextBlock x:Name="AutoRefreshText"
-                                       VerticalAlignment="Center"
-                                       Text="60 秒后自动刷新"
-                                       Foreground="{StaticResource TextMuted}"
-                                       FontFamily="Microsoft YaHei UI"
-                                       FontSize="10"/>
+                            <StackPanel Orientation="Horizontal"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="版本"
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="9.5"/>
+                                <TextBlock x:Name="AppVersionText"
+                                           Margin="4,0,0,0"
+                                           Text="v--"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           FontFamily="Segoe UI Variable Text"
+                                           FontSize="9.5"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock Margin="7,0"
+                                           Text="·"
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="9.5"/>
+                                <TextBlock x:Name="AutoRefreshText"
+                                           Text="60 秒后自动刷新"
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontFamily="Microsoft YaHei UI"
+                                           FontSize="9.5"/>
+                            </StackPanel>
                             <Button x:Name="RefreshButton"
                                     HorizontalAlignment="Right"
                                     Width="96"

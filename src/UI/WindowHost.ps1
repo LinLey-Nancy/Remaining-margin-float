@@ -591,11 +591,12 @@ $names = @(
     'Trend7Text', 'Trend7Canvas', 'Trend7Area', 'Trend7Line',
     'Trend7StartMarker', 'Trend7EndMarker', 'Trend7MetaText',
     'PredictionText', 'RapidDropStatusDot', 'RapidDropText',
-    'AutoRefreshText', 'RefreshButton'
+    'AppVersionText', 'AutoRefreshText', 'RefreshButton'
 )
 foreach ($name in $names) {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
 }
+$AppVersionText.Text = 'v{0}' -f $script:AppVersion
 
 function Apply-SystemAccessibilityTheme {
     if (-not $script:HighContrast) { return }

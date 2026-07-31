@@ -292,6 +292,8 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.3') `
+    -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
 Assert-Diagnostic -Condition ([bool]$transitions.DeactivationCallbackObserved) `
@@ -363,6 +365,9 @@ Assert-Diagnostic -Condition (
         $_ -ne 'SemiBold'
     }).Count -eq 0
 ) -Message 'Metric typography'
+$edgeEnergyInsets = @($transitions.EdgeEnergyInsets | ForEach-Object {
+    [double]$_
+})
 Assert-Diagnostic -Condition (
     [bool]$transitions.ActivationRevealedEdgeDock -and
     [bool]$transitions.EdgeRailHitTest -and
@@ -371,7 +376,10 @@ Assert-Diagnostic -Condition (
     $transitions.EdgeTrackWidth -eq 12 -and
     [bool]$transitions.EdgeTrackFlush -and
     [bool]$transitions.EdgeEnergyContainedByOutline -and
-    @($transitions.EdgeEnergyInsets | Where-Object { $_ -ne 1 }).Count -eq 0 -and
+    $edgeEnergyInsets.Count -eq 4 -and
+    @($edgeEnergyInsets | Where-Object { $_ -le 0 }).Count -eq 0 -and
+    [Math]::Abs($edgeEnergyInsets[0] + $edgeEnergyInsets[2] - 2) -lt 0.01 -and
+    [Math]::Abs($edgeEnergyInsets[1] + $edgeEnergyInsets[3] - 2) -lt 0.01 -and
     @($transitions.EdgeOutlineThickness | Where-Object { $_ -ne 1 }).Count -eq 0 -and
     @($transitions.EdgeOutlineCorners | Where-Object { $_ -ne 2 }).Count -eq 0 -and
     [bool]$transitions.EdgePixelAlignedAcrossCycles -and
