@@ -69,8 +69,16 @@ function Start-CodexOfficialRequest {
             -Status 'Degraded' `
             -Message $_.Exception.Message
         if ($script:ActiveProvider -eq 'Codex') {
-            $SourceText.Text = '官方接口请求未能启动，已保留本地数据 · ' +
-                $_.Exception.Message
+            if ($script:LastSnapshot) {
+                $fallback = New-UsageFallbackSnapshot `
+                    -Snapshot $script:LastSnapshot `
+                    -Reason ('官方接口请求未能启动 · ' + $_.Exception.Message)
+                Update-UsageView -Snapshot $fallback -DisplayOnly
+            }
+            else {
+                $SourceText.Text = '官方接口请求未能启动 · ' +
+                    $_.Exception.Message
+            }
         }
         return $false
     }
@@ -195,7 +203,7 @@ function Complete-CodexRefresh {
         $transientFailure = (
             $task.IsCanceled -or
             $task.IsFaulted -or
-            $statusCode -in @(408, 425, 429, 500, 502, 503, 504)
+            (Test-TransientRefreshFailure -StatusCode $statusCode)
         )
         if (
             $transientFailure -and
@@ -204,23 +212,35 @@ function Complete-CodexRefresh {
             $script:ActiveProvider -eq 'Codex' -and
             -not $script:IsClosing
         ) {
-            $retryDelaySeconds = 1.0
+            $serverDelaySeconds = 0.0
             if (
                 $response -and
                 $response.Headers.RetryAfter -and
                 $response.Headers.RetryAfter.Delta
             ) {
-                $retryDelaySeconds = [Math]::Min(
-                    30,
-                    [Math]::Max(
-                        1,
-                        $response.Headers.RetryAfter.Delta.Value.TotalSeconds
-                    )
-                )
+                $serverDelaySeconds =
+                    $response.Headers.RetryAfter.Delta.Value.TotalSeconds
             }
+            $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
+                -Attempt $codex.Attempt `
+                -ServerDelaySeconds $serverDelaySeconds
             $codex.RetryAfter =
                 [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
             $retryStarted = $true
+        }
+        if (
+            $retryStarted -and
+            $script:LastSnapshot -and
+            $script:ActiveProvider -eq 'Codex'
+        ) {
+            $fallback = New-UsageFallbackSnapshot `
+                -Snapshot $script:LastSnapshot `
+                -Reason (
+                    '官方接口暂时不可用，{0:0} 秒后重试 · {1}' -f
+                    $retryDelaySeconds,
+                    $failureMessage
+                )
+            Update-UsageView -Snapshot $fallback -DisplayOnly
         }
         if (
             -not $retryStarted -and
@@ -237,15 +257,26 @@ function Complete-CodexRefresh {
                 SampledAt = $cached.SampledAt
                 IsCached = $true
             }
-            Update-UsageView -Snapshot (
+            $cachedSnapshot = (
                 Get-CodexUsageSnapshot `
                     -OfficialUsageOverride $cachedUsage `
                     -SkipOfficialRequest
             )
+            $fallback = New-UsageFallbackSnapshot `
+                -Snapshot $cachedSnapshot `
+                -Reason ('官方接口刷新失败 · ' + $failureMessage)
+            Update-UsageView -Snapshot $fallback -DisplayOnly
         }
         elseif (-not $retryStarted -and $script:ActiveProvider -eq 'Codex') {
-            $SourceText.Text = '官方接口刷新失败，已保留本地数据 · ' +
-                $failureMessage
+            if ($script:LastSnapshot) {
+                $fallback = New-UsageFallbackSnapshot `
+                    -Snapshot $script:LastSnapshot `
+                    -Reason ('官方接口刷新失败 · ' + $failureMessage)
+                Update-UsageView -Snapshot $fallback -DisplayOnly
+            }
+            else {
+                $SourceText.Text = '官方接口刷新失败 · ' + $failureMessage
+            }
         }
     }
     finally {
@@ -264,7 +295,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.8.4')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.8.5')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -290,6 +321,8 @@ function Cancel-DeepSeekRefresh {
     }
     $deepSeek.Request = $null
     $deepSeek.RequestTask = $null
+    $deepSeek.Attempt = 0
+    $deepSeek.RetryAfter = $null
     Set-RefreshBusy -Busy $false
 }
 
@@ -299,14 +332,16 @@ function Start-DeepSeekRefresh {
         $script:LastDeepSeekSnapshot = $snapshot
         Update-UsageView -Snapshot $snapshot
         Set-RefreshBusy -Busy $false
-        return
+        return $false
     }
 
     $credential = Get-DeepSeekCredential
     if ([string]::IsNullOrWhiteSpace($credential.ApiKey)) {
+        $script:AppContext.Refresh.DeepSeek.Attempt = 0
+        $script:AppContext.Refresh.DeepSeek.RetryAfter = $null
         Update-UsageView -Snapshot (Get-DeepSeekUnavailableSnapshot)
         Set-RefreshBusy -Busy $false
-        return
+        return $false
     }
 
     $request = $null
@@ -319,14 +354,19 @@ function Start-DeepSeekRefresh {
             'Bearer',
             $credential.ApiKey
         )
+        $script:AppContext.Refresh.DeepSeek.Attempt++
+        $script:AppContext.Refresh.DeepSeek.RetryAfter = $null
         $script:AppContext.Refresh.DeepSeek.Request = $request
         $script:AppContext.Refresh.DeepSeek.RequestTask =
             (Get-DeepSeekHttpClient).SendAsync($request)
+        return $true
     }
     catch {
         if ($request) { $request.Dispose() }
         $script:AppContext.Refresh.DeepSeek.Request = $null
         $script:AppContext.Refresh.DeepSeek.RequestTask = $null
+        $script:AppContext.Refresh.DeepSeek.Attempt = 0
+        $script:AppContext.Refresh.DeepSeek.RetryAfter = $null
         Set-RuntimeDiagnosticStatus `
             -Area 'DeepSeek' `
             -Status 'Error' `
@@ -336,13 +376,37 @@ function Start-DeepSeekRefresh {
             -Status 'Error' `
             -Message $_.Exception.Message
         Set-RefreshBusy -Busy $false
-        $SourceText.Text = 'DeepSeek 请求未能启动：' + $_.Exception.Message
+        if ($script:LastDeepSeekSnapshot) {
+            $fallback = New-UsageFallbackSnapshot `
+                -Snapshot $script:LastDeepSeekSnapshot `
+                -Reason ('DeepSeek 请求未能启动 · ' + $_.Exception.Message)
+            Update-UsageView -Snapshot $fallback -DisplayOnly
+        }
+        else {
+            $SourceText.Text = 'DeepSeek 请求未能启动：' +
+                $_.Exception.Message
+        }
+        return $false
     }
 }
 
 function Complete-DeepSeekRefresh {
     $deepSeek = $script:AppContext.Refresh.DeepSeek
-    if (-not $deepSeek.RequestTask -or -not $deepSeek.RequestTask.IsCompleted) {
+    if (-not $deepSeek.RequestTask) {
+        if (
+            $deepSeek.RetryAfter -and
+            [DateTimeOffset]::Now -ge $deepSeek.RetryAfter
+        ) {
+            $deepSeek.RetryAfter = $null
+            if (-not (Start-DeepSeekRefresh)) {
+                $deepSeek.Attempt = 0
+                Set-RefreshBusy -Busy $false
+                Reset-RefreshCountdown
+            }
+        }
+        return
+    }
+    if (-not $deepSeek.RequestTask.IsCompleted) {
         return
     }
 
@@ -351,6 +415,9 @@ function Complete-DeepSeekRefresh {
     $deepSeek.RequestTask = $null
     $deepSeek.Request = $null
     $response = $null
+    $statusCode = 0
+    $retryStarted = $false
+    $failureMessage = ''
     try {
         if ($task.IsCanceled) { throw 'DeepSeek 请求超时，请稍后重试。' }
         if ($task.IsFaulted) {
@@ -358,15 +425,16 @@ function Complete-DeepSeekRefresh {
         }
 
         $response = $task.GetAwaiter().GetResult()
+        $statusCode = [int]$response.StatusCode
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode) {
-            $message = switch ([int]$response.StatusCode) {
+            $message = switch ($statusCode) {
                 401 { 'API Key 无效或已失效，请重新配置。' }
                 402 { 'DeepSeek 余额不足，请充值后重试。' }
                 429 { '请求过于频繁，稍后会自动重试。' }
                 500 { 'DeepSeek 服务暂时异常，稍后会自动重试。' }
                 503 { 'DeepSeek 服务繁忙，稍后会自动重试。' }
-                default { 'DeepSeek 返回 HTTP {0}。' -f [int]$response.StatusCode }
+                default { 'DeepSeek 返回 HTTP {0}。' -f $statusCode }
             }
             throw $message
         }
@@ -390,27 +458,74 @@ function Complete-DeepSeekRefresh {
             -Message 'DeepSeek 余额刷新成功'
     }
     catch {
+        $failureMessage = $_.Exception.Message
         Set-RuntimeDiagnosticStatus `
             -Area 'DeepSeek' `
             -Status 'Degraded' `
-            -Message $_.Exception.Message
+            -Message $failureMessage
         Set-RuntimeDiagnosticStatus `
             -Area 'Refresh' `
             -Status 'Degraded' `
-            -Message $_.Exception.Message
-        if ($script:LastDeepSeekSnapshot -and $script:ActiveProvider -eq 'DeepSeek') {
-            Update-UsageView -Snapshot $script:LastDeepSeekSnapshot
-            $SourceText.Text = '刷新失败，显示上次数据 · ' + $_.Exception.Message
+            -Message $failureMessage
+        $transientFailure = (
+            $task.IsCanceled -or
+            $task.IsFaulted -or
+            (Test-TransientRefreshFailure -StatusCode $statusCode)
+        )
+        if (
+            $transientFailure -and
+            $deepSeek.Attempt -lt $deepSeek.MaxAttempts -and
+            $script:ActiveProvider -eq 'DeepSeek' -and
+            -not $script:IsClosing
+        ) {
+            $serverDelaySeconds = 0.0
+            if (
+                $response -and
+                $response.Headers.RetryAfter -and
+                $response.Headers.RetryAfter.Delta
+            ) {
+                $serverDelaySeconds =
+                    $response.Headers.RetryAfter.Delta.Value.TotalSeconds
+            }
+            $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
+                -Attempt $deepSeek.Attempt `
+                -ServerDelaySeconds $serverDelaySeconds
+            $deepSeek.RetryAfter =
+                [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+            $retryStarted = $true
+        }
+        if (
+            $script:LastDeepSeekSnapshot -and
+            $script:ActiveProvider -eq 'DeepSeek'
+        ) {
+            $reason = if ($retryStarted) {
+                'DeepSeek 暂时不可用，{0:0} 秒后重试 · {1}' -f
+                    $retryDelaySeconds,
+                    $failureMessage
+            }
+            else {
+                'DeepSeek 刷新失败 · ' + $failureMessage
+            }
+            $fallback = New-UsageFallbackSnapshot `
+                -Snapshot $script:LastDeepSeekSnapshot `
+                -Reason $reason
+            Update-UsageView -Snapshot $fallback -DisplayOnly
         }
         elseif ($script:ActiveProvider -eq 'DeepSeek') {
-            Update-UsageView -Snapshot (Get-DeepSeekUnavailableSnapshot -Reason $_.Exception.Message)
+            Update-UsageView -Snapshot (
+                Get-DeepSeekUnavailableSnapshot -Reason $failureMessage
+            )
         }
     }
     finally {
         if ($response) { $response.Dispose() }
         if ($request) { $request.Dispose() }
-        Set-RefreshBusy -Busy $false
-        Reset-RefreshCountdown
+        if (-not $retryStarted) {
+            $deepSeek.Attempt = 0
+            $deepSeek.RetryAfter = $null
+            Set-RefreshBusy -Busy $false
+            Reset-RefreshCountdown
+        }
     }
 }
 
@@ -459,7 +574,10 @@ function Set-ActiveProvider {
 
     if ($script:ActiveProvider -ne $Provider) {
         Reset-ProviderRapidDropSession -ProviderId $Provider
-        if ($script:AppContext.Refresh.DeepSeek.RequestTask) {
+        if (
+            $script:AppContext.Refresh.DeepSeek.RequestTask -or
+            $script:AppContext.Refresh.DeepSeek.RetryAfter
+        ) {
             Cancel-DeepSeekRefresh
         }
         if (
@@ -742,6 +860,8 @@ function Reset-FailedRefreshOperation {
     }
     $deepSeek.Request = $null
     $deepSeek.RequestTask = $null
+    $deepSeek.Attempt = 0
+    $deepSeek.RetryAfter = $null
 
     try {
         Set-RefreshBusy -Busy $false
@@ -788,6 +908,16 @@ function Set-AutoRefreshStatusText {
 }
 
 function Invoke-RefreshTimerTick {
+    try {
+        [void](Sync-EdgeDockEnvironment)
+    }
+    catch {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Window' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
+    }
+
     try {
         Complete-CodexRefresh
         Complete-DeepSeekRefresh

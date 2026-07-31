@@ -180,7 +180,7 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:AppVersion = '1.8.4'
+$script:AppVersion = '1.8.5'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -277,6 +277,7 @@ $script:EdgeDockMenuItem = $null
 $script:EdgeDockEnabled = $true
 $script:EdgeDockSide = $null
 $script:EdgeDockWorkArea = $null
+$script:IsSyncingEdgeDockEnvironment = $false
 $script:IsEdgeRevealed = $false
 $script:StartupMode = 'Off'
 $script:StartupMenuItems = @{}
@@ -302,6 +303,9 @@ $script:AppContext = [pscustomobject]@{
         DeepSeek = [pscustomobject]@{
             Request = $null
             RequestTask = $null
+            Attempt = 0
+            MaxAttempts = 2
+            RetryAfter = $null
         }
     }
 }

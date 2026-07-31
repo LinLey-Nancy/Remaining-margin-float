@@ -457,6 +457,30 @@ if ($CheckTransitions) {
     $expandedHeight = $window.ActualHeight
     $expandedVisibility = [string]$DetailsPanel.Visibility
     $window.UpdateLayout()
+    $footerTextRuns = @(
+        $VersionLabelText,
+        $AppVersionText,
+        $VersionSeparatorText,
+        $AutoRefreshText
+    )
+    $footerTextAligned = (
+        [double]$FooterStatusText.LineHeight -eq 14 -and
+        [string]$VersionLabelText.FontFamily.Source -eq
+            'Microsoft YaHei UI' -and
+        [string]$AppVersionText.FontFamily.Source -eq
+            'Segoe UI Variable Text' -and
+        [string]$AutoRefreshText.FontFamily.Source -eq
+            'Microsoft YaHei UI' -and
+        @(
+            $footerTextRuns | Where-Object {
+                [string]$_.BaselineAlignment -ne 'Baseline' -or
+                -not [object]::ReferenceEquals(
+                    $_.Parent,
+                    $FooterStatusText
+                )
+            }
+        ).Count -eq 0
+    )
     $trendContentBottom = (
         @(
             $Trend24Canvas.TranslatePoint(
@@ -510,12 +534,47 @@ if ($CheckTransitions) {
     $script:EdgeDockWorkArea = $null
     Set-EdgeDockReveal -Revealed $false -Immediate
     $window.UpdateLayout()
+    $actualEdgeWorkArea = [Windows.Rect](@(Get-WindowWorkArea)[-1])
+    $shiftedEdgeLeft = [double]$actualEdgeWorkArea.Left + 24
+    $script:EdgeDockWorkArea = New-Object Windows.Rect(
+        $shiftedEdgeLeft,
+        $actualEdgeWorkArea.Top,
+        $actualEdgeWorkArea.Width,
+        $actualEdgeWorkArea.Height
+    )
+    $edgeEnvironmentResynced = Sync-EdgeDockEnvironment
+    $window.UpdateLayout()
     $hiddenTrackX = $UltraProgressTrack.TranslatePoint(
         (New-Object Windows.Point(0, 0)),
         $WindowRoot
     ).X
     $hiddenRailHitTest = $UltraCompactPanel.IsHitTestVisible
     $hiddenRailAlpha = ([Windows.Media.SolidColorBrush]$UltraCompactPanel.Background).Color.A
+    $depletedMaskColor = (
+        [Windows.Media.SolidColorBrush]$UltraDepletedMask.Background
+    ).Color
+    $depletedMaskOpaque = $depletedMaskColor.A -eq 255
+    $depletedMaskNeutralGray = (
+        (
+            @(
+                $depletedMaskColor.R,
+                $depletedMaskColor.G,
+                $depletedMaskColor.B
+            ) | Measure-Object -Maximum
+        ).Maximum -
+        (
+            @(
+                $depletedMaskColor.R,
+                $depletedMaskColor.G,
+                $depletedMaskColor.B
+            ) | Measure-Object -Minimum
+        ).Minimum -le 12 -and
+        (
+            $depletedMaskColor.R +
+            $depletedMaskColor.G +
+            $depletedMaskColor.B
+        ) / 3 -lt 140
+    )
     $edgeTrackInset = $UltraProgressTrack.TranslatePoint(
         (New-Object Windows.Point(0, 0)),
         $UltraCompactPanel
@@ -681,6 +740,9 @@ if ($CheckTransitions) {
     if (
         -not $hiddenRailHitTest -or
         $hiddenRailAlpha -lt 8 -or
+        -not $depletedMaskOpaque -or
+        -not $depletedMaskNeutralGray -or
+        -not $edgeEnvironmentResynced -or
         [Math]::Abs($edgeRevealHitWidth - $script:EdgeVisibleWidth) -ge 0.01 -or
         -not $edgeTrackFlushInPanel -or
         -not $edgeSpacingStable -or
@@ -769,9 +831,29 @@ if ($CheckTransitions) {
         $null -ne $lowAlertThresholdDialog.FindName('ErrorText')
     )
     $lowAlertThresholdDialog.Close()
+    $lastSnapshotBeforeFallback = $script:LastSnapshot
+    $historyCountBeforeFallback = @($script:UsageHistoryCache).Count
+    $staleFallbackSnapshot = New-UsageFallbackSnapshot `
+        -Snapshot $script:LastSnapshot `
+        -Reason '官方接口暂时不可用'
+    $staleFallbackSnapshot.SampledAt = [DateTimeOffset]::Now.AddMinutes(-15)
+    Update-UsageView -Snapshot $staleFallbackSnapshot -DisplayOnly
+    $fallbackProvenanceDisplayed = (
+        [string]$SourceText.Text -match
+            '显示上次数据（15 分钟前）.*官方接口暂时不可用' -and
+        [string]$SampleTime.Text -match '15 分钟前'
+    )
+    $displayOnlyPreservedHistory = (
+        [object]::ReferenceEquals(
+            $lastSnapshotBeforeFallback,
+            $script:LastSnapshot
+        ) -and
+        @($script:UsageHistoryCache).Count -eq $historyCountBeforeFallback
+    )
 
     $result = [pscustomobject]@{
         VersionText = [string]$AppVersionText.Text
+        FooterTextAligned = $footerTextAligned
         ExpandedWidth = $expandedWidth
         ExpandedHeight = $expandedHeight
         ExpandedVisibility = $expandedVisibility
@@ -821,6 +903,9 @@ if ($CheckTransitions) {
         ActivationRevealedEdgeDock = $activationRevealedEdgeDock
         EdgeRailHitTest = $hiddenRailHitTest
         EdgeRailAlpha = $hiddenRailAlpha
+        EdgeDepletedMaskOpaque = $depletedMaskOpaque
+        EdgeDepletedMaskNeutralGray = $depletedMaskNeutralGray
+        EdgeEnvironmentResynced = $edgeEnvironmentResynced
         EdgeTrackInset = $edgeTrackInset
         EdgeTrackTrailingInset = $edgeTrackTrailingInset
         EdgeTrackWidth = $UltraProgressTrack.ActualWidth
@@ -913,6 +998,8 @@ if ($CheckTransitions) {
                 [StringComparison]::Ordinal
             )
         )
+        FallbackProvenanceDisplayed = $fallbackProvenanceDisplayed
+        DisplayOnlyPreservedHistory = $displayOnlyPreservedHistory
         LowAlertThresholdInvalidFallback = (
             (ConvertTo-LowRemainingThreshold `
                 -Value 'invalid' `

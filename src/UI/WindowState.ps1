@@ -3,16 +3,20 @@
         $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
         if ($helper.Handle -ne [IntPtr]::Zero) {
             $pixelArea = [System.Windows.Forms.Screen]::FromHandle($helper.Handle).WorkingArea
-            $source = [System.Windows.PresentationSource]::FromVisual($window)
-            if ($source -and $source.CompositionTarget) {
-                $transform = $source.CompositionTarget.TransformFromDevice
-                $topLeft = $transform.Transform((New-Object Windows.Point($pixelArea.Left, $pixelArea.Top)))
-                $bottomRight = $transform.Transform((New-Object Windows.Point($pixelArea.Right, $pixelArea.Bottom)))
+            $dpi = [Windows.Media.VisualTreeHelper]::GetDpi($window)
+            if ($dpi.DpiScaleX -gt 0 -and $dpi.DpiScaleY -gt 0) {
+                $logicalArea = ConvertTo-LogicalWorkArea `
+                    -PixelLeft $pixelArea.Left `
+                    -PixelTop $pixelArea.Top `
+                    -PixelRight $pixelArea.Right `
+                    -PixelBottom $pixelArea.Bottom `
+                    -DpiScaleX $dpi.DpiScaleX `
+                    -DpiScaleY $dpi.DpiScaleY
                 return New-Object Windows.Rect(
-                    $topLeft.X,
-                    $topLeft.Y,
-                    $bottomRight.X - $topLeft.X,
-                    $bottomRight.Y - $topLeft.Y
+                    $logicalArea.Left,
+                    $logicalArea.Top,
+                    $logicalArea.Width,
+                    $logicalArea.Height
                 )
             }
         }
@@ -43,6 +47,45 @@ function Get-EdgeDockWorkArea {
         )
     }
     return $script:EdgeDockWorkArea
+}
+
+function Sync-EdgeDockEnvironment {
+    param([switch]$Force)
+
+    if (
+        -not $script:EdgeDockSide -or
+        $script:IsExpanded -or
+        $script:IsSyncingEdgeDockEnvironment
+    ) {
+        return $false
+    }
+
+    $currentWorkArea = Get-WindowWorkArea
+    if (
+        -not $Force -and
+        (Test-WorkAreaEquivalent `
+            -First $script:EdgeDockWorkArea `
+            -Second $currentWorkArea)
+    ) {
+        return $false
+    }
+
+    $script:IsSyncingEdgeDockEnvironment = $true
+    try {
+        $script:EdgeDockWorkArea = New-Object Windows.Rect(
+            $currentWorkArea.Left,
+            $currentWorkArea.Top,
+            $currentWorkArea.Width,
+            $currentWorkArea.Height
+        )
+        Set-EdgeDockReveal `
+            -Revealed $script:IsEdgeRevealed `
+            -Immediate
+        return $true
+    }
+    finally {
+        $script:IsSyncingEdgeDockEnvironment = $false
+    }
 }
 
 function Align-EdgeDockToPhysicalScreenEdge {
@@ -390,7 +433,7 @@ function Set-EdgeDockEnabled {
 
 function Ensure-WindowVisible {
     if ($script:EdgeDockSide -and -not $script:IsExpanded) {
-        Set-EdgeDockReveal -Revealed $script:IsEdgeRevealed -Immediate
+        [void](Sync-EdgeDockEnvironment -Force)
         return
     }
     $workArea = Get-WindowWorkArea
@@ -697,7 +740,7 @@ function Set-UsageStatusPalette {
         $energyBrush.GradientStops.Add(
             (New-Object Windows.Media.GradientStop([Windows.SystemColors]::HighlightColor, 1.0))
         )
-        $UltraDepletedMask.Background = [Windows.SystemColors]::WindowBrush
+        $UltraDepletedMask.Background = [Windows.SystemColors]::GrayTextBrush
     }
     elseif ($Available) {
         foreach ($stop in @(
@@ -715,7 +758,7 @@ function Set-UsageStatusPalette {
             )
         }
         $UltraDepletedMask.Background = New-Object Windows.Media.SolidColorBrush(
-            [Windows.Media.ColorConverter]::ConvertFromString('#BCEFEFEA')
+            [Windows.Media.ColorConverter]::ConvertFromString('#626965')
         )
     }
     else {
@@ -732,7 +775,7 @@ function Set-UsageStatusPalette {
             ))
         )
         $UltraDepletedMask.Background = New-Object Windows.Media.SolidColorBrush(
-            [Windows.Media.ColorConverter]::ConvertFromString('#A6F1F2EF')
+            [Windows.Media.ColorConverter]::ConvertFromString('#747B77')
         )
     }
     $UltraProgressFill.Background = $energyBrush
@@ -1882,6 +1925,51 @@ function Invoke-RapidDropAlert {
     }
 }
 
+function Set-UsageSnapshotProvenance {
+    param($Snapshot)
+
+    $freshness = Get-UsageSnapshotFreshness -Snapshot $Snapshot
+    $isFallback = (
+        $Snapshot.PSObject.Properties['IsFallback'] -and
+        [bool]$Snapshot.IsFallback
+    )
+    $fallbackReason = if (
+        $Snapshot.PSObject.Properties['FallbackReason']
+    ) {
+        [string]$Snapshot.FallbackReason
+    }
+    else {
+        ''
+    }
+    $SourceText.Text = if ($isFallback) {
+        '显示上次数据（{0}）{1}' -f
+            $freshness.AgeText,
+            $(if ([string]::IsNullOrWhiteSpace($fallbackReason)) {
+                ''
+            } else {
+                ' · ' + $fallbackReason
+            })
+    }
+    elseif ($freshness.State -eq 'Stale') {
+        '{0} · 数据可能已过期（{1}）' -f
+            $Snapshot.Source,
+            $freshness.AgeText
+    }
+    elseif ($freshness.State -eq 'Delayed') {
+        '{0} · {1}' -f $Snapshot.Source, $freshness.AgeText
+    }
+    else {
+        [string]$Snapshot.Source
+    }
+
+    $SampleTime.Text = '采样于 {0}' -f
+        $Snapshot.SampledAt.ToString('M月d日 HH:mm:ss')
+    if ($freshness.State -in @('Delayed', 'Stale')) {
+        $SampleTime.Text += ' · ' + $freshness.AgeText
+    }
+    return $freshness
+}
+
 function Update-UsageView {
     param(
         $Snapshot,
@@ -1891,17 +1979,45 @@ function Update-UsageView {
             'StartupLocal',
             'StartupOfficial'
         )]
-        [string]$ObservationContext = 'Normal'
+        [string]$ObservationContext = 'Normal',
+        [switch]$DisplayOnly
     )
 
     Assert-UsageSnapshotContract -Snapshot $Snapshot
-    $script:LastSnapshot = $Snapshot
+    if (-not $DisplayOnly) {
+        $script:LastSnapshot = $Snapshot
+    }
+    $freshness = Get-UsageSnapshotFreshness -Snapshot $Snapshot
+    $isFallback = (
+        $Snapshot.PSObject.Properties['IsFallback'] -and
+        [bool]$Snapshot.IsFallback
+    )
+    $fallbackReason = if (
+        $Snapshot.PSObject.Properties['FallbackReason']
+    ) {
+        [string]$Snapshot.FallbackReason
+    }
+    else {
+        ''
+    }
     if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
         Set-RuntimeDiagnosticStatus `
             -Area ([string]$Snapshot.ProviderId) `
-            -Status $(if ([bool]$Snapshot.Available) { 'Healthy' } else { 'Error' }) `
+            -Status $(if (-not [bool]$Snapshot.Available) {
+                'Error'
+            } elseif ($isFallback -or $freshness.IsStale) {
+                'Degraded'
+            } else {
+                'Healthy'
+            }) `
             -Message $(if ([bool]$Snapshot.Available) {
-                [string]$Snapshot.Source
+                if ($isFallback) {
+                    $fallbackReason
+                } elseif ($freshness.IsStale) {
+                    '数据可能已过期 · ' + $freshness.AgeText
+                } else {
+                    [string]$Snapshot.Source
+                }
             } else {
                 [string]$Snapshot.Status
             }) `
@@ -1914,8 +2030,7 @@ function Update-UsageView {
     $AccountName.Text = $Snapshot.AccountName
     $PlanBadge.Text = $Snapshot.Plan
     $AccountEmail.Text = $Snapshot.AccountEmail
-    $SourceText.Text = $Snapshot.Source
-    $SampleTime.Text = '采样于 {0}' -f $Snapshot.SampledAt.ToString('M月d日 HH:mm:ss')
+    [void](Set-UsageSnapshotProvenance -Snapshot $Snapshot)
     $ResetSummaryPanel.Visibility = if (
         $script:IsExpanded -and $Snapshot.ProviderId -eq 'Codex'
     ) { 'Visible' } else { 'Collapsed' }
@@ -2016,6 +2131,13 @@ function Update-UsageView {
                 'Codex 余量暂不可用 · 单击打开详情'
             }
         }
+    }
+
+    if ($DisplayOnly) {
+        if ($script:LastUsageInsights) {
+            Update-UsageInsightView -Insights $script:LastUsageInsights
+        }
+        return
     }
 
     try {

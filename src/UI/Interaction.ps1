@@ -95,6 +95,16 @@ if (-not $CheckTransitions -and -not $releaseGuiCheck) {
     }))
 }
 
+$window.Add_LocationChanged((New-RmfEventHandler -Kind Event -Callback {
+    if (
+        $script:EdgeDockSide -and
+        -not $script:IsExpanded -and
+        -not $script:Dragging
+    ) {
+        [void](Sync-EdgeDockEnvironment)
+    }
+}))
+
 $window.Add_MouseEnter((New-RmfEventHandler -Kind Mouse -Callback {
     $script:EdgeHideTimer.Stop()
     $script:IsPointerOverSurface = $true

@@ -275,6 +275,20 @@ if ($CheckProviderContracts) {
         -SampledAt ([datetime]'2030-01-01T12:00:00')
     Assert-UsageSnapshotContract -Snapshot $deepSeekSnapshot
     $pricingCatalog = Get-DeepSeekPricingCatalog
+    $freshSnapshot = $deepSeekSnapshot.PSObject.Copy()
+    $freshSnapshot.SampledAt = [DateTimeOffset]'2030-01-01T12:00:00+08:00'
+    $freshnessFresh = Get-UsageSnapshotFreshness `
+        -Snapshot $freshSnapshot `
+        -Now ([DateTimeOffset]'2030-01-01T12:01:00+08:00')
+    $freshnessDelayed = Get-UsageSnapshotFreshness `
+        -Snapshot $freshSnapshot `
+        -Now ([DateTimeOffset]'2030-01-01T12:05:00+08:00')
+    $freshnessStale = Get-UsageSnapshotFreshness `
+        -Snapshot $freshSnapshot `
+        -Now ([DateTimeOffset]'2030-01-01T12:20:00+08:00')
+    $fallbackSnapshot = New-UsageFallbackSnapshot `
+        -Snapshot $freshSnapshot `
+        -Reason 'diagnostic fallback'
 
     [pscustomobject]@{
         CodexUsedPercent = $codexUsage.UsedPercent
@@ -288,6 +302,32 @@ if ($CheckProviderContracts) {
         DeepSeekBudgetPercent = $deepSeekSnapshot.BudgetPercent
         PricingSchemaVersion = $pricingCatalog.SchemaVersion
         PricingCurrency = $pricingCatalog.Currency
+        FreshnessStatesClassified = (
+            $freshnessFresh.State -eq 'Fresh' -and
+            $freshnessDelayed.State -eq 'Delayed' -and
+            $freshnessStale.State -eq 'Stale' -and
+            [bool]$freshnessStale.IsStale
+        )
+        FallbackSnapshotPreservesSample = (
+            [bool]$fallbackSnapshot.IsFallback -and
+            $fallbackSnapshot.FallbackReason -eq 'diagnostic fallback' -and
+            $fallbackSnapshot.SampledAt -eq $freshSnapshot.SampledAt
+        )
+        TransientRefreshFailuresClassified = (
+            (Test-TransientRefreshFailure -StatusCode 0) -and
+            (Test-TransientRefreshFailure -StatusCode 429) -and
+            (Test-TransientRefreshFailure -StatusCode 503) -and
+            -not (Test-TransientRefreshFailure -StatusCode 401)
+        )
+        RefreshRetryBackoffBounded = (
+            (Get-RefreshRetryDelaySeconds -Attempt 1) -eq 1 -and
+            (Get-RefreshRetryDelaySeconds -Attempt 2) -eq 2 -and
+            (
+                Get-RefreshRetryDelaySeconds `
+                    -Attempt 2 `
+                    -ServerDelaySeconds 60
+            ) -eq 30
+        )
     } | ConvertTo-Json
     $script:RmfStopLoading = $true
     return
@@ -1223,6 +1263,20 @@ if ($CheckPlacement) {
 }
 
 if ($CheckEdgeDocking) {
+    $scaledTaskbarArea = ConvertTo-LogicalWorkArea `
+        -PixelLeft 0 `
+        -PixelTop 60 `
+        -PixelRight 1920 `
+        -PixelBottom 1080 `
+        -DpiScaleX 1.5 `
+        -DpiScaleY 1.5
+    $negativeMonitorArea = ConvertTo-LogicalWorkArea `
+        -PixelLeft -2560 `
+        -PixelTop 0 `
+        -PixelRight 0 `
+        -PixelBottom 1440 `
+        -DpiScaleX 1.25 `
+        -DpiScaleY 1.25
     [pscustomobject]@{
         LeftDetected = Get-EdgeDockSideForPosition `
             -Left 8 `
@@ -1256,6 +1310,23 @@ if ($CheckEdgeDocking) {
             -VisibleWidth $script:EdgeVisibleWidth `
             -WorkLeft 0 `
             -WorkRight 1920
+        MultiDpiWorkAreaConverted = (
+            [Math]::Abs($scaledTaskbarArea.Width - 1280) -lt 0.001 -and
+            [Math]::Abs($scaledTaskbarArea.Height - 680) -lt 0.001
+        )
+        TaskbarWorkAreaPreserved = (
+            [Math]::Abs($scaledTaskbarArea.Top - 40) -lt 0.001 -and
+            [Math]::Abs($scaledTaskbarArea.Bottom - 720) -lt 0.001
+        )
+        NegativeMonitorCoordinatesPreserved = (
+            [Math]::Abs($negativeMonitorArea.Left - (-2048)) -lt 0.001 -and
+            [Math]::Abs($negativeMonitorArea.Width - 2048) -lt 0.001
+        )
+        WorkAreaChangeDetected = (
+            -not (Test-WorkAreaEquivalent `
+                -First $scaledTaskbarArea `
+                -Second $negativeMonitorArea)
+        )
     } | ConvertTo-Json
     $script:RmfStopLoading = $true
     return

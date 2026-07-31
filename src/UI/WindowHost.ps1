@@ -591,7 +591,8 @@ $names = @(
     'Trend7Text', 'Trend7Canvas', 'Trend7Area', 'Trend7Line',
     'Trend7StartMarker', 'Trend7EndMarker', 'Trend7MetaText',
     'PredictionText', 'RapidDropStatusDot', 'RapidDropText',
-    'AppVersionText', 'AutoRefreshText', 'RefreshButton'
+    'FooterStatusText', 'VersionLabelText', 'AppVersionText',
+    'VersionSeparatorText', 'AutoRefreshText', 'RefreshButton'
 )
 foreach ($name in $names) {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script

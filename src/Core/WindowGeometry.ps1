@@ -18,6 +18,49 @@
     }
 }
 
+function ConvertTo-LogicalWorkArea {
+    param(
+        [double]$PixelLeft,
+        [double]$PixelTop,
+        [double]$PixelRight,
+        [double]$PixelBottom,
+        [double]$DpiScaleX = 1.0,
+        [double]$DpiScaleY = 1.0
+    )
+
+    if ($DpiScaleX -le 0 -or $DpiScaleY -le 0) {
+        throw 'DPI scale must be greater than zero.'
+    }
+    return [pscustomobject]@{
+        Left = $PixelLeft / $DpiScaleX
+        Top = $PixelTop / $DpiScaleY
+        Right = $PixelRight / $DpiScaleX
+        Bottom = $PixelBottom / $DpiScaleY
+        Width = ($PixelRight - $PixelLeft) / $DpiScaleX
+        Height = ($PixelBottom - $PixelTop) / $DpiScaleY
+    }
+}
+
+function Test-WorkAreaEquivalent {
+    param(
+        $First,
+        $Second,
+        [double]$Tolerance = 0.1
+    )
+
+    if ($null -eq $First -or $null -eq $Second) { return $false }
+    return (
+        [Math]::Abs([double]$First.Left - [double]$Second.Left) -lt
+            $Tolerance -and
+        [Math]::Abs([double]$First.Top - [double]$Second.Top) -lt
+            $Tolerance -and
+        [Math]::Abs([double]$First.Right - [double]$Second.Right) -lt
+            $Tolerance -and
+        [Math]::Abs([double]$First.Bottom - [double]$Second.Bottom) -lt
+            $Tolerance
+    )
+}
+
 function Get-EdgeDockSideForPosition {
     param(
         [double]$Left,

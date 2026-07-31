@@ -641,30 +641,30 @@
                                        FontSize="9"/>
                         </Grid>
                         <Grid Grid.Row="1">
-                            <StackPanel Orientation="Horizontal"
-                                        VerticalAlignment="Center">
-                                <TextBlock Text="版本"
-                                           Foreground="{StaticResource TextMuted}"
-                                           FontFamily="Microsoft YaHei UI"
-                                           FontSize="9.5"/>
-                                <TextBlock x:Name="AppVersionText"
-                                           Margin="4,0,0,0"
-                                           Text="v--"
-                                           Foreground="{StaticResource TextSecondary}"
-                                           FontFamily="Segoe UI Variable Text"
-                                           FontSize="9.5"
-                                           FontWeight="SemiBold"/>
-                                <TextBlock Margin="7,0"
-                                           Text="·"
-                                           Foreground="{StaticResource TextMuted}"
-                                           FontFamily="Microsoft YaHei UI"
-                                           FontSize="9.5"/>
-                                <TextBlock x:Name="AutoRefreshText"
-                                           Text="60 秒后自动刷新"
-                                           Foreground="{StaticResource TextMuted}"
-                                           FontFamily="Microsoft YaHei UI"
-                                           FontSize="9.5"/>
-                            </StackPanel>
+                            <TextBlock x:Name="FooterStatusText"
+                                       VerticalAlignment="Center"
+                                       FontSize="9.5"
+                                       LineHeight="14"
+                                       LineStackingStrategy="BlockLineHeight">
+                                <Run x:Name="VersionLabelText"
+                                     Text="版本"
+                                     Foreground="{StaticResource TextMuted}"
+                                     FontFamily="Microsoft YaHei UI"
+                                     BaselineAlignment="Baseline"/><Run Text=" "/><Run x:Name="AppVersionText"
+                                     Text="v--"
+                                     Foreground="{StaticResource TextSecondary}"
+                                     FontFamily="Segoe UI Variable Text"
+                                     FontWeight="SemiBold"
+                                     BaselineAlignment="Baseline"/><Run x:Name="VersionSeparatorText"
+                                     Text="  ·  "
+                                     Foreground="{StaticResource TextMuted}"
+                                     FontFamily="Microsoft YaHei UI"
+                                     BaselineAlignment="Baseline"/><Run x:Name="AutoRefreshText"
+                                     Text="60 秒后自动刷新"
+                                     Foreground="{StaticResource TextMuted}"
+                                     FontFamily="Microsoft YaHei UI"
+                                     BaselineAlignment="Baseline"/>
+                            </TextBlock>
                             <Button x:Name="RefreshButton"
                                     HorizontalAlignment="Right"
                                     Width="96"
@@ -722,7 +722,7 @@
                         </Border>
                         <Border x:Name="UltraDepletedMask"
                                 Grid.Row="0"
-                                Background="#BCEFEFEA"/>
+                                Background="#626965"/>
                         <Border x:Name="UltraLevelMarker"
                                 Grid.Row="1"
                                 Height="2"

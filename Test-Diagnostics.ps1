@@ -115,6 +115,16 @@ Assert-Diagnostic -Condition (
     $contracts.PricingSchemaVersion -eq 1 -and
     $contracts.PricingCurrency -eq 'CNY'
 ) -Message 'DeepSeek versioned pricing catalog'
+foreach ($propertyName in @(
+    'FreshnessStatesClassified'
+    'FallbackSnapshotPreservesSample'
+    'TransientRefreshFailuresClassified'
+    'RefreshRetryBackoffBounded'
+)) {
+    Assert-Diagnostic `
+        -Condition ([bool]$contracts.$propertyName) `
+        -Message "ProviderContracts.$propertyName"
+}
 
 $performance = Invoke-JsonDiagnostic -Name 'CheckRefreshPerformance'
 Assert-Diagnostic -Condition (
@@ -247,6 +257,12 @@ Assert-Diagnostic -Condition (
     $edge.LeftHidden -eq -66 -and
     $edge.RightHidden -eq 1906
 ) -Message 'Edge docking geometry'
+Assert-Diagnostic -Condition (
+    [bool]$edge.MultiDpiWorkAreaConverted -and
+    [bool]$edge.TaskbarWorkAreaPreserved -and
+    [bool]$edge.NegativeMonitorCoordinatesPreserved -and
+    [bool]$edge.WorkAreaChangeDetected
+) -Message 'Per-monitor DPI and taskbar work-area geometry'
 
 $startup = Invoke-JsonDiagnostic -Name 'CheckStartup'
 Assert-Diagnostic -Condition ($startup.Source -eq 'PowerShell') `
@@ -295,7 +311,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.4') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.5') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -368,6 +384,9 @@ Assert-Diagnostic -Condition (
         $_ -ne 'SemiBold'
     }).Count -eq 0
 ) -Message 'Metric typography'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.FooterTextAligned
+) -Message 'Detail footer version and refresh text alignment'
 $edgeEnergyInsets = @($transitions.EdgeEnergyInsets | ForEach-Object {
     [double]$_
 })
@@ -375,6 +394,9 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.ActivationRevealedEdgeDock -and
     [bool]$transitions.EdgeRailHitTest -and
     $transitions.EdgeRailAlpha -ge 8 -and
+    [bool]$transitions.EdgeDepletedMaskOpaque -and
+    [bool]$transitions.EdgeDepletedMaskNeutralGray -and
+    [bool]$transitions.EdgeEnvironmentResynced -and
     $transitions.EdgeRevealHitWidth -eq 14 -and
     $transitions.EdgeTrackWidth -eq 12 -and
     [bool]$transitions.EdgeTrackFlush -and
@@ -437,6 +459,10 @@ Assert-Diagnostic -Condition (
 Assert-Diagnostic `
     -Condition ([bool]$transitions.RapidDropStatusUpdatedImmediately) `
     -Message 'Custom rapid-drop settings update the detail status immediately'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.FallbackProvenanceDisplayed -and
+    [bool]$transitions.DisplayOnlyPreservedHistory
+) -Message 'Fallback freshness display preserves successful snapshot history'
 
 $refresh = Invoke-JsonDiagnostic -Name 'CheckRefreshCoordinator'
 Assert-Diagnostic -Condition ([bool]$refresh.ManualRefreshSucceeded) `
