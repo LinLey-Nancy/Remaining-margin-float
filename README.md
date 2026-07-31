@@ -9,6 +9,16 @@
 
 目前适配`ChatGPT(Codex)、DeepSeek(Claude Code)`
 
+## 使用截图
+
+<p align="center">
+  <img src="docs/images/normal-codex-usage.png"
+       alt="Remaining Margin Float 正常运行时的 Codex 详细界面"
+       width="400">
+</p>
+
+<p align="center"><sub>Codex 正常运行详情，使用内置脱敏演示数据。</sub></p>
+
 ## 功能
 
 - Codex 与 DeepSeek 双数据源，可从悬浮窗或通知区域菜单切换

@@ -58,6 +58,7 @@
     $window.Top = 24
     $window.Show()
     Wait-ForCaptureUi -Milliseconds 80
+    Set-RefreshBusy -Busy $false
 
     $previewSnapshot = Get-DeepSeekDemoSnapshot
     Set-CaptureUsageHistory `
