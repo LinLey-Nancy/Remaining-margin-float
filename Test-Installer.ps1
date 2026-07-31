@@ -158,6 +158,8 @@ $expectedInstalledFiles = @(
 $installSucceeded = $false
 $uninstallCompleted = $false
 $cleanupUninstallerPath = $null
+$restartedApplicationProcess = $null
+$autoUpdateRestartCheck = 'NotRun'
 
 try {
     New-Item -Path $testRoot -ItemType Directory | Out-Null
@@ -242,14 +244,70 @@ try {
         -LiteralPath $upgradeSentinel `
         -Value 'preserve across in-place upgrade' `
         -Encoding UTF8
-    $upgradeProcess = Start-Process `
-        -FilePath $installerPath `
-        -ArgumentList $installArguments `
-        -Wait `
-        -PassThru
+    $processEnvironment = [EnvironmentVariableTarget]::Process
+    $previousInstanceScope = [Environment]::GetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+        $processEnvironment
+    )
+    try {
+        [Environment]::SetEnvironmentVariable(
+            'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+            "installer-auto-update-$PID",
+            $processEnvironment
+        )
+        $upgradeProcess = Start-Process `
+            -FilePath $installerPath `
+            -ArgumentList @(
+                '/SP-'
+                '/VERYSILENT'
+                '/SUPPRESSMSGBOXES'
+                '/NORESTART'
+                '/CURRENTUSER'
+                '/CLOSEAPPLICATIONS'
+                '/RMFAUTORESTART=1'
+            ) `
+            -PassThru
+        if (-not $upgradeProcess.WaitForExit(60000)) {
+            Stop-Process -Id $upgradeProcess.Id -Force
+            throw 'Silent in-place upgrade did not exit within 60 seconds.'
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable(
+            'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+            $previousInstanceScope,
+            $processEnvironment
+        )
+    }
     if ($upgradeProcess.ExitCode -ne 0) {
         throw "Silent in-place upgrade check failed: $($upgradeProcess.ExitCode)"
     }
+    $installedLauncher = Join-Path $installRoot 'RemainingMarginFloat.exe'
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        $restartedApplicationProcess = @(
+            Get-Process -Name 'RemainingMarginFloat' -ErrorAction SilentlyContinue |
+                Where-Object {
+                    try {
+                        [IO.Path]::GetFullPath([string]$_.Path).Equals(
+                            [IO.Path]::GetFullPath($installedLauncher),
+                            [StringComparison]::OrdinalIgnoreCase
+                        )
+                    }
+                    catch {
+                        $false
+                    }
+                }
+        ) | Select-Object -First 1
+        if ($restartedApplicationProcess) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $restartedApplicationProcess) {
+        throw 'Automatic update did not restart the installed application.'
+    }
+    $autoUpdateRestartCheck = 'Passed'
+    Stop-Process -Id $restartedApplicationProcess.Id -Force
+    $restartedApplicationProcess.WaitForExit(5000) | Out-Null
+    $restartedApplicationProcess = $null
     if (-not (Test-Path -LiteralPath $upgradeSentinel -PathType Leaf)) {
         throw 'In-place upgrade removed an existing user-owned file.'
     }
@@ -265,7 +323,6 @@ try {
         }
     }
 
-    $processEnvironment = [EnvironmentVariableTarget]::Process
     $previousLauncher = [Environment]::GetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_LAUNCHER',
         $processEnvironment
@@ -353,6 +410,14 @@ try {
     $uninstallCompleted = $true
 }
 finally {
+    if ($restartedApplicationProcess) {
+        try {
+            Stop-Process -Id $restartedApplicationProcess.Id -Force
+        }
+        catch {
+            Write-Warning 'Unable to stop the automatic-update test process.'
+        }
+    }
     if ($installSucceeded -and -not $uninstallCompleted) {
         if (
             [string]::IsNullOrWhiteSpace($cleanupUninstallerPath) -or
@@ -410,6 +475,7 @@ finally {
     InstallerSha256 = $actualHash.ToLowerInvariant()
     InstallCheck = 'Passed'
     InPlaceUpgradeCheck = 'Passed'
+    AutoUpdateRestartCheck = $autoUpdateRestartCheck
     InstalledStartupCheck = 'Passed'
     UninstallCheck = 'Passed'
     ExpectedFileCount = $expectedInstalledFiles.Count

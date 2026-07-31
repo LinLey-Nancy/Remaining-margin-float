@@ -297,19 +297,257 @@ function Get-UpdateHttpClient {
     return $script:UpdateHttpClient
 }
 
+function Get-AutoUpdateNetworkAssessment {
+    param(
+        [string]$ConnectivityLevel,
+        [string]$CostType,
+        [bool]$Roaming,
+        [bool]$OverDataLimit,
+        [bool]$ApproachingDataLimit,
+        [bool]$BackgroundDataUsageRestricted
+    )
+
+    $reason = if ($ConnectivityLevel -ne 'InternetAccess') {
+        if ($ConnectivityLevel -eq 'None') {
+            '当前没有可用的网络连接。'
+        }
+        elseif ($ConnectivityLevel -eq 'Unknown') {
+            '无法确认当前网络是否适合自动更新。'
+        }
+        else {
+            '当前网络不能访问互联网。'
+        }
+    }
+    elseif ($Roaming) {
+        '当前网络处于漫游状态。'
+    }
+    elseif ($OverDataLimit) {
+        '当前网络已经超过流量限制。'
+    }
+    elseif ($ApproachingDataLimit) {
+        '当前网络即将达到流量限制。'
+    }
+    elseif ($BackgroundDataUsageRestricted) {
+        'Windows 已限制当前网络的后台流量。'
+    }
+    elseif ($CostType -ne 'Unrestricted') {
+        '当前网络可能按流量计费。'
+    }
+    else {
+        ''
+    }
+
+    return [pscustomobject]@{
+        Suitable = [string]::IsNullOrWhiteSpace($reason)
+        Reason = $reason
+        ConnectivityLevel = $ConnectivityLevel
+        CostType = $CostType
+        Roaming = $Roaming
+        OverDataLimit = $OverDataLimit
+        ApproachingDataLimit = $ApproachingDataLimit
+        BackgroundDataUsageRestricted = $BackgroundDataUsageRestricted
+    }
+}
+
+function Get-AutoUpdateNetworkState {
+    if (
+        $script:UpdateDiagnosticMode -and
+        $script:UpdateDiagnosticNetworkState
+    ) {
+        $state = $script:UpdateDiagnosticNetworkState
+        return Get-AutoUpdateNetworkAssessment `
+            -ConnectivityLevel ([string]$state.ConnectivityLevel) `
+            -CostType ([string]$state.CostType) `
+            -Roaming ([bool]$state.Roaming) `
+            -OverDataLimit ([bool]$state.OverDataLimit) `
+            -ApproachingDataLimit ([bool]$state.ApproachingDataLimit) `
+            -BackgroundDataUsageRestricted (
+                [bool]$state.BackgroundDataUsageRestricted
+            )
+    }
+
+    try {
+        $networkInformation = (
+            [Windows.Networking.Connectivity.NetworkInformation,Windows,ContentType=WindowsRuntime]
+        )
+        $profile = $networkInformation::GetInternetConnectionProfile()
+        if (-not $profile) {
+            return Get-AutoUpdateNetworkAssessment `
+                -ConnectivityLevel None `
+                -CostType Unknown `
+                -Roaming $false `
+                -OverDataLimit $false `
+                -ApproachingDataLimit $false `
+                -BackgroundDataUsageRestricted $false
+        }
+
+        $connectivityLevel = [string]$profile.GetNetworkConnectivityLevel()
+        $cost = $profile.GetConnectionCost()
+        $costType = [string]$cost.NetworkCostType
+        $roaming = [bool]$cost.Roaming
+        $overDataLimit = [bool]$cost.OverDataLimit
+        $approachingDataLimit = [bool]$cost.ApproachingDataLimit
+        $backgroundRestricted = [bool]$cost.BackgroundDataUsageRestricted
+
+        return Get-AutoUpdateNetworkAssessment `
+            -ConnectivityLevel $connectivityLevel `
+            -CostType $costType `
+            -Roaming $roaming `
+            -OverDataLimit $overDataLimit `
+            -ApproachingDataLimit $approachingDataLimit `
+            -BackgroundDataUsageRestricted $backgroundRestricted
+    }
+    catch {
+        return Get-AutoUpdateNetworkAssessment `
+            -ConnectivityLevel Unknown `
+            -CostType Unknown `
+            -Roaming $false `
+            -OverDataLimit $false `
+            -ApproachingDataLimit $false `
+            -BackgroundDataUsageRestricted $false
+    }
+}
+
+function Test-AutoUpdateInstalledMode {
+    if (
+        $script:UpdateDiagnosticMode -and
+        $null -ne $script:UpdateDiagnosticInstalledMode
+    ) {
+        return [bool]$script:UpdateDiagnosticInstalledMode
+    }
+
+    try {
+        $launchSpec = Get-StartupLaunchSpec
+        return [string]$launchSpec.Source -eq 'InstalledExe'
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-AutoUpdateInstallerArguments {
+    return (
+        '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER ' +
+        '/CLOSEAPPLICATIONS /RMFAUTORESTART=1'
+    )
+}
+
+function Show-AutoUpdateNotification {
+    param(
+        [string]$Title,
+        [string]$Message,
+        [ValidateSet('Info', 'Warning', 'Error', 'None')]
+        [string]$Icon = 'Info'
+    )
+
+    if ($script:UpdateDiagnosticMode) {
+        $script:UpdateDiagnosticMessages += "$Title：$Message"
+        return
+    }
+    if (-not $script:TrayNotifyIcon) { return }
+    try {
+        $toolTipIconType = [Type]::GetType(
+            'System.Windows.Forms.ToolTipIcon, System.Windows.Forms'
+        )
+        $toolTipIcon = [Enum]::Parse($toolTipIconType, $Icon)
+        $script:TrayNotifyIcon.ShowBalloonTip(
+            8000,
+            $Title,
+            $Message,
+            $toolTipIcon
+        )
+    }
+    catch {
+        # 通知失败不影响下一次自动更新检查。
+    }
+}
+
+function Sync-AutoUpdateMenuState {
+    if ($script:AutoUpdateMenuItem) {
+        $script:AutoUpdateMenuItem.IsChecked = $script:AutoUpdateEnabled
+    }
+    if ($script:TrayAutoUpdateItem) {
+        $script:TrayAutoUpdateItem.Checked = $script:AutoUpdateEnabled
+    }
+}
+
+function Clear-DeferredAutoUpdate {
+    $script:DeferredAutoUpdateRelease = $null
+    $script:DeferredAutoUpdateInstaller = $null
+    $script:NextAutoUpdateNetworkRetryAt = $null
+}
+
+function Set-AutoUpdateEnabled {
+    param(
+        [bool]$Enabled,
+        [switch]$Confirm
+    )
+
+    if ($Enabled -and -not (Test-AutoUpdateInstalledMode)) {
+        Sync-AutoUpdateMenuState
+        Show-UpdateMessage -Message (
+            '自动更新仅支持通过安装程序安装的版本。' +
+            '源码或便携运行时仍可手动检查、下载并安装更新。'
+        )
+        return $false
+    }
+
+    if ($Enabled -and $Confirm -and -not $script:UpdateDiagnosticMode) {
+        $choice = [Windows.MessageBox]::Show(
+            $window,
+            (
+                '启用后，软件只会在 Windows 判定为非按流量计费、非漫游、' +
+                '未接近流量限制且后台流量未受限时自动更新。' +
+                "`n`n安装程序会经过 GitHub Release 来源、文件大小、" +
+                'SHA-256 和内嵌版本校验，然后静默安装并自动重启。' +
+                "`n`n当前发布物尚未进行可信代码签名，SHA-256 不能单独证明" +
+                '发布者身份。是否仍要启用自动更新？'
+            ),
+            'Remaining Margin Float 自动更新',
+            [Windows.MessageBoxButton]::YesNo,
+            [Windows.MessageBoxImage]::Warning
+        )
+        if ($choice -ne [Windows.MessageBoxResult]::Yes) {
+            Sync-AutoUpdateMenuState
+            return $false
+        }
+    }
+
+    $script:AutoUpdateEnabled = $Enabled
+    if (-not $Enabled) {
+        Clear-DeferredAutoUpdate
+        $script:AutoUpdateDeferredNotifications = @{}
+    }
+    Sync-AutoUpdateMenuState
+    Save-Settings
+    if ($Enabled) {
+        $script:NextAutomaticUpdateCheckAt = [DateTimeOffset]::Now
+    }
+    return $true
+}
+
 function Sync-UpdateMenuState {
-    if (-not $script:TrayUpdateItem) { return }
-    $script:TrayUpdateItem.Enabled = -not $script:UpdateContext.IsBusy
-    $script:TrayUpdateItem.Text = switch ($script:UpdateContext.Phase) {
+    $enabled = -not $script:UpdateContext.IsBusy
+    $text = switch ($script:UpdateContext.Phase) {
         'Release' { '正在检查更新…' }
         'Download' { '正在下载安装程序…' }
         default { '检查更新…' }
     }
+    if ($script:UpdateMenuItem) {
+        $script:UpdateMenuItem.IsEnabled = $enabled
+        $script:UpdateMenuItem.Header = $text
+    }
+    if ($script:TrayUpdateItem) {
+        $script:TrayUpdateItem.Enabled = $enabled
+        $script:TrayUpdateItem.Text = $text
+    }
+    Sync-AutoUpdateMenuState
 }
 
 function Reset-UpdateContext {
     $script:UpdateContext.IsBusy = $false
     $script:UpdateContext.Manual = $false
+    $script:UpdateContext.AutomaticInstall = $false
     $script:UpdateContext.Phase = 'Idle'
     $script:UpdateContext.ReleaseTask = $null
     $script:UpdateContext.InstallerTask = $null
@@ -400,7 +638,8 @@ function Open-UpdateReleasePage {
 function Start-UpdateDownload {
     param(
         $Release,
-        $Client = $null
+        $Client = $null,
+        [switch]$AutomaticInstall
     )
 
     try {
@@ -408,7 +647,8 @@ function Start-UpdateDownload {
             $Client = Get-UpdateHttpClient
         }
         $script:UpdateContext.IsBusy = $true
-        $script:UpdateContext.Manual = $true
+        $script:UpdateContext.Manual = -not [bool]$AutomaticInstall
+        $script:UpdateContext.AutomaticInstall = [bool]$AutomaticInstall
         $script:UpdateContext.Phase = 'Download'
         $script:UpdateContext.Release = $Release
         $script:UpdateContext.InstallerTask = $Client.GetByteArrayAsync(
@@ -420,9 +660,21 @@ function Start-UpdateDownload {
         Sync-UpdateMenuState
     }
     catch {
-        Stop-UpdateOperation `
-            -AlwaysShow `
-            -Message ("无法开始下载安装程序。`n`n$($_.Exception.Message)")
+        if ($AutomaticInstall) {
+            Reset-UpdateContext
+            $script:NextAutomaticUpdateCheckAt = (
+                [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(10)
+            )
+            Show-AutoUpdateNotification `
+                -Title '自动更新暂未完成' `
+                -Message '无法开始下载安装程序，稍后会再次检查。' `
+                -Icon Warning
+        }
+        else {
+            Stop-UpdateOperation `
+                -AlwaysShow `
+                -Message ("无法开始下载安装程序。`n`n$($_.Exception.Message)")
+        }
     }
 }
 
@@ -474,12 +726,54 @@ function Save-VerifiedUpdateInstaller {
 function Start-VerifiedUpdateInstaller {
     param(
         [string]$InstallerPath,
-        [string]$Version
+        [string]$Version,
+        [switch]$AutomaticInstall
     )
 
     if ($script:UpdateDiagnosticMode) {
         $script:UpdateDiagnosticInstallerPath = $InstallerPath
         $script:UpdateDiagnosticInstallerVersion = $Version
+        $script:UpdateDiagnosticAutomaticInstall = [bool]$AutomaticInstall
+        if ($AutomaticInstall) {
+            $script:UpdateDiagnosticInstallerArguments = (
+                Get-AutoUpdateInstallerArguments
+            )
+            $script:UpdateDiagnosticWindowCloseRequested = $true
+        }
+        return
+    }
+
+    if ($AutomaticInstall) {
+        if (-not $script:AutoUpdateEnabled) { return }
+        if (-not (Test-AutoUpdateInstalledMode)) {
+            Clear-DeferredAutoUpdate
+            Show-AutoUpdateNotification `
+                -Title '自动更新未启动' `
+                -Message '自动更新仅支持通过安装程序安装的版本。' `
+                -Icon Warning
+            return
+        }
+
+        $networkState = Get-AutoUpdateNetworkState
+        if (-not $networkState.Suitable) {
+            Set-DeferredAutoUpdateInstaller `
+                -InstallerPath $InstallerPath `
+                -Version $Version `
+                -Reason $networkState.Reason
+            return
+        }
+
+        Save-Settings
+        $startInfo = New-Object Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $InstallerPath
+        $startInfo.Arguments = Get-AutoUpdateInstallerArguments
+        $startInfo.UseShellExecute = $true
+        [void][Diagnostics.Process]::Start($startInfo)
+        Clear-DeferredAutoUpdate
+        Show-AutoUpdateNotification `
+            -Title "正在安装 v$Version" `
+            -Message '软件即将关闭，更新完成后会自动重新启动。'
+        $window.Close()
         return
     }
 
@@ -528,11 +822,166 @@ function Start-VerifiedUpdateInstaller {
     $window.Close()
 }
 
+function Set-DeferredAutoUpdateRelease {
+    param(
+        $Release,
+        [string]$Reason
+    )
+
+    $script:DeferredAutoUpdateRelease = $Release
+    $script:DeferredAutoUpdateInstaller = $null
+    $script:NextAutoUpdateNetworkRetryAt = (
+        [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(1)
+    )
+    $notificationKey = "release-$($Release.Version)"
+    if (-not $script:AutoUpdateDeferredNotifications.ContainsKey(
+        $notificationKey
+    )) {
+        $script:AutoUpdateDeferredNotifications[$notificationKey] = $true
+        Show-AutoUpdateNotification `
+            -Title "v$($Release.Version) 等待合适网络" `
+            -Message "$Reason 将在网络条件合适时自动更新。"
+    }
+}
+
+function Set-DeferredAutoUpdateInstaller {
+    param(
+        [string]$InstallerPath,
+        [string]$Version,
+        [string]$Reason
+    )
+
+    $script:DeferredAutoUpdateInstaller = [pscustomobject]@{
+        InstallerPath = $InstallerPath
+        Version = $Version
+    }
+    $script:DeferredAutoUpdateRelease = $null
+    $script:NextAutoUpdateNetworkRetryAt = (
+        [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(1)
+    )
+    $notificationKey = "installer-$Version"
+    if (-not $script:AutoUpdateDeferredNotifications.ContainsKey(
+        $notificationKey
+    )) {
+        $script:AutoUpdateDeferredNotifications[$notificationKey] = $true
+        Show-AutoUpdateNotification `
+            -Title "v$Version 等待安装" `
+            -Message "$Reason 将在网络条件合适时自动安装并重启。"
+    }
+}
+
+function Start-DeferredAutoUpdateIfReady {
+    if (-not $script:AutoUpdateEnabled) {
+        Clear-DeferredAutoUpdate
+        return
+    }
+    if ($script:UpdateContext.IsBusy) { return }
+    if (
+        -not $script:DeferredAutoUpdateRelease -and
+        -not $script:DeferredAutoUpdateInstaller
+    ) {
+        return
+    }
+    if (
+        $script:NextAutoUpdateNetworkRetryAt -and
+        [DateTimeOffset]::Now -lt $script:NextAutoUpdateNetworkRetryAt
+    ) {
+        return
+    }
+
+    $networkState = Get-AutoUpdateNetworkState
+    if (-not $networkState.Suitable) {
+        $script:NextAutoUpdateNetworkRetryAt = (
+            [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(1)
+        )
+        return
+    }
+    if (-not (Test-AutoUpdateInstalledMode)) {
+        Clear-DeferredAutoUpdate
+        return
+    }
+
+    if ($script:DeferredAutoUpdateInstaller) {
+        $installer = $script:DeferredAutoUpdateInstaller
+        $script:DeferredAutoUpdateInstaller = $null
+        $script:NextAutoUpdateNetworkRetryAt = $null
+        Start-VerifiedUpdateInstaller `
+            -InstallerPath $installer.InstallerPath `
+            -Version $installer.Version `
+            -AutomaticInstall
+        return
+    }
+
+    $release = $script:DeferredAutoUpdateRelease
+    $script:DeferredAutoUpdateRelease = $null
+    $script:NextAutoUpdateNetworkRetryAt = $null
+    Show-AutoUpdateNotification `
+        -Title "正在下载 v$($release.Version)" `
+        -Message '已连接到合适网络，开始自动下载并校验更新。'
+    Start-UpdateDownload -Release $release -AutomaticInstall
+}
+
 function Show-UpdateAvailable {
     param(
         $Release,
         [switch]$Manual
     )
+
+    if ($script:AutoUpdateEnabled) {
+        if (-not $Release.HasInstaller) {
+            if (
+                $Manual -or
+                -not $script:PromptedUpdateVersions.ContainsKey(
+                    $Release.Version
+                )
+            ) {
+                $script:PromptedUpdateVersions[$Release.Version] = $true
+                if ($Manual) {
+                    Show-UpdateMessage -Message (
+                        "v$($Release.Version) 未提供可验证的安装程序，" +
+                        '请从 Release 页面手动更新。'
+                    )
+                }
+                else {
+                    Show-AutoUpdateNotification `
+                        -Title "v$($Release.Version) 需要手动更新" `
+                        -Message '此版本未提供可验证的安装程序。' `
+                        -Icon Warning
+                }
+            }
+            return
+        }
+        if (-not (Test-AutoUpdateInstalledMode)) {
+            if ($Manual) {
+                Show-UpdateMessage -Message (
+                    '自动更新仅支持通过安装程序安装的版本。' +
+                    '当前运行方式请继续手动更新。'
+                )
+            }
+            return
+        }
+
+        $networkState = Get-AutoUpdateNetworkState
+        if (-not $networkState.Suitable) {
+            Set-DeferredAutoUpdateRelease `
+                -Release $Release `
+                -Reason $networkState.Reason
+            if ($Manual) {
+                Show-UpdateMessage -Message (
+                    "已发现 v$($Release.Version)，但$($networkState.Reason)" +
+                    "`n`n更新会在网络条件合适时自动下载、安装并重启。"
+                )
+            }
+            return
+        }
+
+        $script:PromptedUpdateVersions[$Release.Version] = $true
+        Show-AutoUpdateNotification `
+            -Title "正在下载 v$($Release.Version)" `
+            -Message '安装程序通过校验后将自动安装并重启软件。'
+        Start-UpdateDownload -Release $Release -AutomaticInstall
+        return
+    }
 
     if (
         -not $Manual -and
@@ -605,6 +1054,9 @@ function Complete-UpdateOperation {
     if ($script:UpdateContext.Phase -eq 'Download') {
         $installerTask = $script:UpdateContext.InstallerTask
         $checksumTask = $script:UpdateContext.ChecksumTask
+        $automaticInstall = [bool](
+            $script:UpdateContext.AutomaticInstall
+        )
         if (
             -not $installerTask -or
             -not $checksumTask -or
@@ -622,18 +1074,34 @@ function Complete-UpdateOperation {
             Reset-UpdateContext
             Start-VerifiedUpdateInstaller `
                 -InstallerPath $installerPath `
-                -Version $release.Version
+                -Version $release.Version `
+                -AutomaticInstall:$automaticInstall
         }
         catch {
-            Stop-UpdateOperation `
-                -AlwaysShow `
-                -Message ("下载更新失败。`n`n$($_.Exception.Message)")
+            if ($automaticInstall) {
+                Reset-UpdateContext
+                $script:NextAutomaticUpdateCheckAt = (
+                    [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(10)
+                )
+                Show-AutoUpdateNotification `
+                    -Title '自动更新暂未完成' `
+                    -Message '下载或校验失败，稍后会再次检查。' `
+                    -Icon Warning
+            }
+            else {
+                Stop-UpdateOperation `
+                    -AlwaysShow `
+                    -Message ("下载更新失败。`n`n$($_.Exception.Message)")
+            }
         }
     }
 }
 
 function Invoke-UpdateTimerTick {
     Complete-UpdateOperation
+    if (-not $script:UpdateContext.IsBusy) {
+        Start-DeferredAutoUpdateIfReady
+    }
     if (
         -not $script:UpdateContext.IsBusy -and
         $script:NextAutomaticUpdateCheckAt -and
@@ -771,8 +1239,26 @@ function Invoke-UpdateDiagnostic {
     $partialDownloadFailureReset = $false
     $successfulDownloadCompleted = $false
     $cancelledReleaseReset = $false
+    $unrestrictedAutoUpdateAllowed = $false
+    $meteredAutoUpdateDeferred = $false
+    $restrictedAutoUpdateBlocked = $false
+    $sourceModeAutoUpdateRejected = $false
+    $autoDownloadIntentPreserved = $false
+    $automaticInstallerArgumentsSafe = $false
+    $automaticRestartRequested = $false
     $originalContext = $script:UpdateContext
     $originalTrayUpdateItem = $script:TrayUpdateItem
+    $originalAutoUpdateEnabled = $script:AutoUpdateEnabled
+    $originalDeferredAutoUpdateRelease = $script:DeferredAutoUpdateRelease
+    $originalDeferredAutoUpdateInstaller = (
+        $script:DeferredAutoUpdateInstaller
+    )
+    $originalNextAutoUpdateNetworkRetryAt = (
+        $script:NextAutoUpdateNetworkRetryAt
+    )
+    $originalAutoUpdateDeferredNotifications = (
+        $script:AutoUpdateDeferredNotifications
+    )
     $originalNextCheck = $script:NextAutomaticUpdateCheckAt
     $originalDiagnosticMode = $script:UpdateDiagnosticMode
     $originalDiagnosticMessages = $script:UpdateDiagnosticMessages
@@ -784,6 +1270,21 @@ function Invoke-UpdateDiagnostic {
     $originalDiagnosticFileVersionInfo = (
         $script:UpdateDiagnosticFileVersionInfo
     )
+    $originalDiagnosticNetworkState = (
+        $script:UpdateDiagnosticNetworkState
+    )
+    $originalDiagnosticInstalledMode = (
+        $script:UpdateDiagnosticInstalledMode
+    )
+    $originalDiagnosticInstallerArguments = (
+        $script:UpdateDiagnosticInstallerArguments
+    )
+    $originalDiagnosticAutomaticInstall = (
+        $script:UpdateDiagnosticAutomaticInstall
+    )
+    $originalDiagnosticWindowCloseRequested = (
+        $script:UpdateDiagnosticWindowCloseRequested
+    )
     $diagnosticUpdatesRoot = Join-Path (
         [IO.Path]::GetTempPath()
     ) ('rmf-update-diagnostic-' + [Guid]::NewGuid().ToString('N'))
@@ -793,6 +1294,14 @@ function Invoke-UpdateDiagnostic {
         $script:UpdateDiagnosticUpdatesRoot = $diagnosticUpdatesRoot
         $script:UpdateDiagnosticInstallerPath = $null
         $script:UpdateDiagnosticInstallerVersion = $null
+        $script:UpdateDiagnosticNetworkState = $null
+        $script:UpdateDiagnosticInstalledMode = $null
+        $script:UpdateDiagnosticInstallerArguments = ''
+        $script:UpdateDiagnosticAutomaticInstall = $false
+        $script:UpdateDiagnosticWindowCloseRequested = $false
+        $script:AutoUpdateEnabled = $false
+        Clear-DeferredAutoUpdate
+        $script:AutoUpdateDeferredNotifications = @{}
         $script:UpdateDiagnosticFileVersionInfo = [pscustomobject]@{
             FileVersion = '1.8.0.0'
             ProductVersion = '1.8.0'
@@ -902,10 +1411,122 @@ function Invoke-UpdateDiagnostic {
             -not $script:UpdateContext.IsBusy -and
             $script:UpdateContext.Phase -eq 'Idle'
         )
+
+        $unrestrictedNetwork = [pscustomobject]@{
+            Suitable = $true
+            Reason = ''
+            ConnectivityLevel = 'InternetAccess'
+            CostType = 'Unrestricted'
+            Roaming = $false
+            OverDataLimit = $false
+            ApproachingDataLimit = $false
+            BackgroundDataUsageRestricted = $false
+        }
+        $meteredNetwork = [pscustomobject]@{
+            Suitable = $false
+            Reason = '当前网络可能按流量计费。'
+            ConnectivityLevel = 'InternetAccess'
+            CostType = 'Fixed'
+            Roaming = $false
+            OverDataLimit = $false
+            ApproachingDataLimit = $false
+            BackgroundDataUsageRestricted = $false
+        }
+        $restrictedNetwork = [pscustomobject]@{
+            Suitable = $false
+            Reason = ''
+            ConnectivityLevel = 'InternetAccess'
+            CostType = 'Unrestricted'
+            Roaming = $true
+            OverDataLimit = $false
+            ApproachingDataLimit = $true
+            BackgroundDataUsageRestricted = $true
+        }
+        $script:UpdateDiagnosticNetworkState = $unrestrictedNetwork
+        $unrestrictedAutoUpdateAllowed = (
+            (Get-AutoUpdateNetworkState).Suitable
+        )
+        $script:UpdateDiagnosticNetworkState = $restrictedNetwork
+        $restrictedAutoUpdateBlocked = -not (
+            (Get-AutoUpdateNetworkState).Suitable
+        )
+        $script:UpdateDiagnosticNetworkState = $unrestrictedNetwork
+        $script:UpdateDiagnosticInstalledMode = $false
+        $sourceModeAutoUpdateRejected = -not (
+            Test-AutoUpdateInstalledMode
+        )
+
+        $pendingInstaller = New-Object (
+            'Threading.Tasks.TaskCompletionSource[byte[]]'
+        )
+        $pendingChecksum = New-Object (
+            'Threading.Tasks.TaskCompletionSource[byte[]]'
+        )
+        $automaticDownloadClient = New-UpdateDiagnosticClient -ByteTasks @(
+            $pendingInstaller.Task
+            $pendingChecksum.Task
+        )
+        Start-UpdateDownload `
+            -Release $parsed `
+            -Client $automaticDownloadClient `
+            -AutomaticInstall
+        $autoDownloadIntentPreserved = (
+            $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'Download' -and
+            $script:UpdateContext.AutomaticInstall -and
+            -not $script:UpdateContext.Manual
+        )
+        Reset-UpdateContext
+
+        $script:UpdateDiagnosticInstalledMode = $true
+        $script:UpdateDiagnosticNetworkState = $meteredNetwork
+        $script:AutoUpdateEnabled = $true
+        Show-UpdateAvailable -Release $parsed
+        $meteredAutoUpdateDeferred = (
+            $null -ne $script:DeferredAutoUpdateRelease -and
+            $script:DeferredAutoUpdateRelease.Version -eq '1.8.0' -and
+            $null -ne $script:NextAutoUpdateNetworkRetryAt
+        )
+        Clear-DeferredAutoUpdate
+
+        $script:UpdateDiagnosticNetworkState = $unrestrictedNetwork
+        Start-VerifiedUpdateInstaller `
+            -InstallerPath 'C:\diagnostic\update.exe' `
+            -Version '1.8.0' `
+            -AutomaticInstall
+        $automaticInstallerArgumentsSafe = (
+            $script:UpdateDiagnosticAutomaticInstall -and
+            $script:UpdateDiagnosticInstallerArguments -match '/VERYSILENT' -and
+            $script:UpdateDiagnosticInstallerArguments -match '/NORESTART' -and
+            $script:UpdateDiagnosticInstallerArguments -match '/CURRENTUSER' -and
+            $script:UpdateDiagnosticInstallerArguments -match '/CLOSEAPPLICATIONS' -and
+            $script:UpdateDiagnosticInstallerArguments -match '/RMFAUTORESTART=1' -and
+            $script:UpdateDiagnosticInstallerArguments -notmatch '/DIR=' -and
+            $script:UpdateDiagnosticInstallerArguments -notmatch '/TASKS=' -and
+            $script:UpdateDiagnosticInstallerArguments -notmatch (
+                '/FORCECLOSEAPPLICATIONS'
+            )
+        )
+        $automaticRestartRequested = (
+            $script:UpdateDiagnosticWindowCloseRequested
+        )
     }
     finally {
         $script:UpdateContext = $originalContext
         $script:TrayUpdateItem = $originalTrayUpdateItem
+        $script:AutoUpdateEnabled = $originalAutoUpdateEnabled
+        $script:DeferredAutoUpdateRelease = (
+            $originalDeferredAutoUpdateRelease
+        )
+        $script:DeferredAutoUpdateInstaller = (
+            $originalDeferredAutoUpdateInstaller
+        )
+        $script:NextAutoUpdateNetworkRetryAt = (
+            $originalNextAutoUpdateNetworkRetryAt
+        )
+        $script:AutoUpdateDeferredNotifications = (
+            $originalAutoUpdateDeferredNotifications
+        )
         $script:NextAutomaticUpdateCheckAt = $originalNextCheck
         $script:UpdateDiagnosticMode = $originalDiagnosticMode
         $script:UpdateDiagnosticMessages = $originalDiagnosticMessages
@@ -918,6 +1539,21 @@ function Invoke-UpdateDiagnostic {
         )
         $script:UpdateDiagnosticFileVersionInfo = (
             $originalDiagnosticFileVersionInfo
+        )
+        $script:UpdateDiagnosticNetworkState = (
+            $originalDiagnosticNetworkState
+        )
+        $script:UpdateDiagnosticInstalledMode = (
+            $originalDiagnosticInstalledMode
+        )
+        $script:UpdateDiagnosticInstallerArguments = (
+            $originalDiagnosticInstallerArguments
+        )
+        $script:UpdateDiagnosticAutomaticInstall = (
+            $originalDiagnosticAutomaticInstall
+        )
+        $script:UpdateDiagnosticWindowCloseRequested = (
+            $originalDiagnosticWindowCloseRequested
         )
         if (Test-Path -LiteralPath $diagnosticUpdatesRoot) {
             Remove-Item `
@@ -973,6 +1609,13 @@ function Invoke-UpdateDiagnostic {
         PartialDownloadFailureReset = $partialDownloadFailureReset
         SuccessfulDownloadCompleted = $successfulDownloadCompleted
         CancelledReleaseReset = $cancelledReleaseReset
+        UnrestrictedAutoUpdateAllowed = $unrestrictedAutoUpdateAllowed
+        MeteredAutoUpdateDeferred = $meteredAutoUpdateDeferred
+        RestrictedAutoUpdateBlocked = $restrictedAutoUpdateBlocked
+        SourceModeAutoUpdateRejected = $sourceModeAutoUpdateRejected
+        AutoDownloadIntentPreserved = $autoDownloadIntentPreserved
+        AutomaticInstallerArgumentsSafe = $automaticInstallerArgumentsSafe
+        AutomaticRestartRequested = $automaticRestartRequested
         Version = $parsed.Version
     }
 }

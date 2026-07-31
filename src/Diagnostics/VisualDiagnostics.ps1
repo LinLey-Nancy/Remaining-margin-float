@@ -862,6 +862,13 @@ if ($CheckTransitions) {
         LowAlertThresholdPersisted = (
             [double]$lowAlertSettingsSnapshot.LowRemainingThreshold -eq 35
         )
+        AutoUpdateSettingPersisted = (
+            $null -ne $lowAlertSettingsSnapshot.PSObject.Properties[
+                'AutoUpdateEnabled'
+            ] -and
+            [bool]$lowAlertSettingsSnapshot.AutoUpdateEnabled -eq
+                [bool]$script:AutoUpdateEnabled
+        )
         RapidDropSettingsPersisted = (
             [bool]$lowAlertSettingsSnapshot.RapidDropAlertsEnabled -and
             [int]$lowAlertSettingsSnapshot.RapidDropWindowMinutes -eq 45 -and

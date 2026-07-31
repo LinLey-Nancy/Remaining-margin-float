@@ -107,11 +107,31 @@ $trayImportHistoryItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 )
 [void]$trayDataItem.DropDownItems.Add($trayExportHistoryItem)
 [void]$trayDataItem.DropDownItems.Add($trayImportHistoryItem)
+$trayUpdateMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayUpdateMenu.Text = '软件更新'
 $script:TrayUpdateItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayUpdateItem.Text = '检查更新…'
 $script:TrayUpdateItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Start-UpdateCheck -Manual
 }))
+$script:TrayAutoUpdateItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayAutoUpdateItem.Text = '自动更新并重启（仅合适网络）'
+$script:TrayAutoUpdateItem.CheckOnClick = $true
+$script:TrayAutoUpdateItem.Checked = $script:AutoUpdateEnabled
+$script:TrayAutoUpdateItem.ToolTipText = (
+    '仅在 Windows 判定为非按流量计费、非漫游且未受流量限制时执行'
+)
+$script:TrayAutoUpdateItem.Add_Click((
+    New-RmfEventHandler -Kind Event -Callback {
+        $enabled = [bool]$script:TrayAutoUpdateItem.Checked
+        [void](Set-AutoUpdateEnabled -Enabled $enabled -Confirm:$enabled)
+    }
+))
+[void]$trayUpdateMenu.DropDownItems.Add($script:TrayUpdateItem)
+[void]$trayUpdateMenu.DropDownItems.Add(
+    (New-Object System.Windows.Forms.ToolStripSeparator)
+)
+[void]$trayUpdateMenu.DropDownItems.Add($script:TrayAutoUpdateItem)
 $trayStartupItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayStartupItem.Text = '设置开机启动'
 $trayStartupClickHandler = {
@@ -158,7 +178,7 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)
 [void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)
 [void]$script:TrayMenu.Items.Add($trayDataItem)
-[void]$script:TrayMenu.Items.Add($script:TrayUpdateItem)
+[void]$script:TrayMenu.Items.Add($trayUpdateMenu)
 [void]$script:TrayMenu.Items.Add($trayStartupItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)
@@ -208,6 +228,8 @@ if ($releaseGuiCheck) {
             $script:RmfGuiCheckPassed = (
                 $null -ne $script:LowAlertThresholdMenuItem -and
                 $null -ne $script:TrayLowAlertThresholdItem -and
+                $null -ne $script:AutoUpdateMenuItem -and
+                $null -ne $script:TrayAutoUpdateItem -and
                 $null -ne $script:TrayUpdateItem -and
                 [string]$script:TrayLowAlertsItem.Text -eq
                     (Get-LowRemainingAlertMenuText)
