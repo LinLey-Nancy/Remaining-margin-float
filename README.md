@@ -6,6 +6,7 @@
 会话中的最近余量快照并汇总 Token；用户明确启用后，才会优先从官方账户用量
 接口读取周期额度。DeepSeek 模式向官方余额接口发起请求，并从 Claude Code
 本地日志汇总 DeepSeek Token。应用不会输出访问令牌。
+
 目前适配`ChatGPT(Codex)、DeepSeek(Claude Code)`
 
 ## 功能
