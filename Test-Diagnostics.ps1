@@ -437,6 +437,9 @@ Assert-Diagnostic `
     ) `
     -Message '7-day trend UI'
 Assert-Diagnostic `
+    -Condition ([bool]$transitions.TrendCardsFollowQuotaPalette) `
+    -Message 'Trend card backgrounds follow quota palette'
+Assert-Diagnostic `
     -Condition (-not [string]::IsNullOrWhiteSpace([string]$transitions.PredictionText)) `
     -Message 'Depletion forecast UI'
 Assert-Diagnostic `

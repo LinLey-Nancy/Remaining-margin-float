@@ -347,6 +347,41 @@ if ($CheckTransitions) {
     $trend7MetaTextValue = $Trend7MetaText.Text
     $rapidDropStatusTextValue = $RapidDropText.Text
 
+    Set-UsageStatusPalette -Percent 90 -Available $true
+    $trendHealthyPaletteColor = (
+        [Windows.Media.SolidColorBrush]$window.Resources['SageSoft']
+    ).Color.ToString()
+    $trendHealthyBackgroundColor = (
+        [Windows.Media.SolidColorBrush]$Trend24Card.Background
+    ).Color.ToString()
+    $trendHealthyBackgroundsMatch = (
+        $trendHealthyBackgroundColor -eq $trendHealthyPaletteColor -and
+        ([Windows.Media.SolidColorBrush]$Trend7Card.Background).Color.ToString() -eq
+            $trendHealthyPaletteColor
+    )
+
+    Set-UsageStatusPalette -Percent 10 -Available $true
+    $trendLowPaletteColor = (
+        [Windows.Media.SolidColorBrush]$window.Resources['SageSoft']
+    ).Color.ToString()
+    $trendLowBackgroundColor = (
+        [Windows.Media.SolidColorBrush]$Trend24Card.Background
+    ).Color.ToString()
+    $trendLowBackgroundsMatch = (
+        $trendLowBackgroundColor -eq $trendLowPaletteColor -and
+        ([Windows.Media.SolidColorBrush]$Trend7Card.Background).Color.ToString() -eq
+            $trendLowPaletteColor
+    )
+    $trendCardsFollowQuotaPalette = (
+        $trendHealthyBackgroundsMatch -and
+        $trendLowBackgroundsMatch -and
+        (
+            $script:HighContrast -or
+            $trendHealthyBackgroundColor -ne $trendLowBackgroundColor
+        )
+    )
+    Set-UsageStatusPalette -Percent 0 -Available $false
+
     $script:UsageSyncSession.RapidSamples = @()
     $script:UsageSyncSession.RapidChannels = @{}
     $startupLocalSnapshot = $deepSeekCheckSnapshot.PSObject.Copy()
@@ -953,6 +988,11 @@ if ($CheckTransitions) {
         Trend7PointCount = $trend7PointCount
         Trend24MetaText = $trend24MetaTextValue
         Trend7MetaText = $trend7MetaTextValue
+        TrendCardsFollowQuotaPalette = $trendCardsFollowQuotaPalette
+        TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
+        TrendHealthyPaletteColor = $trendHealthyPaletteColor
+        TrendLowBackgroundColor = $trendLowBackgroundColor
+        TrendLowPaletteColor = $trendLowPaletteColor
         PredictionText = $PredictionText.Text
         RapidDropStatusText = $rapidDropStatusTextValue
         StartupLocalRapidSuppressed = $startupLocalRapidSuppressed

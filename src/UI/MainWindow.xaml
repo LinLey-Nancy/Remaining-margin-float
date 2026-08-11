@@ -480,8 +480,9 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
-                            <Border Grid.Column="0"
-                                    Background="#F3F5F1"
+                            <Border x:Name="Trend24Card"
+                                    Grid.Column="0"
+                                    Background="{DynamicResource SageSoft}"
                                     CornerRadius="9"
                                     Padding="10,7">
                                 <Grid>
@@ -536,8 +537,9 @@
                                 </Grid>
                             </Border>
 
-                            <Border Grid.Column="2"
-                                    Background="#F3F5F1"
+                            <Border x:Name="Trend7Card"
+                                    Grid.Column="2"
+                                    Background="{DynamicResource SageSoft}"
                                     CornerRadius="9"
                                     Padding="10,7">
                                 <Grid>
