@@ -274,6 +274,35 @@ if ($CheckProviderContracts) {
         -CredentialSource '契约样例' `
         -SampledAt ([datetime]'2030-01-01T12:00:00')
     Assert-UsageSnapshotContract -Snapshot $deepSeekSnapshot
+    $currentOfficialUsage = Get-CodexCurrentUsageOverride `
+        -OfficialUsage $codexUsage `
+        -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $expiredOfficialUsage = $codexUsage.PSObject.Copy()
+    $expiredOfficialUsage.ResetsAt = (
+        [DateTimeOffset]'2030-01-01T11:59:00Z'
+    ).ToUnixTimeSeconds()
+    $expiredCurrentUsage = Get-CodexCurrentUsageOverride `
+        -OfficialUsage $expiredOfficialUsage `
+        -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $fixtureLocalRateLimitPayload = [pscustomobject]@{
+        rate_limits = [pscustomobject]@{
+            primary = [pscustomobject]@{
+                used_percent = 22.0
+                window_minutes = 10080
+                resets_at = 1894060800
+            }
+            plan_type = 'pro'
+        }
+    }
+    $expiredFallbackUsage = Resolve-CodexQuotaUsage `
+        -OfficialUsage $expiredCurrentUsage `
+        -SessionSnapshots @(
+            [pscustomobject]@{
+                RateLimitPayload = $fixtureLocalRateLimitPayload
+                RateLimitObservedAt = [DateTimeOffset]'2030-01-01T11:58:00Z'
+            }
+        ) `
+        -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
     $pricingCatalog = Get-DeepSeekPricingCatalog
     $freshSnapshot = $deepSeekSnapshot.PSObject.Copy()
     $freshSnapshot.SampledAt = [DateTimeOffset]'2030-01-01T12:00:00+08:00'
@@ -312,6 +341,16 @@ if ($CheckProviderContracts) {
             [bool]$fallbackSnapshot.IsFallback -and
             $fallbackSnapshot.FallbackReason -eq 'diagnostic fallback' -and
             $fallbackSnapshot.SampledAt -eq $freshSnapshot.SampledAt
+        )
+        CurrentOfficialUsagePreferred = (
+            $currentOfficialUsage.UsedPercent -eq $codexUsage.UsedPercent -and
+            $currentOfficialUsage.SampledAt -eq $codexUsage.SampledAt -and
+            [bool]$currentOfficialUsage.IsCached
+        )
+        ExpiredOfficialUsageFallsBackToLocal = (
+            $null -eq $expiredCurrentUsage -and
+            $expiredFallbackUsage.Channel -eq 'Local' -and
+            $expiredFallbackUsage.UsedPercent -eq 22
         )
         TransientRefreshFailuresClassified = (
             (Test-TransientRefreshFailure -StatusCode 0) -and
@@ -832,6 +871,17 @@ if ($CheckUsageHistory) {
         -WindowMinutes 30 `
         -CodexPercent 20 `
         -Now $now
+    $codexNetDropSamples = @(
+        (New-HistoryCheckSample -HoursAgo 0.5 -Value 68.2),
+        (New-HistoryCheckSample -HoursAgo (1 / 3) -Value 69),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 68)
+    )
+    $codexNetDrop = Measure-RapidUsageDrop `
+        -Samples $codexNetDropSamples `
+        -Snapshot $codexRapidSnapshot `
+        -WindowMinutes 30 `
+        -CodexPercent 15 `
+        -Now $now
     $codexWithoutProgress = $codexRapidSnapshot.PSObject.Copy()
     $codexWithoutProgress.HasProgress = $false
     $codexWithoutProgressRapidDrop = Measure-RapidUsageDrop `
@@ -1154,6 +1204,14 @@ if ($CheckUsageHistory) {
         )
         CodexRapidDropThresholdRespected = -not (
             [bool]$codexRapidDropBelowThreshold.IsRapid
+        )
+        RapidDropUsesWindowStartSample = (
+            [bool]$codexNetDrop.Available -and
+            -not [bool]$codexNetDrop.IsRapid -and
+            [Math]::Abs([double]$codexNetDrop.Drop - 0.2) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$codexNetDrop.BaselineValue - 68.2
+            ) -lt 0.0001
         )
         CodexRapidDropRequiresProgress = -not (
             [bool]$codexWithoutProgressRapidDrop.Available

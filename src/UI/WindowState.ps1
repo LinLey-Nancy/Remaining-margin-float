@@ -1067,7 +1067,11 @@ function Update-UsageInsightView {
         $Trend24EndMarker.Visibility = 'Collapsed'
         $Trend7StartMarker.Visibility = 'Collapsed'
         $Trend7EndMarker.Visibility = 'Collapsed'
-        $RapidDropText.Text = '快速下降监控 · 正在积累样本'
+        $RapidDropText.Text = if ($script:RapidDropAlertsEnabled) {
+            '快速下降监控 · 正在积累样本'
+        } else {
+            '1 小时内下降 · 正在积累样本'
+        }
         return
     }
 
@@ -1129,7 +1133,16 @@ function Update-UsageInsightView {
         $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
             [Windows.Media.ColorConverter]::ConvertFromString('#9AA09B')
         )
-        $RapidDropText.Text = '快速下降监控 · 已关闭'
+        $RapidDropText.Text = if ($rapidDrop -and $rapidDrop.Available) {
+            $rapidDrop.Summary
+        }
+        else {
+            '1 小时内下降 · ' + $(if ($rapidDrop) {
+                $rapidDrop.Summary
+            } else {
+                '正在积累样本'
+            })
+        }
         $RapidDropText.Foreground = $window.FindResource('TextMuted')
         $RapidDropText.FontWeight = 'Normal'
     }
@@ -1207,6 +1220,13 @@ function Reset-ProviderRapidDropSession {
     }
 }
 
+function Get-RapidDropDisplayWindowMinutes {
+    if ($script:RapidDropAlertsEnabled) {
+        return $script:RapidDropWindowMinutes
+    }
+    return 60
+}
+
 function Set-SessionRapidDropInsight {
     param(
         $Snapshot,
@@ -1241,11 +1261,12 @@ function Set-SessionRapidDropInsight {
     }
     elseif ($ObservationContext -eq 'LocalPreview') {
         $excludeCurrentSample = $true
-        $summaryOverride = '等待官方同步，本地快照不计入快速下降'
+        if ($channel -ne 'CodexOfficialCache') {
+            $summaryOverride = '等待官方同步，本地快照不计入快速下降'
+        }
     }
     elseif ($channel -eq 'CodexOfficialCache') {
         $excludeCurrentSample = $true
-        $summaryOverride = '官方缓存不计入快速下降'
     }
     elseif (
         $ObservationContext -eq 'StartupOfficial' -or
@@ -1303,8 +1324,12 @@ function Set-SessionRapidDropInsight {
                 -Snapshot $Snapshot `
                 -ObservedAt $ObservedAt
         )
+        $retentionWindowMinutes = [Math]::Max(
+            60,
+            [Math]::Max(5, $script:RapidDropWindowMinutes)
+        )
         $cutoff = $ObservedAt.ToUniversalTime().AddMinutes(
-            -1 * ([Math]::Max(5, $script:RapidDropWindowMinutes) + 5)
+            -1 * ($retentionWindowMinutes + 5)
         )
         $script:UsageSyncSession.RapidSamples = @(
             @($script:UsageSyncSession.RapidSamples + $newSamples) |
@@ -1317,7 +1342,7 @@ function Set-SessionRapidDropInsight {
     $rapidDrop = Measure-RapidUsageDrop `
         -Samples @($script:UsageSyncSession.RapidSamples) `
         -Snapshot $Snapshot `
-        -WindowMinutes $script:RapidDropWindowMinutes `
+        -WindowMinutes (Get-RapidDropDisplayWindowMinutes) `
         -CodexPercent $script:CodexRapidDropPercent `
         -DeepSeekMode $script:DeepSeekRapidDropMode `
         -DeepSeekPercent $script:DeepSeekRapidDropPercent `
@@ -1451,7 +1476,7 @@ function Refresh-RapidDropStatusView {
     $script:LastUsageInsights.RapidDrop = Measure-RapidUsageDrop `
         -Samples @($script:UsageSyncSession.RapidSamples) `
         -Snapshot $script:LastSnapshot `
-        -WindowMinutes $script:RapidDropWindowMinutes `
+        -WindowMinutes (Get-RapidDropDisplayWindowMinutes) `
         -CodexPercent $script:CodexRapidDropPercent `
         -DeepSeekMode $script:DeepSeekRapidDropMode `
         -DeepSeekPercent $script:DeepSeekRapidDropPercent `

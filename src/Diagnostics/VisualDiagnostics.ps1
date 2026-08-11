@@ -382,6 +382,7 @@ if ($CheckTransitions) {
     )
     Set-UsageStatusPalette -Percent 0 -Available $false
 
+    $script:RapidDropAlertsEnabled = $true
     $script:UsageSyncSession.RapidSamples = @()
     $script:UsageSyncSession.RapidChannels = @{}
     $startupLocalSnapshot = $deepSeekCheckSnapshot.PSObject.Copy()
@@ -471,14 +472,16 @@ if ($CheckTransitions) {
     ) {
         throw (
             'Startup synchronization alert policy failed: local={0}, ' +
-            'official={1}, preview={2}, continuous={3}, gap={4}, messages={5}.'
+            'official={1}, preview={2}, continuous={3}, gap={4}, messages={5}, ' +
+            'text={6}.'
         ) -f
             $startupLocalRapidSuppressed,
             $startupOfficialRapidSuppressed,
             $localPreviewRapidSuppressed,
             $continuousRapidDropDetected,
             $continuityGapReset,
-            $startupSnapshotMessagesReady
+            $startupSnapshotMessagesReady,
+            [string]$RapidDropText.Text
     }
 
     Set-Progress -Percent 82
@@ -825,11 +828,16 @@ if ($CheckTransitions) {
     Clear-EdgeDock
     $script:RapidDropWindowMinutes = 30
     $script:CodexRapidDropPercent = 10.0
+    $settingsHourlyBaselineSnapshot = $startupOfficialSnapshot.PSObject.Copy()
+    $settingsHourlyBaselineSnapshot.RemainingPercent = 60
     $settingsBaselineSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $settingsBaselineSnapshot.RemainingPercent = 56
     $settingsCurrentSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $settingsCurrentSnapshot.RemainingPercent = 55
     $script:UsageSyncSession.RapidSamples = @(
+        ConvertTo-UsageHistorySamples `
+            -Snapshot $settingsHourlyBaselineSnapshot `
+            -ObservedAt ([DateTimeOffset]::Now.AddMinutes(-50))
         ConvertTo-UsageHistorySamples `
             -Snapshot $settingsBaselineSnapshot `
             -ObservedAt ([DateTimeOffset]::Now.AddMinutes(-1))
@@ -849,6 +857,12 @@ if ($CheckTransitions) {
         -DeepSeekPercent 11.5 `
         -DeepSeekAmount 8.5)
     $rapidDropStatusAfterSettings = [string]$RapidDropText.Text
+    $script:RapidDropAlertsEnabled = $false
+    Refresh-RapidDropStatusView
+    $rapidDropStatusWhenDisabled = [string]$RapidDropText.Text
+    $script:RapidDropAlertsEnabled = $true
+    Refresh-RapidDropStatusView
+    $rapidDropStatusWhenReenabled = [string]$RapidDropText.Text
     $lowAlertThresholdMenuText = [string]$script:LowAlertsMenuItem.Header
     $usageAlertSettingsMenuText =
         [string]$script:LowAlertThresholdMenuItem.Header
@@ -1026,6 +1040,8 @@ if ($CheckTransitions) {
         )
         RapidDropStatusBeforeSettings = $rapidDropStatusBeforeSettings
         RapidDropStatusAfterSettings = $rapidDropStatusAfterSettings
+        RapidDropStatusWhenDisabled = $rapidDropStatusWhenDisabled
+        RapidDropStatusWhenReenabled = $rapidDropStatusWhenReenabled
         RapidDropStatusUpdatedImmediately = (
             [string]::Equals(
                 $rapidDropStatusBeforeSettings,
@@ -1037,6 +1053,16 @@ if ($CheckTransitions) {
                 '45 分钟内下降 1pp · 阈值 12.5pp',
                 [StringComparison]::Ordinal
             )
+        )
+        RapidDropDisabledShowsHourlyChange = [string]::Equals(
+            $rapidDropStatusWhenDisabled,
+            '1 小时内下降 5pp',
+            [StringComparison]::Ordinal
+        )
+        RapidDropReenabledRestoresConfiguredWindow = [string]::Equals(
+            $rapidDropStatusWhenReenabled,
+            '45 分钟内下降 1pp · 阈值 12.5pp',
+            [StringComparison]::Ordinal
         )
         FallbackProvenanceDisplayed = $fallbackProvenanceDisplayed
         DisplayOnlyPreservedHistory = $displayOnlyPreservedHistory

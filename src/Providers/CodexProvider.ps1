@@ -140,7 +140,7 @@ function New-CodexOfficialUsageRequest {
         [void]$request.Headers.TryAddWithoutValidation('originator', 'codex_cli_rs')
         [void]$request.Headers.TryAddWithoutValidation(
             'User-Agent',
-            'remaining-margin-float/1.8.5'
+            'remaining-margin-float/1.8.6'
         )
         [void]$request.Headers.TryAddWithoutValidation('Accept', 'application/json')
         return $request
@@ -153,11 +153,12 @@ function New-CodexOfficialUsageRequest {
 
 function Get-CodexOfficialUsage {
     $now = [DateTimeOffset]::Now
+    $currentOfficialUsage = Get-CodexCurrentUsageOverride -Now $now
     if (
-        $script:CodexOfficialUsageCache -and
-        ($now - $script:CodexOfficialUsageCache.SampledAt).TotalSeconds -lt 15
+        $currentOfficialUsage -and
+        ($now - $currentOfficialUsage.SampledAt).TotalSeconds -lt 15
     ) {
-        return $script:CodexOfficialUsageCache
+        return $currentOfficialUsage
     }
 
     try {
@@ -186,19 +187,12 @@ function Get-CodexOfficialUsage {
         return $usage
     }
     catch {
+        $currentOfficialUsage = Get-CodexCurrentUsageOverride -Now $now
         if (
-            $script:CodexOfficialUsageCache -and
-            ($now - $script:CodexOfficialUsageCache.SampledAt).TotalMinutes -lt 10
+            $currentOfficialUsage -and
+            ($now - $currentOfficialUsage.SampledAt).TotalMinutes -lt 10
         ) {
-            $cached = $script:CodexOfficialUsageCache
-            return [pscustomobject]@{
-                UsedPercent = $cached.UsedPercent
-                WindowMinutes = $cached.WindowMinutes
-                ResetsAt = $cached.ResetsAt
-                PlanType = $cached.PlanType
-                SampledAt = $cached.SampledAt
-                IsCached = $true
-            }
+            return $currentOfficialUsage
         }
         return $null
     }

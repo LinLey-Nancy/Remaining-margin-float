@@ -95,6 +95,31 @@ function Get-UsageSnapshotFreshness {
     }
 }
 
+function Get-CodexCurrentUsageOverride {
+    param(
+        $OfficialUsage = $script:CodexOfficialUsageCache,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    if (-not $OfficialUsage) { return $null }
+    $resetsAt = [long](Get-ObjectPropertyValue `
+        -Object $OfficialUsage `
+        -Name 'ResetsAt' `
+        -Default 0)
+    if ($resetsAt -gt 0 -and $resetsAt -le $Now.ToUnixTimeSeconds()) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        UsedPercent = [double]$OfficialUsage.UsedPercent
+        WindowMinutes = [int]$OfficialUsage.WindowMinutes
+        ResetsAt = $resetsAt
+        PlanType = [string]$OfficialUsage.PlanType
+        SampledAt = [DateTimeOffset]$OfficialUsage.SampledAt
+        IsCached = $true
+    }
+}
+
 function New-UsageFallbackSnapshot {
     param(
         $Snapshot,

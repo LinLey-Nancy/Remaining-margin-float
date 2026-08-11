@@ -99,16 +99,17 @@ function Start-CodexRefresh {
     }
 
     $now = [DateTimeOffset]::Now
+    $currentOfficialUsage = Get-CodexCurrentUsageOverride -Now $now
     if (
-        $script:CodexOfficialUsageCache -and
-        ($now - $script:CodexOfficialUsageCache.SampledAt).TotalSeconds -lt 15
+        $currentOfficialUsage -and
+        ($now - $currentOfficialUsage.SampledAt).TotalSeconds -lt 15
     ) {
         $observationContext = if (
             $script:UsageSyncSession.AwaitingInitialOfficial
         ) { 'StartupOfficial' } else { 'Normal' }
         Update-UsageView -Snapshot (
             Get-CodexUsageSnapshot `
-                -OfficialUsageOverride $script:CodexOfficialUsageCache `
+                -OfficialUsageOverride $currentOfficialUsage `
                 -SkipOfficialRequest
         ) -ObservationContext $observationContext
         if ($observationContext -eq 'StartupOfficial') {
@@ -242,21 +243,13 @@ function Complete-CodexRefresh {
                 )
             Update-UsageView -Snapshot $fallback -DisplayOnly
         }
+        $cachedUsage = Get-CodexCurrentUsageOverride
         if (
             -not $retryStarted -and
-            $script:CodexOfficialUsageCache -and
-            ([DateTimeOffset]::Now - $script:CodexOfficialUsageCache.SampledAt).TotalMinutes -lt 10 -and
+            $cachedUsage -and
+            ([DateTimeOffset]::Now - $cachedUsage.SampledAt).TotalMinutes -lt 10 -and
             $script:ActiveProvider -eq 'Codex'
         ) {
-            $cached = $script:CodexOfficialUsageCache
-            $cachedUsage = [pscustomobject]@{
-                UsedPercent = $cached.UsedPercent
-                WindowMinutes = $cached.WindowMinutes
-                ResetsAt = $cached.ResetsAt
-                PlanType = $cached.PlanType
-                SampledAt = $cached.SampledAt
-                IsCached = $true
-            }
             $cachedSnapshot = (
                 Get-CodexUsageSnapshot `
                     -OfficialUsageOverride $cachedUsage `
@@ -295,7 +288,7 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.8.5')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('RemainingMarginFloat/1.8.6')
         $script:DeepSeekHttpClient = $client
     }
     return $script:DeepSeekHttpClient
@@ -814,9 +807,10 @@ function Invoke-Refresh {
         elseif ($script:CodexOfficialAccessEnabled) {
             $observationContext = 'LocalPreview'
         }
+        $currentOfficialUsage = Get-CodexCurrentUsageOverride
         Update-UsageView -Snapshot (
             Get-CodexUsageSnapshot `
-                -OfficialUsageOverride $null `
+                -OfficialUsageOverride $currentOfficialUsage `
                 -SkipOfficialRequest
         ) -ObservationContext $observationContext
         Set-RuntimeDiagnosticStatus `

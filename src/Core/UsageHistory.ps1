@@ -1046,19 +1046,23 @@ function Measure-RapidUsageDrop {
     }
 
     $currentSample = $series[-1]
-    $baselineSample = $series |
-        Sort-Object RemainingValue -Descending |
-        Select-Object -First 1
+    $baselineSample = $series[0]
     $drop = [Math]::Max(
         0.0,
         [double]$baselineSample.RemainingValue -
             [double]$currentSample.RemainingValue
     )
+    $windowText = if ($WindowMinutes -eq 60) {
+        '1 小时'
+    }
+    else {
+        '{0} 分钟' -f $WindowMinutes
+    }
     $summary = if ($metricType -eq 'Percent') {
-        '{0} 分钟内下降 {1:0.#}pp' -f $WindowMinutes, $drop
+        '{0}内下降 {1:0.#}pp' -f $windowText, $drop
     } else {
-        '{0} 分钟内减少 {1}' -f
-            $WindowMinutes,
+        '{0}内减少 {1}' -f
+            $windowText,
             (Format-CurrencyAmount -Amount $drop -Currency $unit)
     }
     return [pscustomobject]@{

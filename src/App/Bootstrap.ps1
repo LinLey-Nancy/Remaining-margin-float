@@ -180,7 +180,7 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:AppVersion = '1.8.5'
+$script:AppVersion = '1.8.6'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0

@@ -118,6 +118,8 @@ Assert-Diagnostic -Condition (
 foreach ($propertyName in @(
     'FreshnessStatesClassified'
     'FallbackSnapshotPreservesSample'
+    'CurrentOfficialUsagePreferred'
+    'ExpiredOfficialUsageFallsBackToLocal'
     'TransientRefreshFailuresClassified'
     'RefreshRetryBackoffBounded'
 )) {
@@ -222,6 +224,8 @@ Assert-Diagnostic -Condition ([bool]$history.CodexRapidDropDetected) `
     -Message 'Codex rapid percentage drop detection'
 Assert-Diagnostic -Condition ([bool]$history.CodexRapidDropThresholdRespected) `
     -Message 'Codex rapid drop custom threshold'
+Assert-Diagnostic -Condition ([bool]$history.RapidDropUsesWindowStartSample) `
+    -Message 'Rapid drop uses the window start sample instead of the peak'
 Assert-Diagnostic -Condition ([bool]$history.CodexRapidDropRequiresProgress) `
     -Message 'Codex rapid drop progress requirement'
 Assert-Diagnostic -Condition ([bool]$history.RapidDropTimeWindowRespected) `
@@ -311,7 +315,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.5') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.6') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -462,6 +466,12 @@ Assert-Diagnostic -Condition (
 Assert-Diagnostic `
     -Condition ([bool]$transitions.RapidDropStatusUpdatedImmediately) `
     -Message 'Custom rapid-drop settings update the detail status immediately'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.RapidDropDisabledShowsHourlyChange) `
+    -Message 'Disabled rapid-drop alerts still show the hourly change'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.RapidDropReenabledRestoresConfiguredWindow) `
+    -Message 'Re-enabled rapid-drop alerts restore the configured window'
 Assert-Diagnostic -Condition (
     [bool]$transitions.FallbackProvenanceDisplayed -and
     [bool]$transitions.DisplayOnlyPreservedHistory
