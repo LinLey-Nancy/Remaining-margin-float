@@ -20,6 +20,7 @@ if (-not $isDiagnosticRun) {
 $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
 $script:IsRestoringSettings = $false
+[void](Restore-LatestUsageState)
 
 $script:AppContext.Refresh.IsBusy = $false
 Reset-RefreshCountdown

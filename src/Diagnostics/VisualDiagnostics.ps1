@@ -453,7 +453,9 @@ if ($CheckTransitions) {
     $gapInsights = Set-SessionRapidDropInsight `
         -Snapshot $gapSnapshot `
         -Insights $gapInsights `
-        -ObservedAt ([DateTimeOffset]::Now.AddMinutes(10))
+        -ObservedAt ([DateTimeOffset]::Now.AddSeconds(
+            ($script:RefreshIntervalSeconds * 3) + 1
+        ))
     $continuityGapReset = (
         -not [bool]$gapInsights.RapidDrop.IsRapid -and
         [string]$gapInsights.RapidDrop.Summary -match '监控间隔中断'

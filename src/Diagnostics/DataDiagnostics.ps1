@@ -768,6 +768,212 @@ if ($CheckDeepSeekData) {
     return
 }
 
+if ($CheckStateHistory) {
+    $now = [DateTimeOffset]'2030-01-08T12:00:00Z'
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $stateRoot = [IO.Path]::GetFullPath(
+        (Join-Path $tempRoot (
+            'RemainingMarginFloat.StateDiagnostic.{0}.{1}' -f
+                $PID,
+                [Guid]::NewGuid().ToString('N')
+        ))
+    )
+    if (-not $stateRoot.StartsWith(
+        $tempRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'State history diagnostic escaped the temporary directory.'
+    }
+
+    $snapshot = [pscustomobject][ordered]@{
+        ProviderId = 'Codex'
+        Available = $true
+        HasProgress = $true
+        RemainingPercent = 72.5
+        WindowLabel = 'Weekly quota'
+        ResetDate = 'January 12'
+        ResetCountdown = '4 days'
+        ResetCount = 'Unavailable'
+        Plan = 'Pro'
+        AccountName = 'Diagnostic User'
+        AccountEmail = 'diagnostic@example.com'
+        TodayTokens = 12345
+        TodayInputTokens = 12000
+        TodayOutputTokens = 345
+        TodayCachedTokens = 10000
+        TodayCacheHitPercent = 83.3
+        LastTurnTokens = 456
+        InputTokens = 400
+        OutputTokens = 56
+        CachedTokens = 300
+        CacheHitPercent = 75
+        ContextPercent = 18
+        SampledAt = $now.AddMinutes(-1)
+        UsageSampledAt = $now.AddMinutes(-2)
+        ResetAt = $now.AddDays(4)
+        Status = 'Healthy'
+        Source = 'Diagnostic source'
+        ApiKey = 'must-never-be-persisted'
+        CustomNested = [ordered]@{
+            Label = 'preserved'
+            Values = @(1, 2, 3)
+        }
+    }
+
+    $roundTrip = $false
+    $contentDeduplicated = $false
+    $retentionApplied = $false
+    $encryptedAtRest = $false
+    $currentIndexWritten = $false
+    $corruptLatestFallback = $false
+    $corruptManifestFallback = $false
+    $temporaryFilesCleaned = $false
+    try {
+        [void](New-Item -Path $stateRoot -ItemType Directory -Force)
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddHours(-169) `
+            -Reason 'Old' `
+            -RootPath $stateRoot `
+            -AllowDiagnosticWrite)
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddMinutes(-10) `
+            -Reason 'Manual' `
+            -RootPath $stateRoot `
+            -AllowDiagnosticWrite)
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddMinutes(-5) `
+            -Reason 'Automatic' `
+            -RootPath $stateRoot `
+            -AllowDiagnosticWrite)
+        $changedSnapshot = $snapshot.PSObject.Copy()
+        $changedSnapshot.RemainingPercent = 60.25
+        $changedSnapshot.SampledAt = $now
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $changedSnapshot `
+            -ObservedAt $now `
+            -Reason 'Manual' `
+            -RootPath $stateRoot `
+            -AllowDiagnosticWrite)
+
+        $entries = @(
+            Get-UsageStateHistory `
+                -RootPath $stateRoot `
+                -Now $now
+        )
+        $objects = @(
+            Get-ChildItem `
+                -LiteralPath (Get-UsageStateObjectsDirectory -RootPath $stateRoot) `
+                -File `
+                -Filter '*.json'
+        )
+        $restored = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Codex' `
+            -RootPath $stateRoot `
+            -Now $now
+        $roundTrip = (
+            $restored -and
+            [Math]::Abs([double]$restored.RemainingPercent - 60.25) -lt 0.0001 -and
+            [string]$restored.AccountEmail -eq 'diagnostic@example.com' -and
+            [string]$restored.CustomNested.Label -eq 'preserved' -and
+            $restored.PSObject.Properties.Name -notcontains 'ApiKey' -and
+            $restored.SampledAt -is [DateTimeOffset] -and
+            $restored.ResetAt -is [DateTimeOffset]
+        )
+        $contentDeduplicated = (
+            $entries.Count -eq 3 -and
+            $objects.Count -eq 2 -and
+            $entries[0].PayloadHash -eq $entries[1].PayloadHash -and
+            $entries[1].PayloadHash -ne $entries[2].PayloadHash
+        )
+        $retentionApplied = @(
+            $entries | Where-Object {
+                $_.ObservedAtUtc -lt $now.AddHours(-168)
+            }
+        ).Count -eq 0
+        $diskText = @($objects | ForEach-Object {
+            Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8
+        }) -join ''
+        $encryptedAtRest = (
+            $diskText -notmatch 'diagnostic@example.com' -and
+            $diskText -notmatch 'Diagnostic User' -and
+            $diskText -notmatch 'must-never-be-persisted'
+        )
+        $currentIndexWritten = (
+            (Test-Path -LiteralPath (
+                Get-UsageStateCurrentPath -RootPath $stateRoot
+            ) -PathType Leaf) -and
+            @(Get-ChildItem -LiteralPath $stateRoot -File -Filter '*.tmp.*').Count -eq 0
+        )
+
+        $manifestPath = Get-UsageStateManifestPath -RootPath $stateRoot
+        [IO.File]::WriteAllText(
+            $manifestPath,
+            '{"damaged":true}',
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $manifestFallback = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Codex' `
+            -RootPath $stateRoot `
+            -Now $now
+        $corruptManifestFallback = (
+            $manifestFallback -and
+            [Math]::Abs(
+                [double]$manifestFallback.RemainingPercent - 60.25
+            ) -lt 0.0001
+        )
+        [void](Write-UsageStateIndexes `
+            -Entries $entries `
+            -RootPath $stateRoot `
+            -Now $now)
+
+        $latestEntry = $entries[-1]
+        $latestPath = Join-Path (
+            Get-UsageStateObjectsDirectory -RootPath $stateRoot
+        ) ($latestEntry.PayloadHash + '.json')
+        [IO.File]::WriteAllText(
+            $latestPath,
+            '{"damaged":true}',
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $fallback = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Codex' `
+            -RootPath $stateRoot `
+            -Now $now
+        $corruptLatestFallback = (
+            $fallback -and
+            [Math]::Abs([double]$fallback.RemainingPercent - 72.5) -lt 0.0001
+        )
+    }
+    finally {
+        if (
+            (Test-Path -LiteralPath $stateRoot) -and
+            $stateRoot.StartsWith(
+                $tempRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            Remove-Item -LiteralPath $stateRoot -Recurse -Force
+        }
+        $temporaryFilesCleaned = -not (Test-Path -LiteralPath $stateRoot)
+    }
+
+    [pscustomobject]@{
+        RoundTrip = $roundTrip
+        ContentDeduplicated = $contentDeduplicated
+        RollingRetentionApplied = $retentionApplied
+        EncryptedAtRest = $encryptedAtRest
+        CurrentIndexWritten = $currentIndexWritten
+        CorruptLatestFallback = $corruptLatestFallback
+        CorruptManifestFallback = $corruptManifestFallback
+        TemporaryFilesCleaned = $temporaryFilesCleaned
+    } | ConvertTo-Json
+    $script:RmfStopLoading = $true
+    return
+}
+
 if ($CheckUsageHistory) {
     $now = [DateTimeOffset]'2030-01-01T12:00:00Z'
     function New-HistoryCheckSample {

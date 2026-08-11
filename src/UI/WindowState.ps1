@@ -2011,6 +2011,27 @@ function Update-UsageView {
     Assert-UsageSnapshotContract -Snapshot $Snapshot
     if (-not $DisplayOnly) {
         $script:LastSnapshot = $Snapshot
+        if ([bool]$Snapshot.Available) {
+            try {
+                [void](Save-UsageStateSnapshot `
+                    -Snapshot $Snapshot `
+                    -Reason $ObservationContext)
+                if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+                    Set-RuntimeDiagnosticStatus `
+                        -Area 'StateHistory' `
+                        -Status 'Healthy' `
+                        -Message '完整状态已保存'
+                }
+            }
+            catch {
+                if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+                    Set-RuntimeDiagnosticStatus `
+                        -Area 'StateHistory' `
+                        -Status 'Error' `
+                        -Message $_.Exception.Message
+                }
+            }
+        }
     }
     $freshness = Get-UsageSnapshotFreshness -Snapshot $Snapshot
     $isFallback = (

@@ -1,5 +1,5 @@
 ﻿$script:RuntimeDiagnosticState = [ordered]@{}
-foreach ($area in @('Codex', 'DeepSeek', 'History', 'Refresh')) {
+foreach ($area in @('Codex', 'DeepSeek', 'History', 'StateHistory', 'Refresh')) {
     $script:RuntimeDiagnosticState[$area] = [pscustomobject]@{
         Status = 'Unknown'
         Message = '尚未检查'
@@ -58,7 +58,7 @@ function Protect-RuntimeDiagnosticText {
 
 function Set-RuntimeDiagnosticStatus {
     param(
-        [ValidateSet('Codex', 'DeepSeek', 'History', 'Refresh')]
+        [ValidateSet('Codex', 'DeepSeek', 'History', 'StateHistory', 'Refresh')]
         [string]$Area,
         [ValidateSet('Unknown', 'Running', 'Healthy', 'Degraded', 'Error')]
         [string]$Status,
@@ -146,7 +146,7 @@ function ConvertTo-RuntimeDiagnosticText {
     $lines.Add(('时区：{0}' -f $Snapshot.Environment.TimeZoneId))
     $lines.Add(('当前数据源：{0}' -f $Snapshot.Environment.ActiveProvider))
     $lines.Add('')
-    foreach ($area in @('Codex', 'DeepSeek', 'History', 'Refresh')) {
+    foreach ($area in @('Codex', 'DeepSeek', 'History', 'StateHistory', 'Refresh')) {
         $health = $Snapshot.Health[$area]
         $lines.Add((
             '{0}：{1} · {2}' -f

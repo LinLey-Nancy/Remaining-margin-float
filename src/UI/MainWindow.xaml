@@ -662,7 +662,7 @@
                                      Foreground="{StaticResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/><Run x:Name="AutoRefreshText"
-                                     Text="60 秒后自动刷新"
+                                     Text="300 秒后自动刷新"
                                      Foreground="{StaticResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/>

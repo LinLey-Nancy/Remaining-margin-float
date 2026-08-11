@@ -178,6 +178,21 @@ Assert-Diagnostic -Condition (
     [Math]::Abs([double]$deepSeek.PricingUsageCostCny - 9.025) -lt 0.0001
 ) -Message 'DeepSeek price calculation'
 
+$stateHistory = Invoke-JsonDiagnostic -Name 'CheckStateHistory'
+foreach ($propertyName in @(
+    'RoundTrip'
+    'ContentDeduplicated'
+    'RollingRetentionApplied'
+    'EncryptedAtRest'
+    'CurrentIndexWritten'
+    'CorruptLatestFallback'
+    'CorruptManifestFallback'
+    'TemporaryFilesCleaned'
+)) {
+    Assert-Diagnostic -Condition ([bool]$stateHistory.$propertyName) `
+        -Message "StateHistory.$propertyName"
+}
+
 $history = Invoke-JsonDiagnostic -Name 'CheckUsageHistory'
 Assert-Diagnostic -Condition ($history.Trend24Change -eq -20) `
     -Message '24-hour history trend'
@@ -486,6 +501,14 @@ Assert-Diagnostic -Condition ([bool]$refresh.ZeroSecondStateRecovered) `
     -Message 'Zero-second countdown recovery'
 Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
     -Message 'Absolute refresh countdown advancement'
+Assert-Diagnostic -Condition (
+    [int]$refresh.RefreshIntervalSeconds -eq 300
+) -Message 'Five-minute automatic refresh interval'
+Assert-Diagnostic -Condition (
+    [bool]$refresh.ManualStateCaptured -and
+    [bool]$refresh.AutomaticStateCaptured
+) -Message 'Successful manual and automatic refreshes capture full state'
+
 
 [pscustomobject]@{
     CodexRateLimitSelection = 'Passed'
@@ -500,6 +523,7 @@ Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
     EmptyProfilePerformance = 'Passed'
     DeepSeekData = 'Passed'
     UsageHistory = 'Passed'
+    StateHistory = 'Passed'
     Placement = 'Passed'
     EdgeDocking = 'Passed'
     Startup = 'Passed'

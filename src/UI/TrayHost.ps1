@@ -272,21 +272,27 @@ if ($CheckRefreshCoordinator) {
         $script:CodexOfficialAccessEnabled = $false
         $script:AppContext.Refresh.IsBusy = $false
 
+        $manualCaptureBefore = $script:UsageStateDiagnosticCaptureCount
         $manualStopwatch = [Diagnostics.Stopwatch]::StartNew()
         Invoke-Refresh
         $manualStopwatch.Stop()
         $manualLabel = [string]$WindowLabel.Text
         $manualSource = [string]$SourceText.Text
         $manualRemaining = [int]$script:AppContext.Refresh.RemainingSeconds
+        $manualStateCaptured =
+            $script:UsageStateDiagnosticCaptureCount -gt $manualCaptureBefore
 
         $script:AppContext.Refresh.NextAt =
             [DateTimeOffset]::Now.AddSeconds(-1)
         $script:AppContext.Refresh.RemainingSeconds = 0
+        $automaticCaptureBefore = $script:UsageStateDiagnosticCaptureCount
         Invoke-RefreshTimerTick
         $automaticLabel = [string]$WindowLabel.Text
         $automaticRemaining =
             [int]$script:AppContext.Refresh.RemainingSeconds
         $automaticText = [string]$AutoRefreshText.Text
+        $automaticStateCaptured =
+            $script:UsageStateDiagnosticCaptureCount -gt $automaticCaptureBefore
 
         $script:AppContext.Refresh.NextAt =
             [DateTimeOffset]::Now.AddSeconds(3)
@@ -312,6 +318,9 @@ if ($CheckRefreshCoordinator) {
                 $automaticText -notlike '0 秒*'
             )
             CountdownAdvanced = $countdownAfter -lt $countdownBefore
+            RefreshIntervalSeconds = $script:RefreshIntervalSeconds
+            ManualStateCaptured = $manualStateCaptured
+            AutomaticStateCaptured = $automaticStateCaptured
             ManualLabel = $manualLabel
             ManualSource = $manualSource
             ManualRemaining = $manualRemaining
@@ -363,6 +372,19 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
     if ($script:AppContext.Refresh.DeepSeek.Request) {
         $script:AppContext.Refresh.DeepSeek.Request.Dispose()
         $script:AppContext.Refresh.DeepSeek.Request = $null
+    }
+    if ($script:LastSnapshot -and [bool]$script:LastSnapshot.Available) {
+        try {
+            [void](Save-UsageStateSnapshot `
+                -Snapshot $script:LastSnapshot `
+                -Reason 'AppExit')
+        }
+        catch {
+            Set-RuntimeDiagnosticStatus `
+                -Area 'StateHistory' `
+                -Status 'Error' `
+                -Message $_.Exception.Message
+        }
     }
     Save-Settings
     if ($script:TrayNotifyIcon) {

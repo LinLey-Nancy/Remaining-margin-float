@@ -32,7 +32,7 @@
 - 点击展开 400×560 详情，收起后恢复原始位置
 - 详情展开后点击桌面或切换到其他应用会自动收起
 - 展开时自动避让当前显示器边界；跨显示器、DPI 缩放或任务栏工作区变化后会重新校准贴边位置
-- 每 60 秒刷新，支持手动刷新
+- 每 5 分钟自动刷新，支持手动刷新；每次成功刷新都会保存完整状态
 - 单实例运行，重复启动会唤醒已有窗口
 - 不出现在 `Win+Tab` / `Alt+Tab`，通过任务栏通知区域图标访问
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
@@ -49,6 +49,7 @@
 - 位置、贴边状态、置顶偏好、当前数据源和全部提醒设置自动保存在本机
 - 本地记录脱敏余量样本，在详情中显示带真实时间轴、起止值和样本数的 24 小时与近 7 日趋势
 - 使用历史跨重启和版本更新持久化，并按本地日期、时区和 UTC 偏移校准
+- 完整页面状态跨重启和版本更新续接，滚动保留 168 小时；相同内容只保存一份，采集时间节点独立保留
 - 可导出或导入合并脱敏使用记录，便于备份、换机和恢复
 - “数据与诊断”提供 Provider 健康状态及可复制、可导出的脱敏报告
 - 根据最近下降速度预测预计耗尽时间；Codex 会同时考虑额度重置时间
@@ -179,11 +180,19 @@ Codex 官方接口访问默认关闭；用户在右键菜单中明确启用后�
 
 Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
-DeepSeek 模式每 60 秒最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。首次运行新命名版本时会从旧的 `%LOCALAPPDATA%\CodexMarginFloat` 复制现有配置。应用不读取 CC Switch 密钥或数据库。
+DeepSeek 模式每 5 分钟最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。首次运行新命名版本时会从旧的 `%LOCALAPPDATA%\CodexMarginFloat` 复制现有配置。应用不读取 CC Switch 密钥或数据库。
 
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
 DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命中、缓存未命中和输出 Token 按当前官方人民币价格估算，仅代表本机可见调用，不等同于 DeepSeek 账户账单。账户级精确用量请在 DeepSeek Platform 的 Usage 页面按月导出。
+
+每次手动或自动刷新成功后，应用还会把完整页面快照保存到
+`%LOCALAPPDATA%\RemainingMarginFloat\state-history`；退出时会补存最近一次
+有效状态，启动时优先恢复当前数据源的最后有效快照，再继续正常刷新。记录严格
+保留最近 168 小时，每个采集时间节点单独保存；内容完全相同时通过 SHA-256
+引用同一份数据。完整内容使用 Windows DPAPI `CurrentUser` 加密，索引只包含
+时间、数据源、应用版本和内容哈希。状态仓库不保存 API Key、访问令牌、刷新
+令牌、Authorization 或密码字段，也不会通过“数据与诊断”导出。
 
 趋势历史保存在
 `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`，只包含数据源、
