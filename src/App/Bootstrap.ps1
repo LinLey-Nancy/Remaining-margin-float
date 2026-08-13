@@ -180,7 +180,7 @@ public static class DeepSeekLogScanner
 }
 '@
 
-$script:AppVersion = '1.8.6'
+$script:AppVersion = '1.8.7'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -189,7 +189,7 @@ $script:EdgeRevealDurationMs = 190
 $script:EdgeHideDurationMs = 150
 $script:ExpandedWidth = 400.0
 $script:ExpandedHeight = 560.0
-$script:RefreshIntervalSeconds = 300
+$script:RefreshIntervalSeconds = 60
 $script:SessionCache = @{}
 $script:SessionMetadataCache = @{}
 $script:LastSnapshot = $null

@@ -208,6 +208,16 @@ Assert-Diagnostic -Condition ([bool]$history.ResetJumpStartsNewSegment) `
     -Message 'Forecast reset segment'
 Assert-Diagnostic -Condition ([bool]$history.StableUsageDetected) `
     -Message 'Stable usage forecast'
+Assert-Diagnostic -Condition (
+    [bool]$history.TrendResetStartsNewBaseline -and
+    [bool]$history.RollingWindowCarriesBoundary -and
+    [bool]$history.MultipleResetUsesLatestBaseline -and
+    [bool]$history.SubThresholdNoiseIgnored
+) -Message 'Trend reset and rolling-window semantics'
+Assert-Diagnostic -Condition (
+    [bool]$history.MinuteSamplesRetained -and
+    [bool]$history.ManualRefreshSampleRetained
+) -Message 'Automatic and manual refresh sample retention'
 Assert-Diagnostic -Condition ([bool]$history.LowThresholdCrossingDetected) `
     -Message 'Low threshold crossing'
 Assert-Diagnostic -Condition ([bool]$history.RepeatedLowAlertSuppressed) `
@@ -330,7 +340,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.6') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.7') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -437,6 +447,11 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.EdgeDockAnchorStable -and
     $transitions.HiddenSurfaceAlpha -eq 0
 ) -Message 'Edge transition behavior'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.CompactHeaderRestored -and
+    [bool]$transitions.ExpandedHeaderHierarchy
+) -Message 'Expanded header alignment and font hierarchy'
+
 Assert-Diagnostic `
     -Condition (
         -not [string]::IsNullOrWhiteSpace([string]$transitions.Trend24Text) -and
@@ -458,6 +473,12 @@ Assert-Diagnostic `
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendCardsFollowQuotaPalette) `
     -Message 'Trend card backgrounds follow quota palette'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.TrendTimeAxisAligned) `
+    -Message 'Trend chart uses elapsed-time x coordinates'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.ResetTrendUiStartsAccumulating) `
+    -Message 'Reset trend UI starts a new baseline without increase text'
 Assert-Diagnostic `
     -Condition (-not [string]::IsNullOrWhiteSpace([string]$transitions.PredictionText)) `
     -Message 'Depletion forecast UI'
@@ -502,8 +523,8 @@ Assert-Diagnostic -Condition ([bool]$refresh.ZeroSecondStateRecovered) `
 Assert-Diagnostic -Condition ([bool]$refresh.CountdownAdvanced) `
     -Message 'Absolute refresh countdown advancement'
 Assert-Diagnostic -Condition (
-    [int]$refresh.RefreshIntervalSeconds -eq 300
-) -Message 'Five-minute automatic refresh interval'
+    [int]$refresh.RefreshIntervalSeconds -eq 60
+) -Message 'One-minute automatic refresh interval'
 Assert-Diagnostic -Condition (
     [bool]$refresh.ManualStateCaptured -and
     [bool]$refresh.AutomaticStateCaptured

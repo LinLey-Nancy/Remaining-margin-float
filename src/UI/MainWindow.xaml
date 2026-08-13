@@ -166,8 +166,10 @@
                             <RowDefinition x:Name="CompactProgressRow" Height="12"/>
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,1,0,0">
+                        <StackPanel x:Name="RemainingSummaryPanel"
+                                    Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <StackPanel x:Name="RemainingNumberPanel"
+                                        Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,1,0,0">
                                 <TextBlock x:Name="CompactPrefix"
                                            Text=""
                                            Margin="0,0,1,4"
@@ -218,25 +220,27 @@
                                         HorizontalAlignment="Right"
                                         VerticalAlignment="Top"
                                         Visibility="Collapsed">
-                                <TextBlock Text="下次重置 "
+                                <TextBlock x:Name="DetailsResetPrefix"
+                                           Text="下次重置 "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8.5"/>
+                                           FontSize="10.5"/>
                                 <TextBlock x:Name="DetailsResetDate"
                                            Text="--"
                                            Foreground="{StaticResource TextSecondary}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8.5"
+                                           FontSize="10.5"
                                            FontWeight="SemiBold"/>
-                                <TextBlock Text=" · "
+                                <TextBlock x:Name="DetailsResetSeparator"
+                                           Text=" · "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8.5"/>
+                                           FontSize="10.5"/>
                                 <TextBlock x:Name="DetailsResetCountdown"
                                            Text="--"
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="8.5"/>
+                                           FontSize="10.5"/>
                             </StackPanel>
                             <Border x:Name="ProgressTrack"
                                     Height="3"
@@ -662,7 +666,7 @@
                                      Foreground="{StaticResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/><Run x:Name="AutoRefreshText"
-                                     Text="300 秒后自动刷新"
+                                     Text="60 秒后自动刷新"
                                      Foreground="{StaticResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/>

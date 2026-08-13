@@ -1040,6 +1040,51 @@ if ($CheckUsageHistory) {
         -CurrentSample $stableSamples[-1] `
         -Now $now
 
+    $trendResetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 23 -Value 37),
+        (New-HistoryCheckSample -HoursAgo 2 -Value 36),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 98)
+    )
+    $trendAfterReset = Get-UsageTrend `
+        -Samples $trendResetSamples `
+        -CurrentSample $trendResetSamples[-1] `
+        -Hours 24 `
+        -Now $now
+    $rollingWindowSamples = @(
+        (New-HistoryCheckSample -HoursAgo 24.25 -Value 80),
+        (New-HistoryCheckSample -HoursAgo 23 -Value 75),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 70)
+    )
+    $rollingWindowTrend = Get-UsageTrend `
+        -Samples $rollingWindowSamples `
+        -CurrentSample $rollingWindowSamples[-1] `
+        -Hours 24 `
+        -Now $now
+    $multipleResetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 5 -Value 40),
+        (New-HistoryCheckSample -HoursAgo 4 -Value 80),
+        (New-HistoryCheckSample -HoursAgo 3 -Value 70),
+        (New-HistoryCheckSample -HoursAgo 2 -Value 90),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 85),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 80)
+    )
+    $multipleResetTrend = Get-UsageTrend `
+        -Samples $multipleResetSamples `
+        -CurrentSample $multipleResetSamples[-1] `
+        -Hours 24 `
+        -Now $now
+    $noiseSamples = @(
+        (New-HistoryCheckSample -HoursAgo 2 -Value 50),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 50.00005),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 49)
+    )
+    $noiseTrend = Get-UsageTrend `
+        -Samples $noiseSamples `
+        -CurrentSample $noiseSamples[-1] `
+        -Hours 24 `
+        -Now $now
+
+
     $lowSnapshot = [pscustomobject]@{
         Available = $true
         HasProgress = $true
@@ -1197,6 +1242,9 @@ if ($CheckUsageHistory) {
     $oversizedHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.HistoryOversizedDiagnostic.{0}.jsonl' -f $PID
     )
+    $minuteHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.MinuteHistoryDiagnostic.{0}.jsonl' -f $PID
+    )
     $calendarTimeZone = [TimeZoneInfo]::CreateCustomTimeZone(
         'RMF Diagnostic UTC+08',
         [TimeSpan]::FromHours(8),
@@ -1212,6 +1260,8 @@ if ($CheckUsageHistory) {
     $oversizedImportRejected = $false
     $futureSampleExcluded = $false
     $diagnosticRedaction = $false
+    $minuteSamplesRetained = $false
+    $manualRefreshSampleRetained = $false
     try {
         Save-UsageHistory `
             -Samples $depletingSamples `
@@ -1346,6 +1396,39 @@ if ($CheckUsageHistory) {
             $futureTrend.Samples.Count -eq 3
         )
 
+        $minuteSnapshot = [pscustomobject]@{
+            ProviderId = 'Codex'
+            Available = $true
+            HasProgress = $true
+            RemainingPercent = 75
+        }
+        for ($minute = 59; $minute -ge 0; $minute--) {
+            Add-UsageHistorySample `
+                -Snapshot $minuteSnapshot `
+                -ObservedAt $now.AddMinutes(-$minute) `
+                -Path $minuteHistoryPath `
+                -AllowDiagnosticWrite | Out-Null
+        }
+        $minuteReload = @(
+            Read-UsageHistory `
+                -Path $minuteHistoryPath `
+                -Now $now `
+                -BypassCache
+        )
+        $minuteSamplesRetained = $minuteReload.Count -eq 60
+        Add-UsageHistorySample `
+            -Snapshot $minuteSnapshot `
+            -ObservedAt $now.AddSeconds(30) `
+            -Path $minuteHistoryPath `
+            -AllowDiagnosticWrite | Out-Null
+        $manualReload = @(
+            Read-UsageHistory `
+                -Path $minuteHistoryPath `
+                -Now $now.AddSeconds(30) `
+                -BypassCache
+        )
+        $manualRefreshSampleRetained = $manualReload.Count -eq 61
+
         $sensitiveDiagnosticText = (
             '{0}\private user@example.com sk-1234567890abcdef ' +
             'api_key=diagnostic-secret Bearer abcdefghijklmnop ' +
@@ -1369,11 +1452,59 @@ if ($CheckUsageHistory) {
             $legacyHistoryPath
             $invalidHistoryPath
             $oversizedHistoryPath
+            $minuteHistoryPath
         )) {
             if (Test-Path -LiteralPath $testPath) {
                 Remove-Item -LiteralPath $testPath -Force
             }
         }
+    }
+
+    $trendResetStartsNewBaseline = (
+        -not [bool]$trendAfterReset.ComparisonAvailable -and
+        $trendAfterReset.SampleCount -eq 1 -and
+        $trendAfterReset.Samples.Count -eq 1 -and
+        $trendAfterReset.Change -eq 0 -and
+        $trendAfterReset.StartValue -eq 98 -and
+        $trendAfterReset.EndValue -eq 98
+    )
+    $rollingWindowCarriesBoundary = (
+        [bool]$rollingWindowTrend.ComparisonAvailable -and
+        $rollingWindowTrend.SampleCount -eq 2 -and
+        $rollingWindowTrend.Samples.Count -eq 3 -and
+        $rollingWindowTrend.Change -eq -10 -and
+        $rollingWindowTrend.StartValue -eq 80 -and
+        $rollingWindowTrend.EndValue -eq 70
+    )
+    $multipleResetUsesLatestBaseline = (
+        [bool]$multipleResetTrend.ComparisonAvailable -and
+        $multipleResetTrend.SampleCount -eq 3 -and
+        $multipleResetTrend.StartValue -eq 90 -and
+        $multipleResetTrend.EndValue -eq 80 -and
+        $multipleResetTrend.Change -eq -10
+    )
+    $subThresholdNoiseIgnored = (
+        [bool]$noiseTrend.ComparisonAvailable -and
+        $noiseTrend.SampleCount -eq 3 -and
+        [Math]::Abs([double]$noiseTrend.Change + 1) -lt 0.0001
+    )
+    if (-not $trendResetStartsNewBaseline) {
+        throw 'Trend reset did not establish a new baseline.'
+    }
+    if (-not $rollingWindowCarriesBoundary) {
+        throw 'Rolling trend did not carry the pre-window boundary sample.'
+    }
+    if (-not $multipleResetUsesLatestBaseline) {
+        throw 'Trend did not use the latest reset as its baseline.'
+    }
+    if (-not $subThresholdNoiseIgnored) {
+        throw 'Sub-threshold measurement noise started a new trend segment.'
+    }
+    if (-not $minuteSamplesRetained) {
+        throw 'One-minute history samples were compressed or replaced.'
+    }
+    if (-not $manualRefreshSampleRetained) {
+        throw 'Manual refresh sample was not appended.'
     }
 
     [pscustomobject]@{
@@ -1390,6 +1521,12 @@ if ($CheckUsageHistory) {
             [Math]::Abs([double]$resetForecast.HoursToEmpty - 7) -lt 0.01
         )
         StableUsageDetected = $stableForecast.Status -eq 'Stable'
+        TrendResetStartsNewBaseline = $trendResetStartsNewBaseline
+        RollingWindowCarriesBoundary = $rollingWindowCarriesBoundary
+        MultipleResetUsesLatestBaseline = $multipleResetUsesLatestBaseline
+        SubThresholdNoiseIgnored = $subThresholdNoiseIgnored
+        MinuteSamplesRetained = $minuteSamplesRetained
+        ManualRefreshSampleRetained = $manualRefreshSampleRetained
         LowThresholdCrossingDetected = Test-LowRemainingAlertCondition `
             -Snapshot $lowSnapshot `
             -PreviousSample $highPreviousSample
