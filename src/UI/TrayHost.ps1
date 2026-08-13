@@ -336,7 +336,6 @@ if ($CheckRefreshCoordinator) {
     }
     finally {
         $Demo = $savedDemo
-        $Demo = $savedDemo
         $script:CodexOfficialAccessEnabled = $savedOfficialAccess
         $timer.Stop()
         $activationTimer.Stop()
