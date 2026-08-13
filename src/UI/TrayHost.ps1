@@ -267,9 +267,11 @@ if ($releaseGuiCheck) {
 
 if ($CheckRefreshCoordinator) {
     $savedOfficialAccess = $script:CodexOfficialAccessEnabled
+    $savedDemo = [bool]$Demo
     try {
         $script:ActiveProvider = 'Codex'
         $script:CodexOfficialAccessEnabled = $false
+        $Demo = $true
         $script:AppContext.Refresh.IsBusy = $false
 
         $manualCaptureBefore = $script:UsageStateDiagnosticCaptureCount
@@ -333,6 +335,7 @@ if ($CheckRefreshCoordinator) {
         } | ConvertTo-Json
     }
     finally {
+        $Demo = $savedDemo
         $script:CodexOfficialAccessEnabled = $savedOfficialAccess
         $timer.Stop()
         $activationTimer.Stop()

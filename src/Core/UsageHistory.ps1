@@ -400,6 +400,68 @@ function Save-UsageHistory {
     }
 }
 
+function Add-UsageHistoryLines {
+    param(
+        [object[]]$Samples,
+        [string]$Path = '',
+        [switch]$AllowDiagnosticWrite,
+        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
+    )
+
+    if ($isDiagnosticRun -and -not $AllowDiagnosticWrite) { return }
+    if ($Samples.Count -eq 0) { return }
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        $Path = Get-UsageHistoryPath
+    }
+    $path = [IO.Path]::GetFullPath($Path)
+    $parentDirectory = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $parentDirectory -PathType Container)) {
+        New-Item -Path $parentDirectory -ItemType Directory -Force | Out-Null
+    }
+    $lines = @(
+        $Samples | Sort-Object ObservedAtUtc | ForEach-Object {
+            $calendar = Get-UsageHistoryCalendarMetadata `
+                -ObservedAt ([DateTimeOffset]$_.ObservedAtUtc) `
+                -TimeZone $TimeZone
+            [ordered]@{
+                v = 2
+                ProviderId = [string]$_.ProviderId
+                ObservedAtUtc = ([DateTimeOffset]$_.ObservedAtUtc).
+                    ToUniversalTime().
+                    ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+                LocalDate = $calendar.LocalDate
+                TimeZoneId = $calendar.TimeZoneId
+                UtcOffsetMinutes = $calendar.UtcOffsetMinutes
+                MetricType = [string]$_.MetricType
+                RemainingValue = [Math]::Round([double]$_.RemainingValue, 4)
+                Unit = [string]$_.Unit
+                ResetAtUtc = [string]$_.ResetAtUtc
+            } | ConvertTo-Json -Compress
+        }
+    )
+    $encoding = New-Object Text.UTF8Encoding($false)
+    $newBytes = 0L
+    foreach ($line in $lines) {
+        $newBytes += $encoding.GetByteCount($line + [Environment]::NewLine)
+    }
+    $existingBytes = if (Test-Path -LiteralPath $path -PathType Leaf) {
+        (Get-Item -LiteralPath $path).Length
+    } else { 0L }
+    if (($existingBytes + $newBytes) -gt 16MB) {
+        throw 'History file exceeds the 16 MB safety limit.'
+    }
+    $writer = New-Object IO.StreamWriter($path, $true, $encoding)
+    try {
+        foreach ($line in $lines) {
+            $writer.WriteLine($line)
+        }
+    }
+    finally {
+        $writer.Dispose()
+    }
+}
+
 function Export-UsageHistory {
     param(
         [Parameter(Mandatory = $true)]
@@ -498,10 +560,33 @@ function Get-UsageHistorySummary {
     }
 }
 
+function Get-PreviousUsageHistorySample {
+    param(
+        [object[]]$Samples,
+        $CurrentSample
+    )
+
+    for ($index = $Samples.Count - 1; $index -ge 0; $index--) {
+        $candidate = $Samples[$index]
+        if (
+            $candidate.ProviderId -eq $CurrentSample.ProviderId -and
+            $candidate.MetricType -eq $CurrentSample.MetricType -and
+            $candidate.Unit -eq $CurrentSample.Unit -and
+            $candidate.ObservedAtUtc -le $CurrentSample.ObservedAtUtc
+        ) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
 function Add-UsageHistorySample {
     param(
         $Snapshot,
-        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now
+        [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now,
+        [string]$Path = '',
+        [switch]$AllowDiagnosticWrite,
+        [switch]$SkipPersistence
     )
 
     $currentSamples = @(
@@ -510,11 +595,21 @@ function Add-UsageHistorySample {
         -ObservedAt $ObservedAt
     )
     $currentSample = $currentSamples | Select-Object -First 1
-    $history = if ($isDiagnosticRun -and $null -eq $script:UsageHistoryCache) {
+    $usesDefaultPath = [string]::IsNullOrWhiteSpace($Path)
+    $history = @(if (
+        $isDiagnosticRun -and
+        -not $AllowDiagnosticWrite -and
+        $null -eq $script:UsageHistoryCache
+    ) {
         @()
     } else {
-        @(Read-UsageHistory)
-    }
+        @(
+            Read-UsageHistory `
+                -Path $Path `
+                -Now $ObservedAt `
+                -BypassCache:(-not $usesDefaultPath)
+        )
+    })
     if (-not $currentSample) {
         return [pscustomobject]@{
             Samples = $history
@@ -524,15 +619,10 @@ function Add-UsageHistorySample {
         }
     }
 
-    $previousSample = (@(
-        $history | Where-Object {
-            $_.ProviderId -eq $currentSample.ProviderId -and
-            $_.MetricType -eq $currentSample.MetricType -and
-            $_.Unit -eq $currentSample.Unit -and
-            $_.ObservedAtUtc -le $currentSample.ObservedAtUtc.AddMinutes(5)
-        } | Sort-Object ObservedAtUtc
-    ) | Select-Object -Last 1)
-    if ($isDiagnosticRun) {
+    $previousSample = Get-PreviousUsageHistorySample `
+        -Samples $history `
+        -CurrentSample $currentSample
+    if ($SkipPersistence -or ($isDiagnosticRun -and -not $AllowDiagnosticWrite)) {
         return [pscustomobject]@{
             Samples = @($history + $currentSamples)
             CurrentSample = $currentSample
@@ -543,71 +633,56 @@ function Add-UsageHistorySample {
 
     $changed = $false
     foreach ($sample in $currentSamples) {
-        $matchingSamples = @(
-            $history | Where-Object {
-                $_.ProviderId -eq $sample.ProviderId -and
-                $_.MetricType -eq $sample.MetricType -and
-                $_.Unit -eq $sample.Unit -and
-                $_.ObservedAtUtc -le $sample.ObservedAtUtc.AddMinutes(5)
-            } | Sort-Object ObservedAtUtc
-        )
-        $previousForMetric = $matchingSamples | Select-Object -Last 1
+        $previousForMetric = Get-PreviousUsageHistorySample `
+            -Samples $history `
+            -CurrentSample $sample
         if ([object]::ReferenceEquals($sample, $currentSample)) {
             $previousSample = $previousForMetric
         }
 
-        $metricChanged = $true
-        if ($previousForMetric) {
-            $elapsed = $sample.ObservedAtUtc - $previousForMetric.ObservedAtUtc
-            if (
-                $elapsed.TotalMinutes -ge 0 -and
-                $elapsed.TotalMinutes -lt 2
-            ) {
-                $replaced = $false
-                $updatedHistory = New-Object Collections.Generic.List[object]
-                foreach ($item in $history) {
-                    if (
-                        -not $replaced -and
-                        [object]::ReferenceEquals($item, $previousForMetric)
-                    ) {
-                        $updatedHistory.Add($sample)
-                        $replaced = $true
-                    }
-                    else {
-                        $updatedHistory.Add($item)
-                    }
-                }
-                $history = $updatedHistory.ToArray()
-            }
-            elseif (
-                $elapsed.TotalMinutes -ge 0 -and
-                $elapsed.TotalMinutes -lt 5 -and
-                [Math]::Abs(
-                    [double]$sample.RemainingValue -
-                    [double]$previousForMetric.RemainingValue
-                ) -lt 0.0001
-            ) {
-                $metricChanged = $false
-            }
-            else {
-                $history = @($history + $sample)
-            }
-        }
-        else {
-            $history = @($history + $sample)
-        }
-        $changed = $changed -or $metricChanged
+        $history = @($history + $sample)
+        $changed = $true
     }
 
     if ($changed) {
-        $history = @(
-            Select-UsageHistoryRetentionWindow `
-                -Samples $history `
-                -Now $ObservedAt
-        )
         try {
-            Save-UsageHistory -Samples $history -Now $ObservedAt
-            $script:UsageHistoryCache = $history
+            $storagePath = if ($usesDefaultPath) {
+                Get-UsageHistoryPath
+            } else {
+                [IO.Path]::GetFullPath($Path)
+            }
+            $localObservedAt = [TimeZoneInfo]::ConvertTime(
+                $ObservedAt.ToUniversalTime(),
+                [TimeZoneInfo]::Local
+            )
+            $requiresCompaction = if (
+                Test-Path -LiteralPath $storagePath -PathType Leaf
+            ) {
+                $historyFile = Get-Item -LiteralPath $storagePath
+                $historyFile.LastWriteTime.Date -ne $localObservedAt.Date -or
+                    $historyFile.Length -gt 15MB
+            } else { $false }
+            if ($requiresCompaction) {
+                $history = @(
+                    Select-UsageHistoryRetentionWindow `
+                        -Samples $history `
+                        -Now $ObservedAt
+                )
+                Save-UsageHistory `
+                    -Samples $history `
+                    -Path $Path `
+                    -Now $ObservedAt `
+                    -AllowDiagnosticWrite:$AllowDiagnosticWrite
+            }
+            else {
+                Add-UsageHistoryLines `
+                    -Samples $currentSamples `
+                    -Path $Path `
+                    -AllowDiagnosticWrite:$AllowDiagnosticWrite
+            }
+            if ($usesDefaultPath) {
+                $script:UsageHistoryCache = $history
+            }
             $script:LastUsageHistoryError = ''
             if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
                 Set-RuntimeDiagnosticStatus `
@@ -648,6 +723,7 @@ function Get-UsageTrend {
             Hours = $Hours
             Samples = @()
             SampleCount = 0
+            ComparisonAvailable = $false
             Change = 0.0
             StartValue = $null
             EndValue = $null
@@ -655,21 +731,49 @@ function Get-UsageTrend {
         }
     }
 
-    $cutoff = $Now.ToUniversalTime().AddHours(-$Hours)
-    $series = @(
+    $nowUtc = $Now.ToUniversalTime()
+    $cutoff = $nowUtc.AddHours(-$Hours)
+    $matching = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
             $_.Unit -eq $CurrentSample.Unit -and
-            $_.ObservedAtUtc -ge $cutoff -and
-            $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
+            $_.ObservedAtUtc -le $nowUtc.AddMinutes(5)
         } | Sort-Object ObservedAtUtc
     )
-    if ($series.Count -lt 2) {
+    $windowSamples = @($matching | Where-Object { $_.ObservedAtUtc -ge $cutoff })
+    $boundarySample = $matching |
+        Where-Object { $_.ObservedAtUtc -lt $cutoff } |
+        Select-Object -Last 1
+    $series = @(if ($boundarySample) {
+        @($boundarySample) + $windowSamples
+    } else {
+        $windowSamples
+    })
+
+    $segmentStart = 0
+    for ($index = 1; $index -lt $series.Count; $index++) {
+        $increase = (
+            [double]$series[$index].RemainingValue -
+            [double]$series[$index - 1].RemainingValue
+        )
+        if ($increase -gt 0.0001) {
+            $segmentStart = $index
+        }
+    }
+    if ($series.Count -gt 0 -and $segmentStart -gt 0) {
+        $series = @($series[$segmentStart..($series.Count - 1)])
+    }
+    $sampleCount = @(
+        $series | Where-Object { $_.ObservedAtUtc -ge $cutoff }
+    ).Count
+    $comparisonAvailable = $series.Count -ge 2
+    if (-not $comparisonAvailable) {
         return [pscustomobject]@{
             Hours = $Hours
             Samples = $series
-            SampleCount = $series.Count
+            SampleCount = $sampleCount
+            ComparisonAvailable = $false
             Change = 0.0
             StartValue = if ($series.Count -eq 1) {
                 [double]$series[0].RemainingValue
@@ -707,7 +811,8 @@ function Get-UsageTrend {
     return [pscustomobject]@{
         Hours = $Hours
         Samples = $series
-        SampleCount = $series.Count
+        SampleCount = $sampleCount
+        ComparisonAvailable = $true
         Change = $change
         StartValue = [double]$series[0].RemainingValue
         EndValue = [double]$series[-1].RemainingValue
@@ -1202,12 +1307,14 @@ function Update-UsageHistory {
         [ValidateSet('Percent', 'Amount')]
         [string]$DeepSeekRapidDropMode = 'Percent',
         [double]$DeepSeekRapidDropPercent = 10.0,
-        [double]$DeepSeekRapidDropAmount = 10.0
+        [double]$DeepSeekRapidDropAmount = 10.0,
+        [switch]$SkipPersistence
     )
 
     $record = Add-UsageHistorySample `
         -Snapshot $Snapshot `
-        -ObservedAt $ObservedAt
+        -ObservedAt $ObservedAt `
+        -SkipPersistence:$SkipPersistence
     return Measure-UsageInsights `
         -Samples $record.Samples `
         -CurrentSample $record.CurrentSample `

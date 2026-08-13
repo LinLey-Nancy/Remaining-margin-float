@@ -32,7 +32,7 @@
 - 点击展开 400×560 详情，收起后恢复原始位置
 - 详情展开后点击桌面或切换到其他应用会自动收起
 - 展开时自动避让当前显示器边界；跨显示器、DPI 缩放或任务栏工作区变化后会重新校准贴边位置
-- 每 5 分钟自动刷新，支持手动刷新；每次成功刷新都会保存完整状态
+- 每 1 分钟自动刷新，支持手动刷新；每次成功刷新都会保存完整状态
 - 单实例运行，重复启动会唤醒已有窗口
 - 不出现在 `Win+Tab` / `Alt+Tab`，通过任务栏通知区域图标访问
 - 鼠标悬浮光效、拖动、键盘快捷键和系统减少动画设置
@@ -114,11 +114,11 @@ Setup 官方不可变 GitHub Release 获取编译器，并在使用前验证其 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.8.6-Setup.exe
-Remaining-Margin-Float-v1.8.6-Setup.exe.sha256
+Remaining-Margin-Float-v1.8.7-Setup.exe
+Remaining-Margin-Float-v1.8.7-Setup.exe.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.8.6`）后，`Windows 发布`工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.8.7`）后，`Windows 发布`工作流会
 在 Windows Runner 上测试、构建，并真实执行静默安装与卸载验证，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
@@ -180,7 +180,7 @@ Codex 官方接口访问默认关闭；用户在右键菜单中明确启用后�
 
 Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可见会话汇总；不把任意一个并行任务的最后一轮数据当作全局状态。
 
-DeepSeek 模式每 5 分钟最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。首次运行新命名版本时会从旧的 `%LOCALAPPDATA%\CodexMarginFloat` 复制现有配置。应用不读取 CC Switch 密钥或数据库。
+DeepSeek 模式每 1 分钟最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。首次运行新命名版本时会从旧的 `%LOCALAPPDATA%\CodexMarginFloat` 复制现有配置。应用不读取 CC Switch 密钥或数据库。
 
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
@@ -196,9 +196,9 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 
 趋势历史保存在
 `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`，只包含数据源、
-采样 UTC、本地日期、时区、百分比或余额、币种和可选的重置时间。应用按约
-5 分钟聚合并保留最近 8 个本地日历日；DeepSeek 设置预算后会同时保留百分比
-和余额样本，以支持两种快速下降规则。记录不写入账号名称、邮箱、Token、API Key
+采样 UTC、本地日期、时区、百分比或余额、币种和可选的重置时间。每次成功刷新
+（包括每分钟自动刷新和手动刷新）都会追加样本，并保留最近 8 个本地日历日；
+DeepSeek 设置预算后会同时保留百分比与余额样本，以支持两种快速下降规则。记录不写入账号名称、邮箱、Token、API Key
 或访问令牌。右键菜单“数据与诊断”可导出或导入合并同一脱敏格式；换机导入后
 会依据目标电脑时区重新校准日期。
 

@@ -347,6 +347,65 @@ if ($CheckTransitions) {
     $trend7MetaTextValue = $Trend7MetaText.Text
     $rapidDropStatusTextValue = $RapidDropText.Text
 
+    $timeAxisSamples = @(
+        [pscustomobject]@{
+            ObservedAtUtc = $diagnosticNow.AddHours(-24)
+            RemainingValue = 90
+            MetricType = 'Percent'
+        },
+        [pscustomobject]@{
+            ObservedAtUtc = $diagnosticNow.AddHours(-18)
+            RemainingValue = 80
+            MetricType = 'Percent'
+        },
+        [pscustomobject]@{
+            ObservedAtUtc = $diagnosticNow
+            RemainingValue = 70
+            MetricType = 'Percent'
+        }
+    )
+    Set-TrendChart `
+        -Canvas $Trend24Canvas `
+        -Polyline $Trend24Line `
+        -Area $Trend24Area `
+        -StartMarker $Trend24StartMarker `
+        -EndMarker $Trend24EndMarker `
+        -Samples $timeAxisSamples `
+        -Hours 24 `
+        -Now $diagnosticNow
+    $timeAxisWidth = if ($Trend24Canvas.ActualWidth -gt 10) {
+        [double]$Trend24Canvas.ActualWidth
+    } else { [double]$Trend24Canvas.Width }
+    $trendTimeAxisAligned = (
+        $Trend24Line.Points.Count -eq 3 -and
+        [Math]::Abs([double]$Trend24Line.Points[0].X) -lt 0.1 -and
+        [Math]::Abs(
+            [double]$Trend24Line.Points[1].X - ($timeAxisWidth * 0.25)
+        ) -lt 0.5 -and
+        [Math]::Abs(
+            [double]$Trend24Line.Points[2].X - $timeAxisWidth
+        ) -lt 0.5
+    )
+
+    $resetUiSamples = @(
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 37; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 98; Unit = '%'; ResetAtUtc = '' }
+    )
+    $resetUiInsights = Measure-UsageInsights `
+        -Samples $resetUiSamples `
+        -CurrentSample $resetUiSamples[-1] `
+        -PreviousSample $resetUiSamples[-2] `
+        -Now $diagnosticNow
+    Update-UsageInsightView -Insights $resetUiInsights
+    $resetTrendUiStartsAccumulating = (
+        $Trend24Text.Text -eq ([string]([char]0x79EF) + [char]0x7D2F + [char]0x4E2D) -and
+        $Trend7Text.Text -eq ([string]([char]0x79EF) + [char]0x7D2F + [char]0x4E2D) -and
+        $Trend24MetaText.Text -notmatch ([string][char]0x2192) -and
+        $Trend7MetaText.Text -notmatch ([string][char]0x2192) -and
+        $Trend24Text.Text -notmatch ([string][char]0x2191) -and
+        $Trend7Text.Text -notmatch ([string][char]0x2191)
+    )
+
     Set-UsageStatusPalette -Percent 90 -Available $true
     $trendHealthyPaletteColor = (
         [Windows.Media.SolidColorBrush]$window.Resources['SageSoft']
@@ -488,6 +547,13 @@ if ($CheckTransitions) {
 
     Set-Progress -Percent 82
     Set-ExpandedState -Expanded $false -Immediate
+    $compactHeaderRestored = (
+        [string]$RemainingSummaryPanel.HorizontalAlignment -eq 'Center' -and
+        [string]$RemainingNumberPanel.HorizontalAlignment -eq 'Center' -and
+        [double]$RemainingValue.FontSize -eq 23 -and
+        [double]$RemainingValue.LineHeight -eq 26 -and
+        [string]$WindowLabel.HorizontalAlignment -eq 'Center'
+    )
     $anchorLeft = $window.Left
     $anchorTop = $window.Top
 
@@ -497,6 +563,23 @@ if ($CheckTransitions) {
     $expandedHeight = $window.ActualHeight
     $expandedVisibility = [string]$DetailsPanel.Visibility
     $window.UpdateLayout()
+    $expandedHeaderHierarchy = (
+        [string]$RemainingSummaryPanel.HorizontalAlignment -eq 'Left' -and
+        [string]$RemainingNumberPanel.HorizontalAlignment -eq 'Left' -and
+        [double]$RemainingValue.FontSize -eq 28 -and
+        [double]$RemainingValue.LineHeight -eq 31 -and
+        [double]$CompactPrefix.FontSize -eq 10 -and
+        [double]$CompactSuffix.FontSize -eq 10 -and
+        [string]$WindowLabel.HorizontalAlignment -eq 'Left' -and
+        [string]$ResetSummaryPanel.HorizontalAlignment -eq 'Right' -and
+        [double]$DetailsResetPrefix.FontSize -eq 10.5 -and
+        [double]$DetailsResetDate.FontSize -eq 10.5 -and
+        [double]$DetailsResetSeparator.FontSize -eq 10.5 -and
+        [double]$DetailsResetCountdown.FontSize -eq 10.5 -and
+        [double]$DetailsResetDate.FontSize -lt 23 -and
+        [double]$DetailsResetDate.FontSize -lt
+            [double]$RemainingValue.FontSize
+    )
     $footerTextRuns = @(
         $VersionLabelText,
         $AppVersionText,
@@ -999,11 +1082,15 @@ if ($CheckTransitions) {
         EdgeDockAnchorStable = $edgeDockAnchorStable
         HiddenSurfaceAlpha = $hiddenSurfaceAlpha
         Trend24Text = $Trend24Text.Text
+        CompactHeaderRestored = $compactHeaderRestored
+        ExpandedHeaderHierarchy = $expandedHeaderHierarchy
         Trend7Text = $Trend7Text.Text
         Trend24PointCount = $trend24PointCount
         Trend7PointCount = $trend7PointCount
         Trend24MetaText = $trend24MetaTextValue
         Trend7MetaText = $trend7MetaTextValue
+        TrendTimeAxisAligned = $trendTimeAxisAligned
+        ResetTrendUiStartsAccumulating = $resetTrendUiStartsAccumulating
         TrendCardsFollowQuotaPalette = $trendCardsFollowQuotaPalette
         TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
         TrendHealthyPaletteColor = $trendHealthyPaletteColor

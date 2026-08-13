@@ -525,6 +525,15 @@ function Set-ExpandedState {
             $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
             $CompactProgressRow.Height = New-Object Windows.GridLength(19)
         }
+        $RemainingSummaryPanel.HorizontalAlignment =
+            [Windows.HorizontalAlignment]::Left
+        $RemainingNumberPanel.HorizontalAlignment =
+            [Windows.HorizontalAlignment]::Left
+        $RemainingValue.FontSize = 28
+        $RemainingValue.LineHeight = 31
+        $CompactPrefix.FontSize = 10
+        $CompactSuffix.FontSize = 10
+        $WindowLabel.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
         if ($Immediate) {
             $DetailsPanel.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
             $DetailsPanel.Opacity = 1
@@ -548,6 +557,15 @@ function Set-ExpandedState {
         $WindowLabel.Visibility = 'Visible'
         $CompactHit.Padding = New-Object Windows.Thickness(7, 5, 7, 5)
         $CompactProgressRow.Height = New-Object Windows.GridLength(12)
+        $RemainingSummaryPanel.HorizontalAlignment =
+            [Windows.HorizontalAlignment]::Center
+        $RemainingNumberPanel.HorizontalAlignment =
+            [Windows.HorizontalAlignment]::Center
+        $RemainingValue.FontSize = 23
+        $RemainingValue.LineHeight = 26
+        $CompactPrefix.FontSize = 9
+        $CompactSuffix.FontSize = 9
+        $WindowLabel.HorizontalAlignment = [Windows.HorizontalAlignment]::Center
         $window.Width = $targetWidth
         $window.Height = $targetHeight
         if ($null -ne $script:CompactAnchorLeft) {
@@ -919,7 +937,9 @@ function Format-UsageTrendChange {
         $CurrentSample
     )
 
-    if (-not $Trend -or $Trend.SampleCount -lt 2) { return '积累中' }
+    if (-not $Trend -or -not [bool]$Trend.ComparisonAvailable) {
+        return '积累中'
+    }
     $change = [double]$Trend.Change
     if ([Math]::Abs($change) -lt 0.05) { return '— 持平' }
     $arrow = if ($change -lt 0) { '↓' } else { '↑' }
@@ -1081,7 +1101,7 @@ function Update-UsageInsightView {
     $Trend7Text.Text = Format-UsageTrendChange `
         -Trend $Insights.Trend7Days `
         -CurrentSample $Insights.CurrentSample
-    $Trend24MetaText.Text = if ($Insights.Trend24Hours.SampleCount -ge 2) {
+    $Trend24MetaText.Text = if ($Insights.Trend24Hours.ComparisonAvailable) {
         '{0} 个样本 · {1} → {2}' -f
             $Insights.Trend24Hours.SampleCount,
             (Format-UsageTrendValue `
@@ -1093,7 +1113,7 @@ function Update-UsageInsightView {
     } else {
         '等待更多样本'
     }
-    $Trend7MetaText.Text = if ($Insights.Trend7Days.SampleCount -ge 2) {
+    $Trend7MetaText.Text = if ($Insights.Trend7Days.ComparisonAvailable) {
         '{0} 个样本 · {1} → {2}' -f
             $Insights.Trend7Days.SampleCount,
             (Format-UsageTrendValue `
@@ -2187,13 +2207,21 @@ function Update-UsageView {
     }
 
     try {
+        $skipUsageHistoryPersistence = (
+            $ObservationContext -eq 'LocalPreview' -or
+            (
+                $ObservationContext -eq 'StartupLocal' -and
+                $script:CodexOfficialAccessEnabled
+            )
+        )
         $insights = Update-UsageHistory `
             -Snapshot $Snapshot `
             -RapidDropWindowMinutes $script:RapidDropWindowMinutes `
             -CodexRapidDropPercent $script:CodexRapidDropPercent `
             -DeepSeekRapidDropMode $script:DeepSeekRapidDropMode `
             -DeepSeekRapidDropPercent $script:DeepSeekRapidDropPercent `
-            -DeepSeekRapidDropAmount $script:DeepSeekRapidDropAmount
+            -DeepSeekRapidDropAmount $script:DeepSeekRapidDropAmount `
+            -SkipPersistence:$skipUsageHistoryPersistence
         $insights = Set-SessionRapidDropInsight `
             -Snapshot $Snapshot `
             -Insights $insights `
