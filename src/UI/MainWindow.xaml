@@ -224,23 +224,23 @@
                                            Text="下次重置 "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="10.5"/>
+                                           FontSize="12.5"/>
                                 <TextBlock x:Name="DetailsResetDate"
                                            Text="--"
                                            Foreground="{StaticResource TextSecondary}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="10.5"
+                                           FontSize="12.5"
                                            FontWeight="SemiBold"/>
                                 <TextBlock x:Name="DetailsResetSeparator"
                                            Text=" · "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="10.5"/>
+                                           FontSize="12.5"/>
                                 <TextBlock x:Name="DetailsResetCountdown"
                                            Text="--"
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="10.5"/>
+                                           FontSize="12.5"/>
                             </StackPanel>
                             <Border x:Name="ProgressTrack"
                                     Height="3"

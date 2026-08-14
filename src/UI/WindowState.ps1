@@ -529,10 +529,10 @@ function Set-ExpandedState {
             [Windows.HorizontalAlignment]::Left
         $RemainingNumberPanel.HorizontalAlignment =
             [Windows.HorizontalAlignment]::Left
-        $RemainingValue.FontSize = 28
-        $RemainingValue.LineHeight = 31
-        $CompactPrefix.FontSize = 10
-        $CompactSuffix.FontSize = 10
+        $RemainingValue.FontSize = 34
+        $RemainingValue.LineHeight = 37
+        $CompactPrefix.FontSize = 12
+        $CompactSuffix.FontSize = 12
         $WindowLabel.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
         if ($Immediate) {
             $DetailsPanel.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
