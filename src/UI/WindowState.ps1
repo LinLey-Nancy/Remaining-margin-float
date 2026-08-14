@@ -973,6 +973,35 @@ function Clear-TrendChartVisuals {
     $EndMarker.Visibility = 'Collapsed'
 }
 
+function ConvertTo-SmoothTrendPoints {
+    param(
+        [object[]]$Points,
+        [int]$Subdivisions = 6
+    )
+
+    $series = @($Points)
+    if ($series.Count -lt 2) { return $series }
+
+    $steps = [Math]::Max(2, $Subdivisions)
+    $smoothed = New-Object Collections.Generic.List[Windows.Point]
+    [void]$smoothed.Add($series[0])
+    for ($index = 0; $index -lt ($series.Count - 1); $index++) {
+        $start = $series[$index]
+        $end = $series[$index + 1]
+        for ($step = 1; $step -le $steps; $step++) {
+            $progress = [double]$step / $steps
+            # Smoothstep keeps every interpolation between its two real samples,
+            # avoiding the overshoot that a free-form spline can introduce.
+            $eased = $progress * $progress * (3.0 - (2.0 * $progress))
+            [void]$smoothed.Add((New-Object Windows.Point(
+                ([double]$start.X + (([double]$end.X - [double]$start.X) * $progress)),
+                ([double]$start.Y + (([double]$end.Y - [double]$start.Y) * $eased))
+            )))
+        }
+    }
+    return $smoothed.ToArray()
+}
+
 function Set-TrendChart {
     param(
         $Canvas,
@@ -982,6 +1011,8 @@ function Set-TrendChart {
         $EndMarker,
         [object[]]$Samples,
         [object[]]$Segments = @(),
+        [switch]$ConnectSegments,
+        [switch]$Smooth,
         [double]$Hours,
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
@@ -993,7 +1024,11 @@ function Set-TrendChart {
         -StartMarker $StartMarker `
         -EndMarker $EndMarker
 
-    $sourceSegments = if ($Segments.Count -gt 0) {
+    $sourceSegments = if ($ConnectSegments) {
+        @([pscustomobject]@{
+            Samples = @($Samples | Sort-Object ObservedAtUtc)
+        })
+    } elseif ($Segments.Count -gt 0) {
         @($Segments)
     } else {
         @(Split-UsageTrendSeries -Samples $Samples)
@@ -1088,6 +1123,14 @@ function Set-TrendChart {
             )
             $point = New-Object Windows.Point($x, $y)
             [void]$segmentPoints.Add($point)
+        }
+
+        $renderPoints = if ($Smooth) {
+            @(ConvertTo-SmoothTrendPoints -Points $segmentPoints.ToArray())
+        } else {
+            @($segmentPoints.ToArray())
+        }
+        foreach ($point in $renderPoints) {
             [void]$allPoints.Add($point)
         }
 
@@ -1109,19 +1152,19 @@ function Set-TrendChart {
             [Windows.Controls.Panel]::SetZIndex($segmentLine, 1)
             [void]$Canvas.Children.Add($segmentLine)
         }
-        foreach ($point in $segmentPoints) {
+        foreach ($point in $renderPoints) {
             $segmentLine.Points.Add($point)
         }
-        if ($segmentPoints.Count -ge 2) {
+        if ($renderPoints.Count -ge 2) {
             $segmentArea.Points.Add((New-Object Windows.Point(
-                $segmentPoints[0].X,
+                $renderPoints[0].X,
                 $height
             )))
-            foreach ($point in $segmentPoints) {
+            foreach ($point in $renderPoints) {
                 $segmentArea.Points.Add($point)
             }
             $segmentArea.Points.Add((New-Object Windows.Point(
-                $segmentPoints[-1].X,
+                $renderPoints[-1].X,
                 $height
             )))
         }
@@ -1231,6 +1274,8 @@ function Update-UsageInsightView {
         -EndMarker $Trend7EndMarker `
         -Samples $Insights.Trend7Days.Samples `
         -Segments $Insights.Trend7Days.Segments `
+        -ConnectSegments `
+        -Smooth `
         -Hours (24 * 7)
 
     $rapidDrop = $Insights.RapidDrop

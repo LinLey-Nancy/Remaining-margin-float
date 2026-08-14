@@ -407,13 +407,13 @@ if ($CheckTransitions) {
         $Trend24Text.Text -notmatch ([string][char]0x2191) -and
         $Trend7Text.Text -notmatch ([string][char]0x2191) -and
         $Trend24Line.Points.Count -eq 2 -and
-        $Trend7Line.Points.Count -eq 2 -and
+        $Trend7Line.Points.Count -gt $resetUiSamples.Count -and
         @($Trend24Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 1 -and
         @($Trend7Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
-        }).Count -eq 1
+        }).Count -eq 0
     )
 
     $multipleResetUiSamples = @(
@@ -432,22 +432,22 @@ if ($CheckTransitions) {
     Update-UsageInsightView -Insights $multipleResetUiInsights
     $multipleResetTrendSegmentsRendered = (
         $Trend24Line.Points.Count -eq 2 -and
-        $Trend7Line.Points.Count -eq 2 -and
+        $Trend7Line.Points.Count -gt $multipleResetUiSamples.Count -and
         @($Trend24Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 2 -and
         @($Trend7Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
-        }).Count -eq 2 -and
+        }).Count -eq 0 -and
         @($Trend24Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicArea'
         }).Count -eq 2 -and
         @($Trend7Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicArea'
-        }).Count -eq 2
+        }).Count -eq 0
     )
     if (-not $multipleResetTrendSegmentsRendered) {
-        throw 'Multiple trend reset segments were not rendered independently.'
+        throw '24-hour resets were not segmented or the 7-day trend was not connected smoothly.'
     }
 
     Update-UsageInsightView -Insights $null

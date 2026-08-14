@@ -480,6 +480,9 @@ Assert-Diagnostic `
     -Condition ([bool]$transitions.ResetTrendUiStartsAccumulating) `
     -Message 'Reset trend UI starts a new baseline without increase text'
 Assert-Diagnostic `
+    -Condition ([bool]$transitions.MultipleResetTrendSegmentsRendered) `
+    -Message '24-hour resets stay segmented while 7-day trend connects smoothly'
+Assert-Diagnostic `
     -Condition (-not [string]::IsNullOrWhiteSpace([string]$transitions.PredictionText)) `
     -Message 'Depletion forecast UI'
 Assert-Diagnostic `
