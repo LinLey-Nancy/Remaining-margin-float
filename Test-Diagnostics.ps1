@@ -340,7 +340,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.7') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.8') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'

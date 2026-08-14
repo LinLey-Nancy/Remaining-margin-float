@@ -828,7 +828,26 @@ if ($CheckStateHistory) {
     $corruptLatestFallback = $false
     $corruptManifestFallback = $false
     $temporaryFilesCleaned = $false
+    $emptyBackfillHandled = $false
+    $corruptBackfillMarkerFallback = $false
+    $closeRefreshSamplesPreserved = $false
+    $historyReplacementRecovered = $false
+    $missingPayloadBlocksCursor = $false
     try {
+        $emptyBackfill = Invoke-UsageHistoryStateBackfill `
+            -HistoryPath (Join-Path $stateRoot 'usage-empty.jsonl') `
+            -StateRootPath $stateRoot `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $emptyBackfillHandled = (
+            $emptyBackfill.ExaminedEntries -eq 0 -and
+            $emptyBackfill.AddedSamples -eq 0 -and
+            $emptyBackfill.FailedEntries -eq 0 -and
+            -not [bool]$emptyBackfill.Changed
+        )
+        if (-not $emptyBackfillHandled) {
+            throw 'Missing state history did not return an empty backfill result.'
+        }
         [void](New-Item -Path $stateRoot -ItemType Directory -Force)
         [void](Save-UsageStateSnapshot `
             -Snapshot $snapshot `
@@ -888,6 +907,174 @@ if ($CheckStateHistory) {
             $entries[0].PayloadHash -eq $entries[1].PayloadHash -and
             $entries[1].PayloadHash -ne $entries[2].PayloadHash
         )
+        $backfillHistoryPath = Join-Path $stateRoot 'usage-backfill.jsonl'
+        $firstBackfill = Invoke-UsageHistoryStateBackfill `
+            -HistoryPath $backfillHistoryPath `
+            -StateRootPath $stateRoot `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $firstBackfillSamples = @(
+            Read-UsageHistory `
+                -Path $backfillHistoryPath `
+                -Now $now `
+                -BypassCache
+        )
+        $backfillMarkerPath = Get-UsageHistoryBackfillMarkerPath `
+            -StateRootPath $stateRoot
+        [IO.File]::WriteAllText(
+            $backfillMarkerPath,
+            '{"damaged":true}',
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $secondBackfill = Invoke-UsageHistoryStateBackfill `
+            -HistoryPath $backfillHistoryPath `
+            -StateRootPath $stateRoot `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $secondBackfillSamples = @(
+            Read-UsageHistory `
+                -Path $backfillHistoryPath `
+                -Now $now `
+                -BypassCache
+        )
+        $stateBackfillRecovered = (
+            $firstBackfill.AddedSamples -eq 3 -and
+            $firstBackfillSamples.Count -eq 3 -and
+            $secondBackfill.AddedSamples -eq 0 -and
+            -not [bool]$secondBackfill.Changed -and
+            $secondBackfillSamples.Count -eq 3 -and
+            [Math]::Abs(
+                [double]$secondBackfillSamples[0].RemainingValue - 72.5
+            ) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$secondBackfillSamples[-1].RemainingValue - 60.25
+            ) -lt 0.0001
+        )
+        $repairedBackfillMarker = Get-Content `
+            -LiteralPath $backfillMarkerPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+        $corruptBackfillMarkerFallback = (
+            $repairedBackfillMarker.v -eq 2 -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$repairedBackfillMarker.CompletedThroughUtc
+            ) -and
+            [int]$repairedBackfillMarker.CoverageSampleCount -eq 3 -and
+            [string]$repairedBackfillMarker.CoverageSha256 -match
+                '^[0-9a-f]{64}$'
+        )
+        if (-not $stateBackfillRecovered) {
+            throw 'Full-state history did not backfill usage history idempotently.'
+        }
+        if (-not $corruptBackfillMarkerFallback) {
+            throw 'Corrupt usage-history backfill marker was not repaired.'
+        }
+
+        Save-UsageHistory `
+            -Samples @($secondBackfillSamples | Select-Object -Skip 1) `
+            -Path $backfillHistoryPath `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $replacementBackfill = Invoke-UsageHistoryStateBackfill `
+            -HistoryPath $backfillHistoryPath `
+            -StateRootPath $stateRoot `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $replacementSamples = @(
+            Read-UsageHistory `
+                -Path $backfillHistoryPath `
+                -Now $now `
+                -BypassCache
+        )
+        $historyReplacementRecovered = (
+            $replacementBackfill.AddedSamples -eq 1 -and
+            $replacementSamples.Count -eq 3 -and
+            [Math]::Abs(
+                [double]$replacementSamples[0].RemainingValue - 72.5
+            ) -lt 0.0001
+        )
+        if (-not $historyReplacementRecovered) {
+            throw 'Replaced usage history did not invalidate the backfill cursor.'
+        }
+
+        $closeStateRoot = Join-Path $stateRoot 'close-refresh'
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddSeconds(-40) `
+            -Reason 'Automatic' `
+            -RootPath $closeStateRoot `
+            -AllowDiagnosticWrite)
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddSeconds(-20) `
+            -Reason 'Manual' `
+            -RootPath $closeStateRoot `
+            -AllowDiagnosticWrite)
+        $closeHistoryPath = Join-Path $closeStateRoot 'usage.jsonl'
+        $closeBackfill = Invoke-UsageHistoryStateBackfill `
+            -HistoryPath $closeHistoryPath `
+            -StateRootPath $closeStateRoot `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $closeSamples = @(
+            Read-UsageHistory `
+                -Path $closeHistoryPath `
+                -Now $now `
+                -BypassCache
+        )
+        $closeRefreshSamplesPreserved = (
+            $closeBackfill.AddedSamples -eq 2 -and
+            $closeSamples.Count -eq 2 -and
+            (
+                $closeSamples[1].ObservedAtUtc -
+                $closeSamples[0].ObservedAtUtc
+            ).TotalSeconds -eq 20
+        )
+        if (-not $closeRefreshSamplesPreserved) {
+            throw 'Closely spaced automatic and manual refreshes were merged.'
+        }
+
+        $missingStateRoot = Join-Path $stateRoot 'missing-payload'
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddMinutes(-2) `
+            -Reason 'Automatic' `
+            -RootPath $missingStateRoot `
+            -AllowDiagnosticWrite)
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $changedSnapshot `
+            -ObservedAt $now.AddMinutes(-1) `
+            -Reason 'Manual' `
+            -RootPath $missingStateRoot `
+            -AllowDiagnosticWrite)
+        $missingEntries = @(
+            Get-UsageStateHistory `
+                -RootPath $missingStateRoot `
+                -Now $now
+        )
+        $missingObjectPath = Join-Path (
+            Get-UsageStateObjectsDirectory -RootPath $missingStateRoot
+        ) ($missingEntries[0].PayloadHash + '.json')
+        Remove-Item -LiteralPath $missingObjectPath -Force
+        $missingHistoryPath = Join-Path $missingStateRoot 'usage.jsonl'
+        $missingBackfill = Invoke-UsageHistoryStateBackfill `
+            -HistoryPath $missingHistoryPath `
+            -StateRootPath $missingStateRoot `
+            -Now $now `
+            -AllowDiagnosticWrite
+        $missingMarkerPath = Get-UsageHistoryBackfillMarkerPath `
+            -StateRootPath $missingStateRoot
+        $missingPayloadBlocksCursor = (
+            $missingBackfill.ExaminedEntries -eq 2 -and
+            $missingBackfill.AddedSamples -eq 1 -and
+            $missingBackfill.FailedEntries -eq 1 -and
+            -not (Test-Path -LiteralPath $missingMarkerPath -PathType Leaf)
+        )
+        if (-not $missingPayloadBlocksCursor) {
+            throw 'Missing state payload did not block the backfill cursor.'
+        }
+
         $retentionApplied = @(
             $entries | Where-Object {
                 $_.ObservedAtUtc -lt $now.AddHours(-168)
@@ -968,6 +1155,11 @@ if ($CheckStateHistory) {
         CurrentIndexWritten = $currentIndexWritten
         CorruptLatestFallback = $corruptLatestFallback
         CorruptManifestFallback = $corruptManifestFallback
+        EmptyBackfillHandled = $emptyBackfillHandled
+        CorruptBackfillMarkerFallback = $corruptBackfillMarkerFallback
+        CloseRefreshSamplesPreserved = $closeRefreshSamplesPreserved
+        HistoryReplacementRecovered = $historyReplacementRecovered
+        MissingPayloadBlocksCursor = $missingPayloadBlocksCursor
         TemporaryFilesCleaned = $temporaryFilesCleaned
     } | ConvertTo-Json
     $script:RmfStopLoading = $true
@@ -1462,8 +1654,11 @@ if ($CheckUsageHistory) {
 
     $trendResetStartsNewBaseline = (
         -not [bool]$trendAfterReset.ComparisonAvailable -and
-        $trendAfterReset.SampleCount -eq 1 -and
-        $trendAfterReset.Samples.Count -eq 1 -and
+        $trendAfterReset.SampleCount -eq 3 -and
+        $trendAfterReset.Samples.Count -eq 3 -and
+        $trendAfterReset.Segments.Count -eq 2 -and
+        $trendAfterReset.Segments[0].Samples.Count -eq 2 -and
+        $trendAfterReset.ComparisonSamples.Count -eq 1 -and
         $trendAfterReset.Change -eq 0 -and
         $trendAfterReset.StartValue -eq 98 -and
         $trendAfterReset.EndValue -eq 98
@@ -1478,7 +1673,10 @@ if ($CheckUsageHistory) {
     )
     $multipleResetUsesLatestBaseline = (
         [bool]$multipleResetTrend.ComparisonAvailable -and
-        $multipleResetTrend.SampleCount -eq 3 -and
+        $multipleResetTrend.SampleCount -eq 6 -and
+        $multipleResetTrend.Samples.Count -eq 6 -and
+        $multipleResetTrend.Segments.Count -eq 3 -and
+        $multipleResetTrend.ComparisonSamples.Count -eq 3 -and
         $multipleResetTrend.StartValue -eq 90 -and
         $multipleResetTrend.EndValue -eq 80 -and
         $multipleResetTrend.Change -eq -10

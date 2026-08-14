@@ -388,8 +388,10 @@ if ($CheckTransitions) {
     )
 
     $resetUiSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 37; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 98; Unit = '%'; ResetAtUtc = '' }
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 37; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 98; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 97; Unit = '%'; ResetAtUtc = '' }
     )
     $resetUiInsights = Measure-UsageInsights `
         -Samples $resetUiSamples `
@@ -398,13 +400,78 @@ if ($CheckTransitions) {
         -Now $diagnosticNow
     Update-UsageInsightView -Insights $resetUiInsights
     $resetTrendUiStartsAccumulating = (
-        $Trend24Text.Text -eq ([string]([char]0x79EF) + [char]0x7D2F + [char]0x4E2D) -and
-        $Trend7Text.Text -eq ([string]([char]0x79EF) + [char]0x7D2F + [char]0x4E2D) -and
-        $Trend24MetaText.Text -notmatch ([string][char]0x2192) -and
-        $Trend7MetaText.Text -notmatch ([string][char]0x2192) -and
+        $Trend24Text.Text -eq (([string][char]0x2193) + ' 1pp') -and
+        $Trend7Text.Text -eq (([string][char]0x2193) + ' 1pp') -and
+        $Trend24MetaText.Text -match '^4 .*98.*97' -and
+        $Trend7MetaText.Text -match '^4 .*98.*97' -and
         $Trend24Text.Text -notmatch ([string][char]0x2191) -and
-        $Trend7Text.Text -notmatch ([string][char]0x2191)
+        $Trend7Text.Text -notmatch ([string][char]0x2191) -and
+        $Trend24Line.Points.Count -eq 2 -and
+        $Trend7Line.Points.Count -eq 2 -and
+        @($Trend24Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 1 -and
+        @($Trend7Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 1
     )
+
+    $multipleResetUiSamples = @(
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-5); MetricType = 'Percent'; RemainingValue = 30; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-4); MetricType = 'Percent'; RemainingValue = 29; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 70; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 69; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 89; Unit = '%'; ResetAtUtc = '' }
+    )
+    $multipleResetUiInsights = Measure-UsageInsights `
+        -Samples $multipleResetUiSamples `
+        -CurrentSample $multipleResetUiSamples[-1] `
+        -PreviousSample $multipleResetUiSamples[-2] `
+        -Now $diagnosticNow
+    Update-UsageInsightView -Insights $multipleResetUiInsights
+    $multipleResetTrendSegmentsRendered = (
+        $Trend24Line.Points.Count -eq 2 -and
+        $Trend7Line.Points.Count -eq 2 -and
+        @($Trend24Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 2 -and
+        @($Trend7Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 2 -and
+        @($Trend24Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicArea'
+        }).Count -eq 2 -and
+        @($Trend7Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicArea'
+        }).Count -eq 2
+    )
+    if (-not $multipleResetTrendSegmentsRendered) {
+        throw 'Multiple trend reset segments were not rendered independently.'
+    }
+
+    Update-UsageInsightView -Insights $null
+    $dynamicTrendVisualsCleared = (
+        $Trend24Line.Points.Count -eq 0 -and
+        $Trend7Line.Points.Count -eq 0 -and
+        $Trend24Area.Points.Count -eq 0 -and
+        $Trend7Area.Points.Count -eq 0 -and
+        @($Trend24Canvas.Children | Where-Object {
+            [string]$_.Tag -like 'UsageTrendDynamic*'
+        }).Count -eq 0 -and
+        @($Trend7Canvas.Children | Where-Object {
+            [string]$_.Tag -like 'UsageTrendDynamic*'
+        }).Count -eq 0 -and
+        [string]$Trend24StartMarker.Visibility -eq 'Collapsed' -and
+        [string]$Trend24EndMarker.Visibility -eq 'Collapsed' -and
+        [string]$Trend7StartMarker.Visibility -eq 'Collapsed' -and
+        [string]$Trend7EndMarker.Visibility -eq 'Collapsed' -and
+        $Trend24Text.Text -eq '暂无数据' -and
+        $Trend7Text.Text -eq '暂无数据'
+    )
+    if (-not $dynamicTrendVisualsCleared) {
+        throw 'Trend visuals were not cleared when insights became empty.'
+    }
 
     Set-UsageStatusPalette -Percent 90 -Available $true
     $trendHealthyPaletteColor = (
@@ -1091,6 +1158,8 @@ if ($CheckTransitions) {
         Trend7MetaText = $trend7MetaTextValue
         TrendTimeAxisAligned = $trendTimeAxisAligned
         ResetTrendUiStartsAccumulating = $resetTrendUiStartsAccumulating
+        MultipleResetTrendSegmentsRendered = $multipleResetTrendSegmentsRendered
+        DynamicTrendVisualsCleared = $dynamicTrendVisualsCleared
         TrendCardsFollowQuotaPalette = $trendCardsFollowQuotaPalette
         TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
         TrendHealthyPaletteColor = $trendHealthyPaletteColor

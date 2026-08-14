@@ -462,6 +462,335 @@ function Add-UsageHistoryLines {
     }
 }
 
+function Get-UsageHistoryTimeBucket {
+    param([DateTimeOffset]$ObservedAt)
+
+    $ticksPerBucket = [TimeSpan]::TicksPerSecond
+    return [long][Math]::Floor(
+        $ObservedAt.ToUniversalTime().UtcDateTime.Ticks / $ticksPerBucket
+    )
+}
+
+function Get-UsageHistoryBackfillMarkerPath {
+    param([string]$StateRootPath = '')
+
+    return Join-Path (
+        Get-UsageStateHistoryDirectory -RootPath $StateRootPath
+    ) 'usage-history-backfill.json'
+}
+
+function Get-UsageHistoryCoverageFingerprint {
+    param(
+        [object[]]$Samples,
+        [DateTimeOffset]$CompletedThroughUtc
+    )
+
+    $lines = New-Object Collections.Generic.List[string]
+    foreach ($sample in @($Samples | Sort-Object ObservedAtUtc)) {
+        $observedAt = ([DateTimeOffset]$sample.ObservedAtUtc).ToUniversalTime()
+        if ($observedAt -gt $CompletedThroughUtc.ToUniversalTime()) { continue }
+        [void]$lines.Add((
+            [ordered]@{
+                ProviderId = [string]$sample.ProviderId
+                ObservedAtUtc = $observedAt.ToString(
+                    'o',
+                    [Globalization.CultureInfo]::InvariantCulture
+                )
+                MetricType = [string]$sample.MetricType
+                RemainingValue = [Math]::Round(
+                    [double]$sample.RemainingValue,
+                    4
+                )
+                Unit = [string]$sample.Unit
+                ResetAtUtc = [string]$sample.ResetAtUtc
+            } | ConvertTo-Json -Compress
+        ))
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = -join (
+            $algorithm.ComputeHash($bytes) |
+                ForEach-Object { $_.ToString('x2') }
+        )
+    }
+    finally {
+        $algorithm.Dispose()
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+    return [pscustomobject]@{
+        SampleCount = $lines.Count
+        Sha256 = $hash
+    }
+}
+
+function Add-UsageHistoryBackfillIndexSample {
+    param(
+        [hashtable]$Index,
+        $Sample,
+        [switch]$ProviderOnly
+    )
+
+    if (-not $Sample) { return }
+    $providerId = [string]$Sample.ProviderId
+    $bucket = Get-UsageHistoryTimeBucket `
+        -ObservedAt ([DateTimeOffset]$Sample.ObservedAtUtc)
+    $key = if ($ProviderOnly) {
+        '{0}|{1}' -f $providerId, $bucket
+    } else {
+        '{0}|{1}|{2}|{3}' -f
+            $providerId,
+            [string]$Sample.MetricType,
+            [string]$Sample.Unit,
+            $bucket
+    }
+    if (-not $Index.ContainsKey($key)) {
+        $Index[$key] = New-Object Collections.Generic.List[object]
+    }
+    [void]$Index[$key].Add($Sample)
+}
+
+function Test-UsageHistoryBackfillIndexMatch {
+    param(
+        [hashtable]$Index,
+        [string]$ProviderId,
+        [DateTimeOffset]$ObservedAt,
+        [string]$MetricType = '',
+        [string]$Unit = '',
+        [switch]$ProviderOnly
+    )
+
+    $bucket = Get-UsageHistoryTimeBucket -ObservedAt $ObservedAt
+    foreach ($offset in @(-1L, 0L, 1L)) {
+        $candidateBucket = $bucket + $offset
+        $key = if ($ProviderOnly) {
+            '{0}|{1}' -f $ProviderId, $candidateBucket
+        } else {
+            '{0}|{1}|{2}|{3}' -f
+                $ProviderId,
+                $MetricType,
+                $Unit,
+                $candidateBucket
+        }
+        if (-not $Index.ContainsKey($key)) { continue }
+        foreach ($candidate in $Index[$key]) {
+            $distance = [Math]::Abs((
+                ([DateTimeOffset]$candidate.ObservedAtUtc).ToUniversalTime() -
+                $ObservedAt.ToUniversalTime()
+            ).TotalSeconds)
+            if ($distance -le 1.0) { return $true }
+        }
+    }
+    return $false
+}
+
+function Invoke-UsageHistoryStateBackfill {
+    param(
+        [string]$HistoryPath = '',
+        [string]$StateRootPath = '',
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+        [switch]$AllowDiagnosticWrite
+    )
+
+    if ($isDiagnosticRun -and -not $AllowDiagnosticWrite) {
+        return [pscustomobject]@{
+            ExaminedEntries = 0
+            AddedSamples = 0
+            FailedEntries = 0
+            Changed = $false
+        }
+    }
+
+    $usesDefaultHistoryPath = [string]::IsNullOrWhiteSpace($HistoryPath)
+    if ($usesDefaultHistoryPath) {
+        $HistoryPath = Get-UsageHistoryPath
+    }
+    $stateRoot = Get-UsageStateHistoryDirectory -RootPath $StateRootPath
+    if (-not (Test-Path -LiteralPath $stateRoot -PathType Container)) {
+        return [pscustomobject]@{
+            ExaminedEntries = 0
+            AddedSamples = 0
+            FailedEntries = 0
+            Changed = $false
+        }
+    }
+
+    $history = @(
+        Read-UsageHistory `
+            -Path $HistoryPath `
+            -Now $Now `
+            -BypassCache
+    )
+    $scanFromUtc = $Now.ToUniversalTime().AddHours(-168)
+    $markerPath = Get-UsageHistoryBackfillMarkerPath -StateRootPath $stateRoot
+    if (
+        (Test-Path -LiteralPath $HistoryPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $markerPath -PathType Leaf) -and
+        (Get-Item -LiteralPath $markerPath).Length -le 65536
+    ) {
+        try {
+            $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json
+            if ([int]$marker.v -eq 2) {
+                $completedThrough = [DateTimeOffset]::Parse(
+                    [string]$marker.CompletedThroughUtc,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind
+                ).ToUniversalTime()
+                $coverage = Get-UsageHistoryCoverageFingerprint `
+                    -Samples $history `
+                    -CompletedThroughUtc $completedThrough
+                $coverageMatches = (
+                    [int]$marker.CoverageSampleCount -eq $coverage.SampleCount -and
+                    [string]$marker.CoverageSha256 -match '^[0-9a-f]{64}$' -and
+                    [string]$marker.CoverageSha256 -eq $coverage.Sha256
+                )
+                if ($coverageMatches -and $completedThrough -gt $scanFromUtc) {
+                    $scanFromUtc = $completedThrough.AddSeconds(-30)
+                }
+            }
+        }
+        catch {
+            $scanFromUtc = $Now.ToUniversalTime().AddHours(-168)
+        }
+    }
+    $providerIndex = @{}
+    $metricIndex = @{}
+    foreach ($sample in $history) {
+        Add-UsageHistoryBackfillIndexSample `
+            -Index $providerIndex `
+            -Sample $sample `
+            -ProviderOnly
+        Add-UsageHistoryBackfillIndexSample `
+            -Index $metricIndex `
+            -Sample $sample
+    }
+
+    $eligibleReasons = @(
+        'Normal',
+        'StartupOfficial',
+        'Manual',
+        'Automatic',
+        'Refresh'
+    )
+    $entries = @(
+        Get-UsageStateHistory -RootPath $stateRoot -Now $Now | Where-Object {
+            $_.Reason -in $eligibleReasons -and
+            $_.ObservedAtUtc -ge $scanFromUtc
+        } | Sort-Object ObservedAtUtc
+    )
+    $added = New-Object Collections.Generic.List[object]
+    $payloadCache = @{}
+    $failedEntries = 0
+    $protectedDataUnavailable = $false
+    foreach ($entry in $entries) {
+        $observedAt = ([DateTimeOffset]$entry.ObservedAtUtc).ToUniversalTime()
+        if (
+            $entry.ProviderId -eq 'Codex' -and
+            (Test-UsageHistoryBackfillIndexMatch `
+                -Index $providerIndex `
+                -ProviderId $entry.ProviderId `
+                -ObservedAt $observedAt `
+                -ProviderOnly)
+        ) {
+            continue
+        }
+
+        try {
+            $payloadHash = [string]$entry.PayloadHash
+            if ($payloadCache.ContainsKey($payloadHash)) {
+                $snapshot = $payloadCache[$payloadHash]
+            } else {
+                $snapshot = Read-UsageStatePayload `
+                    -Entry $entry `
+                    -RootPath $stateRoot
+                if (-not $snapshot) {
+                    throw 'Full-state history object is missing.'
+                }
+                $payloadCache[$payloadHash] = $snapshot
+            }
+            foreach ($sample in @(
+                ConvertTo-UsageHistorySamples `
+                    -Snapshot $snapshot `
+                    -ObservedAt $observedAt
+            )) {
+                if (Test-UsageHistoryBackfillIndexMatch `
+                    -Index $metricIndex `
+                    -ProviderId $sample.ProviderId `
+                    -ObservedAt $sample.ObservedAtUtc `
+                    -MetricType $sample.MetricType `
+                    -Unit $sample.Unit) {
+                    continue
+                }
+                [void]$added.Add($sample)
+                Add-UsageHistoryBackfillIndexSample `
+                    -Index $providerIndex `
+                    -Sample $sample `
+                    -ProviderOnly
+                Add-UsageHistoryBackfillIndexSample `
+                    -Index $metricIndex `
+                    -Sample $sample
+            }
+        }
+        catch {
+            $failedEntries++
+            if ($_.Exception.Message -eq '当前 Windows 用户无法解密全量状态。') {
+                $protectedDataUnavailable = $true
+                break
+            }
+        }
+    }
+
+    if ($added.Count -gt 0) {
+        $addedSamples = $added.ToArray()
+        $history = @(
+            Select-UsageHistoryRetentionWindow `
+                -Samples @($history + $addedSamples) `
+                -Now $Now
+        )
+        Save-UsageHistory `
+            -Samples $history `
+            -Path $HistoryPath `
+            -Now $Now `
+            -AllowDiagnosticWrite:$AllowDiagnosticWrite
+        if ($usesDefaultHistoryPath) {
+            $script:UsageHistoryCache = $history
+        }
+    }
+
+    if (
+        -not $protectedDataUnavailable -and
+        $failedEntries -eq 0 -and
+        $entries.Count -gt 0 -and
+        (Test-Path -LiteralPath $HistoryPath -PathType Leaf)
+    ) {
+        $completedThrough = (
+            [DateTimeOffset]$entries[-1].ObservedAtUtc
+        ).ToUniversalTime()
+        $coverage = Get-UsageHistoryCoverageFingerprint `
+            -Samples $history `
+            -CompletedThroughUtc $completedThrough
+        $markerDocument = [ordered]@{
+            v = 2
+            CompletedThroughUtc = $completedThrough.ToString(
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            CoverageSampleCount = $coverage.SampleCount
+            CoverageSha256 = $coverage.Sha256
+        } | ConvertTo-Json -Compress
+        Write-UsageStateAtomicText -Path $markerPath -Text $markerDocument
+    }
+
+    return [pscustomobject]@{
+        ExaminedEntries = $entries.Count
+        AddedSamples = $added.Count
+        FailedEntries = $failedEntries
+        ProtectedDataUnavailable = $protectedDataUnavailable
+        Changed = $added.Count -gt 0
+    }
+}
+
 function Export-UsageHistory {
     param(
         [Parameter(Mandatory = $true)]
@@ -710,6 +1039,35 @@ function Add-UsageHistorySample {
     }
 }
 
+function Split-UsageTrendSeries {
+    param([object[]]$Samples)
+
+    $segments = New-Object Collections.Generic.List[object]
+    $current = New-Object Collections.Generic.List[object]
+    $previous = $null
+    foreach ($sample in @($Samples | Sort-Object ObservedAtUtc)) {
+        if ($previous) {
+            $increase = (
+                [double]$sample.RemainingValue -
+                [double]$previous.RemainingValue
+            )
+            if ($increase -gt 0.0001 -and $current.Count -gt 0) {
+                [void]$segments.Add([pscustomobject]@{
+                    Samples = @($current.ToArray())
+                })
+                $current = New-Object Collections.Generic.List[object]
+            }
+        }
+        [void]$current.Add($sample)
+        $previous = $sample
+    }
+    if ($current.Count -gt 0) {
+        [void]$segments.Add([pscustomobject]@{
+            Samples = @($current.ToArray())
+        })
+    }
+    return $segments.ToArray()
+}
 function Get-UsageTrend {
     param(
         [object[]]$Samples,
@@ -722,6 +1080,8 @@ function Get-UsageTrend {
         return [pscustomobject]@{
             Hours = $Hours
             Samples = @()
+            Segments = @()
+            ComparisonSamples = @()
             SampleCount = 0
             ComparisonAvailable = $false
             Change = 0.0
@@ -751,41 +1111,37 @@ function Get-UsageTrend {
         $windowSamples
     })
 
-    $segmentStart = 0
-    for ($index = 1; $index -lt $series.Count; $index++) {
-        $increase = (
-            [double]$series[$index].RemainingValue -
-            [double]$series[$index - 1].RemainingValue
-        )
-        if ($increase -gt 0.0001) {
-            $segmentStart = $index
-        }
-    }
-    if ($series.Count -gt 0 -and $segmentStart -gt 0) {
-        $series = @($series[$segmentStart..($series.Count - 1)])
-    }
+    $segments = @(Split-UsageTrendSeries -Samples $series)
+    $comparisonSeries = @(if ($segments.Count -gt 0) {
+        $segments[-1].Samples
+    })
     $sampleCount = @(
         $series | Where-Object { $_.ObservedAtUtc -ge $cutoff }
     ).Count
-    $comparisonAvailable = $series.Count -ge 2
+    $comparisonAvailable = $comparisonSeries.Count -ge 2
     if (-not $comparisonAvailable) {
         return [pscustomobject]@{
             Hours = $Hours
             Samples = $series
+            Segments = $segments
+            ComparisonSamples = $comparisonSeries
             SampleCount = $sampleCount
             ComparisonAvailable = $false
             Change = 0.0
-            StartValue = if ($series.Count -eq 1) {
-                [double]$series[0].RemainingValue
+            StartValue = if ($comparisonSeries.Count -eq 1) {
+                [double]$comparisonSeries[0].RemainingValue
             } else { $null }
-            EndValue = if ($series.Count -eq 1) {
-                [double]$series[0].RemainingValue
+            EndValue = if ($comparisonSeries.Count -eq 1) {
+                [double]$comparisonSeries[0].RemainingValue
             } else { $null }
             Summary = '积累中'
         }
     }
 
-    $change = [double]$series[-1].RemainingValue - [double]$series[0].RemainingValue
+    $change = (
+        [double]$comparisonSeries[-1].RemainingValue -
+        [double]$comparisonSeries[0].RemainingValue
+    )
     $absoluteChange = [Math]::Abs($change)
     if ($absoluteChange -lt 0.05) {
         $summary = '基本持平'
@@ -811,11 +1167,13 @@ function Get-UsageTrend {
     return [pscustomobject]@{
         Hours = $Hours
         Samples = $series
+        Segments = $segments
+        ComparisonSamples = $comparisonSeries
         SampleCount = $sampleCount
         ComparisonAvailable = $true
         Change = $change
-        StartValue = [double]$series[0].RemainingValue
-        EndValue = [double]$series[-1].RemainingValue
+        StartValue = [double]$comparisonSeries[0].RemainingValue
+        EndValue = [double]$comparisonSeries[-1].RemainingValue
         Summary = $summary
     }
 }
