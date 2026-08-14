@@ -953,6 +953,26 @@ function Format-UsageTrendChange {
     )
 }
 
+function Clear-TrendChartVisuals {
+    param(
+        $Canvas,
+        $Polyline,
+        $Area,
+        $StartMarker,
+        $EndMarker
+    )
+
+    foreach ($child in @($Canvas.Children | Where-Object {
+        [string]$_.Tag -like 'UsageTrendDynamic*'
+    })) {
+        [void]$Canvas.Children.Remove($child)
+    }
+    $Polyline.Points.Clear()
+    $Area.Points.Clear()
+    $StartMarker.Visibility = 'Collapsed'
+    $EndMarker.Visibility = 'Collapsed'
+}
+
 function Set-TrendChart {
     param(
         $Canvas,
@@ -961,26 +981,49 @@ function Set-TrendChart {
         $StartMarker,
         $EndMarker,
         [object[]]$Samples,
+        [object[]]$Segments = @(),
         [double]$Hours,
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
-    $Polyline.Points.Clear()
-    $Area.Points.Clear()
-    $StartMarker.Visibility = 'Collapsed'
-    $EndMarker.Visibility = 'Collapsed'
-    $displaySamples = @(
-        Select-TrendDisplaySamples -Samples $Samples -MaximumPoints 48
-    )
-    if ($displaySamples.Count -lt 2) { return }
+    Clear-TrendChartVisuals `
+        -Canvas $Canvas `
+        -Polyline $Polyline `
+        -Area $Area `
+        -StartMarker $StartMarker `
+        -EndMarker $EndMarker
 
-    $values = @($displaySamples | ForEach-Object {
+    $sourceSegments = if ($Segments.Count -gt 0) {
+        @($Segments)
+    } else {
+        @(Split-UsageTrendSeries -Samples $Samples)
+    }
+    $displaySegments = New-Object Collections.Generic.List[object]
+    $allDisplaySamples = New-Object Collections.Generic.List[object]
+    foreach ($segment in $sourceSegments) {
+        $segmentSamples = @($segment.Samples)
+        $selected = @(
+            Select-TrendDisplaySamples `
+                -Samples $segmentSamples `
+                -MaximumPoints 48
+        )
+        if ($selected.Count -eq 0) { continue }
+        [void]$displaySegments.Add([pscustomobject]@{
+            Samples = $selected
+        })
+        foreach ($sample in $selected) {
+            [void]$allDisplaySamples.Add($sample)
+        }
+    }
+    if ($allDisplaySamples.Count -lt 2) { return }
+
+    $values = @($allDisplaySamples | ForEach-Object {
         [double]$_.RemainingValue
     })
     $minimum = ($values | Measure-Object -Minimum).Minimum
     $maximum = ($values | Measure-Object -Maximum).Maximum
     $range = [double]$maximum - [double]$minimum
-    $minimumRange = if ($displaySamples[0].MetricType -eq 'Percent') {
+    $minimumRange = if ($allDisplaySamples[0].MetricType -eq 'Percent') {
         10.0
     } else {
         [Math]::Max(0.01, [double]$maximum * 0.05)
@@ -989,7 +1032,7 @@ function Set-TrendChart {
         $center = ([double]$minimum + [double]$maximum) / 2
         $minimum = $center - ($minimumRange / 2)
         $maximum = $center + ($minimumRange / 2)
-        if ($displaySamples[0].MetricType -eq 'Percent') {
+        if ($allDisplaySamples[0].MetricType -eq 'Percent') {
             if ($minimum -lt 0.0) {
                 $maximum = [Math]::Min(100.0, $maximum - $minimum)
                 $minimum = 0.0
@@ -1024,52 +1067,88 @@ function Set-TrendChart {
     $plotHeight = [Math]::Max(1.0, $height - 5.0)
     $cutoff = $Now.ToUniversalTime().AddHours(-$Hours)
     $totalSeconds = [Math]::Max(1, $Hours * 3600)
-    $points = New-Object Collections.Generic.List[Windows.Point]
-    for ($index = 0; $index -lt $displaySamples.Count; $index++) {
-        $elapsedSeconds = (
-            ([DateTimeOffset]$displaySamples[$index].ObservedAtUtc) - $cutoff
-        ).TotalSeconds
-        $x = [Math]::Max(
-            0.0,
-            [Math]::Min($width, ($elapsedSeconds / $totalSeconds) * $width)
-        )
-        $y = 2 + (
-            $plotHeight - (
-                (
-                    [double]$displaySamples[$index].RemainingValue -
-                    [double]$minimum
-                ) / $range * $plotHeight
+    $allPoints = New-Object Collections.Generic.List[Windows.Point]
+    for ($segmentIndex = 0; $segmentIndex -lt $displaySegments.Count; $segmentIndex++) {
+        $segmentPoints = New-Object Collections.Generic.List[Windows.Point]
+        foreach ($sample in @($displaySegments[$segmentIndex].Samples)) {
+            $elapsedSeconds = (
+                ([DateTimeOffset]$sample.ObservedAtUtc) - $cutoff
+            ).TotalSeconds
+            $x = [Math]::Max(
+                0.0,
+                [Math]::Min($width, ($elapsedSeconds / $totalSeconds) * $width)
             )
-        )
-        $point = New-Object Windows.Point($x, $y)
-        $points.Add($point)
-        $Polyline.Points.Add($point)
+            $y = 2 + (
+                $plotHeight - (
+                    (
+                        [double]$sample.RemainingValue -
+                        [double]$minimum
+                    ) / $range * $plotHeight
+                )
+            )
+            $point = New-Object Windows.Point($x, $y)
+            [void]$segmentPoints.Add($point)
+            [void]$allPoints.Add($point)
+        }
+
+        if ($segmentIndex -eq 0) {
+            $segmentLine = $Polyline
+            $segmentArea = $Area
+        } else {
+            $segmentArea = New-Object Windows.Shapes.Polygon
+            $segmentArea.Fill = $Area.Fill
+            $segmentArea.Tag = 'UsageTrendDynamicArea'
+            [Windows.Controls.Panel]::SetZIndex($segmentArea, 0)
+            [void]$Canvas.Children.Add($segmentArea)
+
+            $segmentLine = New-Object Windows.Shapes.Polyline
+            $segmentLine.Stroke = $Polyline.Stroke
+            $segmentLine.StrokeThickness = $Polyline.StrokeThickness
+            $segmentLine.StrokeLineJoin = $Polyline.StrokeLineJoin
+            $segmentLine.Tag = 'UsageTrendDynamicLine'
+            [Windows.Controls.Panel]::SetZIndex($segmentLine, 1)
+            [void]$Canvas.Children.Add($segmentLine)
+        }
+        foreach ($point in $segmentPoints) {
+            $segmentLine.Points.Add($point)
+        }
+        if ($segmentPoints.Count -ge 2) {
+            $segmentArea.Points.Add((New-Object Windows.Point(
+                $segmentPoints[0].X,
+                $height
+            )))
+            foreach ($point in $segmentPoints) {
+                $segmentArea.Points.Add($point)
+            }
+            $segmentArea.Points.Add((New-Object Windows.Point(
+                $segmentPoints[-1].X,
+                $height
+            )))
+        }
     }
 
-    $Area.Points.Add((New-Object Windows.Point($points[0].X, $height)))
-    foreach ($point in $points) { $Area.Points.Add($point) }
-    $Area.Points.Add((New-Object Windows.Point($points[-1].X, $height)))
-
+    [Windows.Controls.Panel]::SetZIndex($Polyline, 1)
+    [Windows.Controls.Panel]::SetZIndex($StartMarker, 2)
+    [Windows.Controls.Panel]::SetZIndex($EndMarker, 2)
     $StartMarker.Visibility = 'Visible'
     $EndMarker.Visibility = 'Visible'
     [Windows.Controls.Canvas]::SetLeft(
         $StartMarker,
-        $points[0].X - ($StartMarker.Width / 2)
+        $allPoints[0].X - ($StartMarker.Width / 2)
     )
     [Windows.Controls.Canvas]::SetTop(
         $StartMarker,
-        $points[0].Y - ($StartMarker.Height / 2)
+        $allPoints[0].Y - ($StartMarker.Height / 2)
     )
     [Windows.Controls.Canvas]::SetLeft(
         $EndMarker,
-        $points[-1].X - ($EndMarker.Width / 2)
+        $allPoints[-1].X - ($EndMarker.Width / 2)
     )
     [Windows.Controls.Canvas]::SetTop(
         $EndMarker,
-        $points[-1].Y - ($EndMarker.Height / 2)
+        $allPoints[-1].Y - ($EndMarker.Height / 2)
     )
 }
-
 function Update-UsageInsightView {
     param($Insights)
 
@@ -1079,14 +1158,18 @@ function Update-UsageInsightView {
         $Trend24MetaText.Text = '等待更多样本'
         $Trend7MetaText.Text = '等待更多样本'
         $PredictionText.Text = '积累 30 分钟后预测'
-        $Trend24Line.Points.Clear()
-        $Trend7Line.Points.Clear()
-        $Trend24Area.Points.Clear()
-        $Trend7Area.Points.Clear()
-        $Trend24StartMarker.Visibility = 'Collapsed'
-        $Trend24EndMarker.Visibility = 'Collapsed'
-        $Trend7StartMarker.Visibility = 'Collapsed'
-        $Trend7EndMarker.Visibility = 'Collapsed'
+        Clear-TrendChartVisuals `
+            -Canvas $Trend24Canvas `
+            -Polyline $Trend24Line `
+            -Area $Trend24Area `
+            -StartMarker $Trend24StartMarker `
+            -EndMarker $Trend24EndMarker
+        Clear-TrendChartVisuals `
+            -Canvas $Trend7Canvas `
+            -Polyline $Trend7Line `
+            -Area $Trend7Area `
+            -StartMarker $Trend7StartMarker `
+            -EndMarker $Trend7EndMarker
         $RapidDropText.Text = if ($script:RapidDropAlertsEnabled) {
             '快速下降监控 · 正在积累样本'
         } else {
@@ -1138,6 +1221,7 @@ function Update-UsageInsightView {
         -StartMarker $Trend24StartMarker `
         -EndMarker $Trend24EndMarker `
         -Samples $Insights.Trend24Hours.Samples `
+        -Segments $Insights.Trend24Hours.Segments `
         -Hours 24
     Set-TrendChart `
         -Canvas $Trend7Canvas `
@@ -1146,6 +1230,7 @@ function Update-UsageInsightView {
         -StartMarker $Trend7StartMarker `
         -EndMarker $Trend7EndMarker `
         -Samples $Insights.Trend7Days.Samples `
+        -Segments $Insights.Trend7Days.Segments `
         -Hours (24 * 7)
 
     $rapidDrop = $Insights.RapidDrop
@@ -2029,12 +2114,14 @@ function Update-UsageView {
     )
 
     Assert-UsageSnapshotContract -Snapshot $Snapshot
+    $observedAt = [DateTimeOffset]::Now
     if (-not $DisplayOnly) {
         $script:LastSnapshot = $Snapshot
         if ([bool]$Snapshot.Available) {
             try {
                 [void](Save-UsageStateSnapshot `
                     -Snapshot $Snapshot `
+                    -ObservedAt $observedAt `
                     -Reason $ObservationContext)
                 if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
                     Set-RuntimeDiagnosticStatus `
@@ -2216,6 +2303,7 @@ function Update-UsageView {
         )
         $insights = Update-UsageHistory `
             -Snapshot $Snapshot `
+            -ObservedAt $observedAt `
             -RapidDropWindowMinutes $script:RapidDropWindowMinutes `
             -CodexRapidDropPercent $script:CodexRapidDropPercent `
             -DeepSeekRapidDropMode $script:DeepSeekRapidDropMode `
@@ -2225,7 +2313,8 @@ function Update-UsageView {
         $insights = Set-SessionRapidDropInsight `
             -Snapshot $Snapshot `
             -Insights $insights `
-            -ObservationContext $ObservationContext
+            -ObservationContext $ObservationContext `
+            -ObservedAt $observedAt
         $script:LastUsageInsights = $insights
         Update-UsageInsightView -Insights $insights
         if ($ObservationContext -in @('StartupLocal', 'StartupOfficial')) {

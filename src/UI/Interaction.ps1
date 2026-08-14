@@ -20,6 +20,28 @@ if (-not $isDiagnosticRun) {
 $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
 $script:IsRestoringSettings = $false
+try {
+    $historyBackfill = Invoke-UsageHistoryStateBackfill
+    if ($historyBackfill.AddedSamples -gt 0) {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'History' `
+            -Status 'Healthy' `
+            -Message ('已恢复 {0} 个历史趋势样本' -f $historyBackfill.AddedSamples)
+    }
+    elseif ($historyBackfill.FailedEntries -gt 0) {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'History' `
+            -Status 'Degraded' `
+            -Message ('有 {0} 个历史状态无法恢复' -f $historyBackfill.FailedEntries)
+    }
+}
+catch {
+    $script:LastUsageHistoryError = $_.Exception.Message
+    Set-RuntimeDiagnosticStatus `
+        -Area 'History' `
+        -Status 'Degraded' `
+        -Message $_.Exception.Message
+}
 [void](Restore-LatestUsageState)
 
 $script:AppContext.Refresh.IsBusy = $false
