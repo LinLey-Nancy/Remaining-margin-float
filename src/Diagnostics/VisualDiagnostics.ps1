@@ -633,16 +633,16 @@ if ($CheckTransitions) {
     $expandedHeaderHierarchy = (
         [string]$RemainingSummaryPanel.HorizontalAlignment -eq 'Left' -and
         [string]$RemainingNumberPanel.HorizontalAlignment -eq 'Left' -and
-        [double]$RemainingValue.FontSize -eq 28 -and
-        [double]$RemainingValue.LineHeight -eq 31 -and
-        [double]$CompactPrefix.FontSize -eq 10 -and
-        [double]$CompactSuffix.FontSize -eq 10 -and
+        [double]$RemainingValue.FontSize -eq 34 -and
+        [double]$RemainingValue.LineHeight -eq 37 -and
+        [double]$CompactPrefix.FontSize -eq 12 -and
+        [double]$CompactSuffix.FontSize -eq 12 -and
         [string]$WindowLabel.HorizontalAlignment -eq 'Left' -and
         [string]$ResetSummaryPanel.HorizontalAlignment -eq 'Right' -and
-        [double]$DetailsResetPrefix.FontSize -eq 10.5 -and
-        [double]$DetailsResetDate.FontSize -eq 10.5 -and
-        [double]$DetailsResetSeparator.FontSize -eq 10.5 -and
-        [double]$DetailsResetCountdown.FontSize -eq 10.5 -and
+        [double]$DetailsResetPrefix.FontSize -eq 12.5 -and
+        [double]$DetailsResetDate.FontSize -eq 12.5 -and
+        [double]$DetailsResetSeparator.FontSize -eq 12.5 -and
+        [double]$DetailsResetCountdown.FontSize -eq 12.5 -and
         [double]$DetailsResetDate.FontSize -lt 23 -and
         [double]$DetailsResetDate.FontSize -lt
             [double]$RemainingValue.FontSize
