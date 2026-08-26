@@ -114,11 +114,11 @@ Setup 官方不可变 GitHub Release 获取编译器，并在使用前验证其 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.8.8-Setup.exe
-Remaining-Margin-Float-v1.8.8-Setup.exe.sha256
+Remaining-Margin-Float-v1.9.0-Setup.exe
+Remaining-Margin-Float-v1.9.0-Setup.exe.sha256
 ```
 
-推送与 `VERSION` 一致的标签（例如 `v1.8.8`）后，`Windows 发布`工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.9.0`）后，`Windows 发布`工作流会
 在 Windows Runner 上测试、构建，并真实执行静默安装与卸载验证，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
@@ -200,7 +200,7 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 （包括每分钟自动刷新和手动刷新）都会追加样本，并保留最近 8 个本地日历日；
 DeepSeek 设置预算后会同时保留百分比与余额样本，以支持两种快速下降规则。记录不写入账号名称、邮箱、Token、API Key
 或访问令牌。右键菜单“数据与诊断”可导出或导入合并同一脱敏格式；换机导入后
-会依据目标电脑时区重新校准日期。从双周期版本起，只把明确标识为 5 小时额度的
+会依据目标电脑时区重新校准日期。Codex 1.9.0 起只把明确标识为 5 小时额度的
 样本用于趋势和提醒；旧版本留下的无周期标识 Codex 百分比样本不会混入新趋势。
 
 ## 常见问题
