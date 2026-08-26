@@ -134,9 +134,21 @@
         Available = $true
         HasProgress = $true
         RemainingPercent = 68
-        WindowLabel = '本周余量'
-        ResetDate = '8月1日 08:00'
-        ResetCountdown = '4 天 15 小时后'
+        WindowLabel = '5 小时余量'
+        ResetDate = '8月26日 16:20'
+        ResetCountdown = '3 小时 8 分钟后'
+        FiveHourAvailable = $true
+        FiveHourUsedPercent = 32
+        FiveHourRemainingPercent = 68
+        FiveHourResetDate = '8月26日 16:20'
+        FiveHourResetCountdown = '3 小时 8 分钟后'
+        FiveHourResetAt = [DateTimeOffset]::Now.AddHours(3)
+        WeeklyAvailable = $true
+        WeeklyUsedPercent = 9
+        WeeklyRemainingPercent = 91
+        WeeklyResetDate = '9月1日 22:25'
+        WeeklyResetCountdown = '6 天 9 小时后'
+        WeeklyResetAt = [DateTimeOffset]::Now.AddDays(6)
         ResetCount = '状态正常'
         Plan = 'Plus'
         AccountName = '本地 Codex'
@@ -147,7 +159,7 @@
         TodayCachedTokens = 245800
         TodayCacheHitPercent = 64.2
         SampledAt = Get-Date
-        ResetAt = [DateTimeOffset]::Now.AddDays(4)
+        ResetAt = [DateTimeOffset]::Now.AddHours(3)
         Status = '额度充足'
         Source = 'Codex 本地会话快照'
     }
@@ -157,6 +169,16 @@
     Update-UsageView -Snapshot $codexPreviewSnapshot
     Set-ExpandedState -Expanded $true -Immediate
     Wait-ForCaptureUi -Milliseconds 40
+    $codexQuotaLayoutReady = (
+        [string]$CodexQuotaPanel.Visibility -eq 'Visible' -and
+        [string]$ProviderMetricPanel.Visibility -eq 'Collapsed' -and
+        $FiveHourUsedValue.Text -eq '32%' -and
+        $FiveHourRemainingValue.Text -eq '68%' -and
+        $WeeklyUsedValue.Text -eq '9%' -and
+        $WeeklyRemainingValue.Text -eq '91%' -and
+        $UsageTrendTitle.Text -eq '5 小时额度趋势' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 68) -lt 0.01
+    )
     $expandedCodexPath = Join-Path $captureRoot 'expanded-codex.png'
     Save-VisualPng -Element $window -Path $expandedCodexPath
     $captureFiles['expanded-codex'] = $expandedCodexPath
@@ -515,6 +537,25 @@ if ($CheckTransitions) {
     $startupLocalSnapshot.ProviderId = 'Codex'
     $startupLocalSnapshot.HasProgress = $true
     $startupLocalSnapshot.RemainingPercent = 87
+    foreach ($quotaProperty in @{
+        FiveHourAvailable = $true
+        FiveHourUsedPercent = 13
+        FiveHourRemainingPercent = 87
+        FiveHourResetDate = '1月1日 17:00'
+        FiveHourResetCountdown = '3 小时后'
+        FiveHourResetAt = $diagnosticNow.AddHours(3)
+        WeeklyAvailable = $true
+        WeeklyUsedPercent = 4
+        WeeklyRemainingPercent = 96
+        WeeklyResetDate = '1月7日 12:00'
+        WeeklyResetCountdown = '6 天后'
+        WeeklyResetAt = $diagnosticNow.AddDays(6)
+    }.GetEnumerator()) {
+        $startupLocalSnapshot | Add-Member `
+            -NotePropertyName $quotaProperty.Key `
+            -NotePropertyValue $quotaProperty.Value `
+            -Force
+    }
     $startupLocalSnapshot | Add-Member `
         -NotePropertyName TodayCachedTokens `
         -NotePropertyValue 640000 `
@@ -527,13 +568,93 @@ if ($CheckTransitions) {
         -NotePropertyName TodayCacheHitPercent `
         -NotePropertyValue 64.0 `
         -Force
-    $startupLocalSnapshot.WindowLabel = '本周余量'
+    $startupLocalSnapshot.WindowLabel = '5 小时余量'
     $startupLocalSnapshot.Plan = 'Pro'
     $startupLocalSnapshot.Source = '本地会话余量快照'
     $startupLocalSnapshot.SampledAt = $diagnosticNow.AddHours(-8)
     Update-UsageView `
         -Snapshot $startupLocalSnapshot `
         -ObservationContext 'StartupLocal'
+    $codexQuotaLayoutReady = (
+        [string]$CodexQuotaPanel.Visibility -eq 'Visible' -and
+        [string]$ProviderMetricPanel.Visibility -eq 'Collapsed' -and
+        $FiveHourUsedValue.Text -eq '13%' -and
+        $FiveHourRemainingValue.Text -eq '87%' -and
+        $WeeklyUsedValue.Text -eq '4%' -and
+        $WeeklyRemainingValue.Text -eq '96%' -and
+        $UsageTrendTitle.Text -eq '5 小时额度趋势' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 87) -lt 0.01
+    )
+    $weeklyOnlySnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $weeklyOnlySnapshot.HasProgress = $false
+    $weeklyOnlySnapshot.RemainingPercent = 0
+    $weeklyOnlySnapshot.WindowLabel = '5 小时余量未知'
+    $weeklyOnlySnapshot.ResetDate = '暂无'
+    $weeklyOnlySnapshot.ResetCountdown = '等待 5 小时额度数据'
+    $weeklyOnlySnapshot.ResetAt = $null
+    $weeklyOnlySnapshot.FiveHourAvailable = $false
+    $weeklyOnlySnapshot.FiveHourUsedPercent = 0
+    $weeklyOnlySnapshot.FiveHourRemainingPercent = 0
+    $weeklyOnlySnapshot.FiveHourResetDate = '暂无'
+    $weeklyOnlySnapshot.FiveHourResetCountdown = '等待 5 小时额度数据'
+    $weeklyOnlySnapshot.FiveHourResetAt = $null
+    Update-UsageView -Snapshot $weeklyOnlySnapshot -DisplayOnly
+    $missingFiveHourRemainsUnknown = (
+        $RemainingValue.Text -eq '未知' -and
+        $CompactSuffix.Text -eq '' -and
+        $WindowLabel.Text -eq '5 小时余量未知' -and
+        $FiveHourUsedValue.Text -eq '未知' -and
+        $FiveHourRemainingValue.Text -eq '未知' -and
+        $WeeklyUsedValue.Text -eq '4%' -and
+        $WeeklyRemainingValue.Text -eq '96%' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value) -lt 0.01 -and
+        $UltraProgressTrack.ToolTip -eq '5 小时额度未知'
+    )
+    $historyCountBeforeWeeklyOnly = @($script:UsageHistoryCache).Count
+    $rapidSamplesBeforeWeeklyOnly = @($script:UsageSyncSession.RapidSamples)
+    $rapidChannelsBeforeWeeklyOnly = @{}
+    foreach ($key in @($script:UsageSyncSession.RapidChannels.Keys)) {
+        $rapidChannelsBeforeWeeklyOnly[$key] =
+            $script:UsageSyncSession.RapidChannels[$key]
+    }
+    $lastInsightsBeforeWeeklyOnly = $script:LastUsageInsights
+    $lastSnapshotBeforeWeeklyOnly = $script:LastSnapshot
+    Update-UsageView `
+        -Snapshot $weeklyOnlySnapshot `
+        -ObservationContext 'Normal'
+    $weeklyOnlyDoesNotDriveMonitoring = (
+        @($script:UsageHistoryCache).Count -eq $historyCountBeforeWeeklyOnly -and
+        $null -eq $script:LastUsageInsights.CurrentSample -and
+        -not [bool]$script:LastUsageInsights.RapidDrop.Available -and
+        -not (Test-LowRemainingAlertCondition `
+            -Snapshot $weeklyOnlySnapshot `
+            -PreviousSample $null `
+            -Threshold 20)
+    )
+    $script:UsageSyncSession.RapidSamples = $rapidSamplesBeforeWeeklyOnly
+    $script:UsageSyncSession.RapidChannels = $rapidChannelsBeforeWeeklyOnly
+    $script:LastUsageInsights = $lastInsightsBeforeWeeklyOnly
+    $script:LastSnapshot = $lastSnapshotBeforeWeeklyOnly
+    $conflictingQuotaSnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $conflictingQuotaSnapshot.RemainingPercent = 96
+    $conflictingQuotaSnapshot.FiveHourUsedPercent = 82
+    $conflictingQuotaSnapshot.FiveHourRemainingPercent = 18
+    $conflictingQuotaSnapshot.WeeklyUsedPercent = 4
+    $conflictingQuotaSnapshot.WeeklyRemainingPercent = 96
+    Update-UsageView -Snapshot $conflictingQuotaSnapshot -DisplayOnly
+    $fiveHourWinsConflictingQuotaValues = (
+        [double]$conflictingQuotaSnapshot.RemainingPercent -eq 18 -and
+        $RemainingValue.Text -eq '18' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 18) -lt 0.01 -and
+        (Test-LowRemainingAlertCondition `
+            -Snapshot $conflictingQuotaSnapshot `
+            -PreviousSample ([pscustomobject]@{
+                MetricType = 'Percent'
+                RemainingValue = 26
+            }) `
+            -Threshold 20)
+    )
+    Update-UsageView -Snapshot $startupLocalSnapshot -DisplayOnly
     $startupLocalRapidSuppressed = (
         [string]$RapidDropText.Text -match '本地快照不计入快速下降'
     )
@@ -543,6 +664,8 @@ if ($CheckTransitions) {
 
     $startupOfficialSnapshot = $startupLocalSnapshot.PSObject.Copy()
     $startupOfficialSnapshot.RemainingPercent = 56
+    $startupOfficialSnapshot.FiveHourRemainingPercent = 56
+    $startupOfficialSnapshot.FiveHourUsedPercent = 44
     $startupOfficialSnapshot.Source = '官方用量接口 · 本地令牌汇总'
     $startupOfficialSnapshot.SampledAt = $diagnosticNow
     Update-UsageView `
@@ -557,6 +680,8 @@ if ($CheckTransitions) {
 
     $localPreviewSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $localPreviewSnapshot.RemainingPercent = 20
+    $localPreviewSnapshot.FiveHourRemainingPercent = 20
+    $localPreviewSnapshot.FiveHourUsedPercent = 80
     $localPreviewSnapshot.Source = '本地会话余量快照'
     Update-UsageView `
         -Snapshot $localPreviewSnapshot `
@@ -567,6 +692,8 @@ if ($CheckTransitions) {
 
     $continuousOfficialSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $continuousOfficialSnapshot.RemainingPercent = 39
+    $continuousOfficialSnapshot.FiveHourRemainingPercent = 39
+    $continuousOfficialSnapshot.FiveHourUsedPercent = 61
     $continuousOfficialSnapshot.SampledAt = $diagnosticNow.AddMinutes(1)
     Update-UsageView -Snapshot $continuousOfficialSnapshot
     $continuousRapidDropDetected = (
@@ -575,6 +702,8 @@ if ($CheckTransitions) {
     )
     $gapSnapshot = $continuousOfficialSnapshot.PSObject.Copy()
     $gapSnapshot.RemainingPercent = 20
+    $gapSnapshot.FiveHourRemainingPercent = 20
+    $gapSnapshot.FiveHourUsedPercent = 80
     $gapInsights = [pscustomobject]@{ RapidDrop = $null }
     $gapInsights = Set-SessionRapidDropInsight `
         -Snapshot $gapSnapshot `
@@ -982,10 +1111,16 @@ if ($CheckTransitions) {
     $script:CodexRapidDropPercent = 10.0
     $settingsHourlyBaselineSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $settingsHourlyBaselineSnapshot.RemainingPercent = 60
+    $settingsHourlyBaselineSnapshot.FiveHourRemainingPercent = 60
+    $settingsHourlyBaselineSnapshot.FiveHourUsedPercent = 40
     $settingsBaselineSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $settingsBaselineSnapshot.RemainingPercent = 56
+    $settingsBaselineSnapshot.FiveHourRemainingPercent = 56
+    $settingsBaselineSnapshot.FiveHourUsedPercent = 44
     $settingsCurrentSnapshot = $startupOfficialSnapshot.PSObject.Copy()
     $settingsCurrentSnapshot.RemainingPercent = 55
+    $settingsCurrentSnapshot.FiveHourRemainingPercent = 55
+    $settingsCurrentSnapshot.FiveHourUsedPercent = 45
     $script:UsageSyncSession.RapidSamples = @(
         ConvertTo-UsageHistorySamples `
             -Snapshot $settingsHourlyBaselineSnapshot `
@@ -1161,6 +1296,10 @@ if ($CheckTransitions) {
         MultipleResetTrendSegmentsRendered = $multipleResetTrendSegmentsRendered
         DynamicTrendVisualsCleared = $dynamicTrendVisualsCleared
         TrendCardsFollowQuotaPalette = $trendCardsFollowQuotaPalette
+        CodexDualQuotaLayoutReady = $codexQuotaLayoutReady
+        MissingFiveHourRemainsUnknown = $missingFiveHourRemainsUnknown
+        WeeklyOnlyDoesNotDriveMonitoring = $weeklyOnlyDoesNotDriveMonitoring
+        FiveHourWinsConflictingQuotaValues = $fiveHourWinsConflictingQuotaValues
         TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
         TrendHealthyPaletteColor = $trendHealthyPaletteColor
         TrendLowBackgroundColor = $trendLowBackgroundColor

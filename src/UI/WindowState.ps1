@@ -1523,10 +1523,10 @@ function Format-StartupUsageSnapshotMessage {
         '本地快照'
     }
     $remainingText = if ($Snapshot -and [bool]$Snapshot.HasProgress) {
-        '余量 {0:0.#}%' -f [double]$Snapshot.RemainingPercent
+        '5 小时余量 {0:0.#}%' -f [double]$Snapshot.RemainingPercent
     }
     else {
-        '余量未知'
+        '5 小时余量未知'
     }
     $sampledAt = if ($Snapshot -and $Snapshot.SampledAt) {
         ([DateTimeOffset]$Snapshot.SampledAt).ToLocalTime()
@@ -1553,12 +1553,12 @@ function Invoke-StartupUsageSnapshotNotification {
     if ($ObservationContext -eq 'StartupLocal') {
         if ($script:UsageSyncSession.LocalNotificationShown) { return $false }
         $script:UsageSyncSession.LocalNotificationShown = $true
-        $title = 'Codex 本地余量快照'
+        $title = 'Codex 本地 5 小时余量快照'
     }
     else {
         if ($script:UsageSyncSession.OfficialNotificationShown) { return $false }
         $script:UsageSyncSession.OfficialNotificationShown = $true
-        $title = 'Codex 官方余量已同步'
+        $title = 'Codex 官方 5 小时余量已同步'
     }
 
     if ($isDiagnosticRun -or $Demo -or -not $script:TrayNotifyIcon) {
@@ -1745,7 +1745,7 @@ function New-LowRemainingAlertSettingsDialog {
             <TextBlock Text="使用提醒"
                        FontSize="19" FontWeight="SemiBold" Foreground="#343A35"/>
             <TextBlock Margin="0,5,0,0"
-                       Text="低余量和短时间快速下降分别判断，触发后通过 Windows 通知提醒。"
+                       Text="Codex 提醒跟随 5 小时额度；低余量和快速下降分别判断。"
                        FontSize="10.5" Foreground="#667069"/>
         </StackPanel>
 
@@ -1807,13 +1807,13 @@ function New-LowRemainingAlertSettingsDialog {
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="45"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Text="Codex 下降"
+            <TextBlock Text="Codex 5 小时下降"
                        VerticalAlignment="Center"
                        FontSize="11"
                        Foreground="#59635C"/>
             <TextBox x:Name="CodexDropBox" Grid.Column="1" Height="34"
                      Padding="9,6" BorderBrush="#D8DDD7" Background="White"
-                     AutomationProperties.Name="Codex 快速下降阈值"/>
+                      AutomationProperties.Name="Codex 5 小时额度快速下降阈值"/>
             <TextBlock Grid.Column="2" Text="百分点" Margin="10,7,0,0"
                        FontSize="10" Foreground="#4E5750"/>
         </Grid>
@@ -2020,9 +2020,13 @@ function Invoke-LowRemainingAlert {
     $title = if ($providerId -eq 'DeepSeek') {
         'DeepSeek 预算余量偏低'
     } else {
-        'Codex 余量偏低'
+        'Codex 5 小时余量偏低'
     }
-    $message = '当前剩余 {0:0}% · {1}' -f $remaining, $Insights.Forecast.Text
+    $message = if ($providerId -eq 'Codex') {
+        '5 小时当前剩余 {0:0}% · {1}' -f $remaining, $Insights.Forecast.Text
+    } else {
+        '当前剩余 {0:0}% · {1}' -f $remaining, $Insights.Forecast.Text
+    }
     try {
         $script:TrayNotifyIcon.ShowBalloonTip(
             8000,
@@ -2073,7 +2077,11 @@ function Invoke-RapidDropAlert {
     ) {
         return $false
     }
-    $title = '{0} 余量快速下降' -f $rapidDrop.ProviderId
+    $title = if ($rapidDrop.ProviderId -eq 'Codex') {
+        'Codex 5 小时余量快速下降'
+    } else {
+        '{0} 余量快速下降' -f $rapidDrop.ProviderId
+    }
     $currentText = if ($rapidDrop.MetricType -eq 'Percent') {
         '当前剩余 {0:0.#}%' -f $rapidDrop.CurrentValue
     } else {
@@ -2145,6 +2153,45 @@ function Set-UsageSnapshotProvenance {
     return $freshness
 }
 
+function Set-CodexQuotaBand {
+    param(
+        [bool]$Available,
+        [double]$UsedPercent,
+        [double]$RemainingPercent,
+        [string]$ResetDate,
+        [string]$ResetCountdown,
+        [string]$UnknownText,
+        $ResetText,
+        $UsedValue,
+        $RemainingValue,
+        $RemainingColumn,
+        $UsedColumn
+    )
+
+    $remaining = if ($Available) {
+        [Math]::Max(0.0, [Math]::Min(100.0, $RemainingPercent))
+    } else { 0.0 }
+    $used = if ($Available) {
+        [Math]::Max(0.0, [Math]::Min(100.0, $UsedPercent))
+    } else { 100.0 }
+    $UsedValue.Text = if ($Available) { '{0:0}%' -f $used } else { '未知' }
+    $RemainingValue.Text = if ($Available) { '{0:0}%' -f $remaining } else { '未知' }
+    $ResetText.Text = if ($Available) { $ResetCountdown } else { $UnknownText }
+    $ResetText.ToolTip = if ($Available) {
+        '{0} · {1}' -f $ResetDate, $ResetCountdown
+    } else {
+        $UnknownText
+    }
+    $RemainingColumn.Width = New-Object Windows.GridLength(
+        $remaining,
+        [Windows.GridUnitType]::Star
+    )
+    $UsedColumn.Width = New-Object Windows.GridLength(
+        $used,
+        [Windows.GridUnitType]::Star
+    )
+}
+
 function Update-UsageView {
     param(
         $Snapshot,
@@ -2158,6 +2205,31 @@ function Update-UsageView {
         [switch]$DisplayOnly
     )
 
+    if ([string]$Snapshot.ProviderId -eq 'Codex') {
+        $hasFiveHourQuota = (
+            $Snapshot.PSObject.Properties['FiveHourAvailable'] -and
+            [bool]$Snapshot.FiveHourAvailable
+        )
+        $Snapshot.HasProgress = $hasFiveHourQuota
+        $Snapshot.RemainingPercent = if ($hasFiveHourQuota) {
+            [double](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'FiveHourRemainingPercent' `
+                -Default 0)
+        } else { 0.0 }
+        if (-not $hasFiveHourQuota) {
+            $Snapshot.WindowLabel = '5 小时余量未知'
+            if ($Snapshot.PSObject.Properties['ResetDate']) {
+                $Snapshot.ResetDate = '暂无'
+            }
+            if ($Snapshot.PSObject.Properties['ResetCountdown']) {
+                $Snapshot.ResetCountdown = '等待 5 小时额度数据'
+            }
+            if ($Snapshot.PSObject.Properties['ResetAt']) {
+                $Snapshot.ResetAt = $null
+            }
+        }
+    }
     Assert-UsageSnapshotContract -Snapshot $Snapshot
     $observedAt = [DateTimeOffset]::Now
     if (-not $DisplayOnly) {
@@ -2221,10 +2293,39 @@ function Update-UsageView {
             }) `
             -ObservedAt ([DateTimeOffset]$Snapshot.SampledAt)
     }
-    $WindowLabel.Text = $Snapshot.WindowLabel
-    $ExpandedWindowLabel.Text = $Snapshot.WindowLabel
-    $DetailsResetDate.Text = $Snapshot.ResetDate
-    $DetailsResetCountdown.Text = $Snapshot.ResetCountdown
+    $isCodex = [string]$Snapshot.ProviderId -eq 'Codex'
+    $codexFiveHourAvailable = (
+        $isCodex -and
+        $Snapshot.PSObject.Properties['FiveHourAvailable'] -and
+        [bool]$Snapshot.FiveHourAvailable
+    )
+    $codexFiveHourRemaining = if ($codexFiveHourAvailable) {
+        [double](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'FiveHourRemainingPercent' `
+            -Default 0)
+    } else { 0.0 }
+    $displayWindowLabel = if ($isCodex -and -not $codexFiveHourAvailable) {
+        '5 小时余量未知'
+    } else {
+        [string]$Snapshot.WindowLabel
+    }
+    $WindowLabel.Text = $displayWindowLabel
+    $ExpandedWindowLabel.Text = $displayWindowLabel
+    $DetailsResetDate.Text = if ($codexFiveHourAvailable) {
+        [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'FiveHourResetDate' `
+            -Default '暂无')
+    } elseif ($isCodex) { '暂无' } else { [string]$Snapshot.ResetDate }
+    $DetailsResetCountdown.Text = if ($codexFiveHourAvailable) {
+        [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'FiveHourResetCountdown' `
+            -Default '等待 5 小时额度数据')
+    } elseif ($isCodex) { '等待 5 小时额度数据' } else {
+        [string]$Snapshot.ResetCountdown
+    }
     $AccountName.Text = $Snapshot.AccountName
     $PlanBadge.Text = $Snapshot.Plan
     $AccountEmail.Text = $Snapshot.AccountEmail
@@ -2246,6 +2347,9 @@ function Update-UsageView {
     }
 
     if ($Snapshot.ProviderId -eq 'DeepSeek') {
+        $CodexQuotaPanel.Visibility = 'Collapsed'
+        $ProviderMetricPanel.Visibility = 'Visible'
+        $UsageTrendTitle.Text = '使用趋势'
         if ($Snapshot.HasProgress) {
             $CompactPrefix.Text = ''
             $RemainingValue.Text = [string][int]$Snapshot.RemainingPercent
@@ -2285,34 +2389,84 @@ function Update-UsageView {
         Set-Progress -Percent $Snapshot.RemainingPercent -Available $Snapshot.HasProgress
     }
     else {
+        $CodexQuotaPanel.Visibility = 'Visible'
+        $ProviderMetricPanel.Visibility = 'Collapsed'
+        $UsageTrendTitle.Text = '5 小时额度趋势'
+        $weeklyAvailable = (
+            $Snapshot.PSObject.Properties['WeeklyAvailable'] -and
+            [bool]$Snapshot.WeeklyAvailable
+        )
+        Set-CodexQuotaBand `
+            -Available $codexFiveHourAvailable `
+            -UsedPercent ([double](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'FiveHourUsedPercent' `
+                -Default 0)) `
+            -RemainingPercent $codexFiveHourRemaining `
+            -ResetDate ([string](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'FiveHourResetDate' `
+                -Default '暂无')) `
+            -ResetCountdown ([string](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'FiveHourResetCountdown' `
+                -Default '等待 5 小时额度数据')) `
+            -UnknownText '等待 5 小时额度数据' `
+            -ResetText $FiveHourResetText `
+            -UsedValue $FiveHourUsedValue `
+            -RemainingValue $FiveHourRemainingValue `
+            -RemainingColumn $FiveHourRemainingColumn `
+            -UsedColumn $FiveHourUsedColumn
+        Set-CodexQuotaBand `
+            -Available $weeklyAvailable `
+            -UsedPercent ([double](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'WeeklyUsedPercent' `
+                -Default 0)) `
+            -RemainingPercent ([double](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'WeeklyRemainingPercent' `
+                -Default 0)) `
+            -ResetDate ([string](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'WeeklyResetDate' `
+                -Default '暂无')) `
+            -ResetCountdown ([string](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'WeeklyResetCountdown' `
+                -Default '等待每周额度数据')) `
+            -UnknownText '等待每周额度数据' `
+            -ResetText $WeeklyResetText `
+            -UsedValue $WeeklyUsedValue `
+            -RemainingValue $WeeklyRemainingValue `
+            -RemainingColumn $WeeklyRemainingColumn `
+            -UsedColumn $WeeklyUsedColumn
         $CompactPrefix.Text = ''
-        $RemainingValue.Text = if ($Snapshot.HasProgress) {
-            [string][int]$Snapshot.RemainingPercent
-        } else { '--' }
-        $CompactSuffix.Text = if ($Snapshot.HasProgress) { '%' } else { '' }
-        $MetricOneTitle.Text = '已用额度'
-        $PrimaryMetricValue.Text = if ($Snapshot.HasProgress) {
-            '{0:0}%' -f (100 - $Snapshot.RemainingPercent)
-        } else { '--' }
-        $PrimaryMetricHint.Text = if ($Snapshot.HasProgress) {
-            '剩余 {0:0}%' -f $Snapshot.RemainingPercent
-        } else { '暂无可用余量快照' }
-        $MetricTwoTitle.Text = '今日 TOKEN'
-        $TodayTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
-        $MetricTwoHint.Text = '本机任务累计'
-        $MetricThreeTitle.Text = '今日缓存'
-        $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayCachedTokens
-        $ContextText.Text = '命中 {0:0.0}%' -f $Snapshot.TodayCacheHitPercent
-        $MetricFourTitle.Text = '今日输出'
-        $CacheHit.Text = Format-CompactNumber $Snapshot.TodayOutputTokens
-        $CacheTokenText.Text = '所有本机任务'
-        $BreakdownTitle.Text = '统计口径'
-        $TokenBreakdown.Text = '本机今日全部任务'
-        $SecondaryMetricTitle.Text = '额度状态'
-        $ResetCount.Text = $Snapshot.Status
+        $RemainingValue.Text = if ($codexFiveHourAvailable) {
+            [string][int]$codexFiveHourRemaining
+        } else { '未知' }
+        $CompactSuffix.Text = if ($codexFiveHourAvailable) { '%' } else { '' }
+        $BreakdownTitle.Text = '今日 TOKEN'
+        $TokenBreakdown.Text = '{0} · 输出 {1}' -f `
+            (Format-CompactNumber $Snapshot.TodayTokens), `
+            (Format-CompactNumber $Snapshot.TodayOutputTokens)
+        $SecondaryMetricTitle.Text = '今日缓存'
+        $ResetCount.Text = '{0} · 命中 {1:0.0}%' -f `
+            (Format-CompactNumber $Snapshot.TodayCachedTokens), `
+            [double]$Snapshot.TodayCacheHitPercent
         Set-Progress `
-            -Percent $Snapshot.RemainingPercent `
-            -Available $Snapshot.HasProgress
+            -Percent $codexFiveHourRemaining `
+            -Available $codexFiveHourAvailable
+        $ProgressTrack.ToolTip = if ($codexFiveHourAvailable) {
+            '5 小时余额 {0:0}% · 已使用 {1:0}%' -f `
+                $codexFiveHourRemaining,
+                (100 - $codexFiveHourRemaining)
+        } else { '5 小时额度未知' }
+        $UltraProgressTrack.ToolTip = if ($codexFiveHourAvailable) {
+            '5 小时余额 {0:0}% · 已使用 {1:0}%' -f `
+                $codexFiveHourRemaining,
+                (100 - $codexFiveHourRemaining)
+        } else { '5 小时额度未知' }
     }
 
     if ($script:TrayNotifyIcon) {
@@ -2323,10 +2477,11 @@ function Update-UsageView {
                 'DeepSeek 等待配置 · 单击打开详情'
             }
         } else {
-            if ($Snapshot.HasProgress) {
-                'Codex 余量 {0}% · 单击打开详情' -f [int]$Snapshot.RemainingPercent
+            if ($codexFiveHourAvailable) {
+                'Codex 5 小时余量 {0}% · 单击打开详情' -f `
+                    [int]$codexFiveHourRemaining
             } else {
-                'Codex 余量暂不可用 · 单击打开详情'
+                'Codex 5 小时余量未知 · 单击打开详情'
             }
         }
     }

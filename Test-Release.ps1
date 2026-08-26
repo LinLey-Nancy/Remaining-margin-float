@@ -72,7 +72,20 @@ $runtimeVersionMatches = @(
         [regex]::Matches($content, $runtimeVersionPattern)
     }
 )
-if ($runtimeVersionMatches.Count -eq 0) {
+$dynamicRuntimeVersionPattern =
+    '(?is)(?:remaining-margin-float|RemainingMarginFloat).{0,120}\$script:AppVersion'
+$dynamicRuntimeVersionFiles = @(
+    foreach ($runtimeFile in $runtimeFiles) {
+        $content = Get-Content -LiteralPath $runtimeFile -Raw
+        if ($content -match $dynamicRuntimeVersionPattern) {
+            $runtimeFile
+        }
+    }
+)
+if (
+    $runtimeVersionMatches.Count -eq 0 -and
+    $dynamicRuntimeVersionFiles.Count -eq 0
+) {
     throw 'No runtime User-Agent version marker was found.'
 }
 foreach ($runtimeVersionMatch in $runtimeVersionMatches) {
@@ -80,6 +93,25 @@ foreach ($runtimeVersionMatch in $runtimeVersionMatches) {
         throw (
             'Runtime User-Agent version does not match VERSION: ' +
             $runtimeVersionMatch.Value
+        )
+    }
+}
+$appVersionPattern =
+    '(?i)\$script:AppVersion\s*=\s*[''"](?<version>\d+\.\d+\.\d+)[''"]'
+$appVersionMatches = @(
+    foreach ($runtimeFile in $runtimeFiles) {
+        $content = Get-Content -LiteralPath $runtimeFile -Raw
+        [regex]::Matches($content, $appVersionPattern)
+    }
+)
+if ($dynamicRuntimeVersionFiles.Count -gt 0 -and $appVersionMatches.Count -eq 0) {
+    throw 'Dynamic User-Agent version marker has no AppVersion definition.'
+}
+foreach ($appVersionMatch in $appVersionMatches) {
+    if ($appVersionMatch.Groups['version'].Value -ne $Version) {
+        throw (
+            'Runtime AppVersion does not match VERSION: ' +
+            $appVersionMatch.Value
         )
     }
 }

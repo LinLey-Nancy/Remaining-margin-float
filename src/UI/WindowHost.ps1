@@ -583,6 +583,11 @@ $names = @(
     'UsedProgressColumn', 'DetailsPanel', 'AccountName',
     'PlanBadge', 'AccountEmail', 'CloseButton', 'DetailsResetPrefix',
     'DetailsResetDate', 'DetailsResetSeparator', 'DetailsResetCountdown',
+    'CodexQuotaPanel', 'ProviderMetricPanel',
+    'FiveHourResetText', 'FiveHourUsedValue', 'FiveHourRemainingValue',
+    'FiveHourRemainingColumn', 'FiveHourUsedColumn',
+    'WeeklyResetText', 'WeeklyUsedValue', 'WeeklyRemainingValue',
+    'WeeklyRemainingColumn', 'WeeklyUsedColumn',
     'MetricOneTitle', 'PrimaryMetricValue',
     'PrimaryMetricHint', 'MetricTwoTitle', 'MetricTwoHint',
     'TodayTokens', 'MetricThreeTitle', 'LastTurnTokens', 'ContextText',
@@ -592,7 +597,7 @@ $names = @(
     'Trend24StartMarker', 'Trend24EndMarker', 'Trend24MetaText',
     'Trend7Card', 'Trend7Text', 'Trend7Canvas', 'Trend7Area', 'Trend7Line',
     'Trend7StartMarker', 'Trend7EndMarker', 'Trend7MetaText',
-    'PredictionText', 'RapidDropStatusDot', 'RapidDropText',
+    'UsageTrendTitle', 'PredictionText', 'RapidDropStatusDot', 'RapidDropText',
     'FooterStatusText', 'VersionLabelText', 'AppVersionText',
     'VersionSeparatorText', 'AutoRefreshText', 'RefreshButton'
 )

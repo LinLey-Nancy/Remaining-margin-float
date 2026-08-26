@@ -114,6 +114,12 @@ function Get-CodexCurrentUsageOverride {
         UsedPercent = [double]$OfficialUsage.UsedPercent
         WindowMinutes = [int]$OfficialUsage.WindowMinutes
         ResetsAt = $resetsAt
+        FiveHourWindow = Get-ObjectPropertyValue `
+            -Object $OfficialUsage `
+            -Name 'FiveHourWindow'
+        WeeklyWindow = Get-ObjectPropertyValue `
+            -Object $OfficialUsage `
+            -Name 'WeeklyWindow'
         PlanType = [string]$OfficialUsage.PlanType
         SampledAt = [DateTimeOffset]$OfficialUsage.SampledAt
         IsCached = $true

@@ -97,8 +97,10 @@ Assert-Diagnostic -Condition ($codex.SelectedResetAt -eq 1893459600) `
 
 $contracts = Invoke-JsonDiagnostic -Name 'CheckProviderContracts'
 Assert-Diagnostic -Condition (
-    [Math]::Abs([double]$contracts.CodexUsedPercent - 37) -lt 0.0001 -and
-    $contracts.CodexWindowMinutes -eq 10080 -and
+    [Math]::Abs([double]$contracts.CodexUsedPercent - 18) -lt 0.0001 -and
+    $contracts.CodexWindowMinutes -eq 300 -and
+    $contracts.CodexFiveHourUsedPercent -eq 18 -and
+    $contracts.CodexWeeklyUsedPercent -eq 37 -and
     $contracts.CodexPlan -eq 'prolite'
 ) -Message 'Codex official response contract fixture'
 Assert-Diagnostic -Condition (
@@ -231,6 +233,8 @@ Assert-Diagnostic -Condition ([bool]$history.RestartReloadRoundTrip) `
     -Message 'History restart reload round trip'
 Assert-Diagnostic -Condition ([bool]$history.LegacyHistoryMigration) `
     -Message 'Legacy history schema migration'
+Assert-Diagnostic -Condition ([bool]$history.LegacyWeeklyCodexExcluded) `
+    -Message 'Legacy weekly Codex history isolation'
 Assert-Diagnostic -Condition ([bool]$history.CalendarDateAligned) `
     -Message 'History local calendar date alignment'
 Assert-Diagnostic -Condition ([bool]$history.ImportMergeRoundTrip) `
@@ -473,6 +477,18 @@ Assert-Diagnostic `
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendCardsFollowQuotaPalette) `
     -Message 'Trend card backgrounds follow quota palette'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.CodexDualQuotaLayoutReady) `
+    -Message 'Codex five-hour and weekly quota layout'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.MissingFiveHourRemainsUnknown) `
+    -Message 'Missing Codex five-hour quota remains unknown'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.WeeklyOnlyDoesNotDriveMonitoring) `
+    -Message 'Weekly-only quota does not drive Codex monitoring'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.FiveHourWinsConflictingQuotaValues) `
+    -Message 'Five-hour quota wins conflicting Codex values'
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendTimeAxisAligned) `
     -Message 'Trend chart uses elapsed-time x coordinates'

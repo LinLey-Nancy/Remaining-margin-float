@@ -336,81 +336,194 @@
                             CornerRadius="12"
                             Padding="14,6">
                         <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*"/>
-                                <RowDefinition Height="5"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
+                            <Grid x:Name="CodexQuotaPanel" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="5"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
 
-                            <Border Grid.Row="0"
-                                    Background="Transparent"
-                                    BorderThickness="0">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="18"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="104"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="5 小时"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="11.5"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="FiveHourResetText"
+                                                   Margin="0,4,8,0"
+                                                   Text="等待数据"
+                                                   Style="{StaticResource MetricHintText}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="已用" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="FiveHourUsedValue"
+                                                   Text="--"
+                                                   Style="{StaticResource MetricValueText}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="余额"
+                                                   HorizontalAlignment="Right"
+                                                   Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="FiveHourRemainingValue"
+                                                   Text="--"
+                                                   HorizontalAlignment="Right"
+                                                   Foreground="{DynamicResource StatusStrong}"
+                                                   Style="{StaticResource MetricValueText}"/>
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Grid.ColumnSpan="2"
+                                            Height="3"
+                                            Margin="0,0,0,1"
+                                            VerticalAlignment="Bottom"
+                                            Background="#DCE1DC"
+                                            CornerRadius="1.5"
+                                            ClipToBounds="True">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition x:Name="FiveHourRemainingColumn" Width="0*"/>
+                                                <ColumnDefinition x:Name="FiveHourUsedColumn" Width="100*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Background="{DynamicResource Sage}"/>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
 
-                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                    <TextBlock x:Name="MetricOneTitle" Text="已用额度" Style="{StaticResource MetricTitleText}"/>
-                                    <TextBlock x:Name="PrimaryMetricValue"
-                                               Text="--"
-                                               Style="{StaticResource MetricValueText}"
-                                               Foreground="{DynamicResource StatusStrong}"/>
-                                    <TextBlock x:Name="PrimaryMetricHint"
-                                               Text="剩余 --"
-                                               Style="{StaticResource MetricHintText}"
-                                               TextTrimming="CharacterEllipsis"/>
-                                </StackPanel>
+                                <Border Grid.Row="1"
+                                        Height="1"
+                                        VerticalAlignment="Center"
+                                        Background="#DCE2DC"/>
 
-                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                    <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Style="{StaticResource MetricTitleText}"/>
-                                    <TextBlock x:Name="TodayTokens" Text="--" Style="{StaticResource MetricValueText}"/>
-                                    <TextBlock x:Name="MetricTwoHint"
-                                               Text="本机任务累计"
-                                               Style="{StaticResource MetricHintText}"
-                                               TextTrimming="CharacterEllipsis"/>
-                                </StackPanel>
+                                <Grid Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="104"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="每周"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="11.5"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock x:Name="WeeklyResetText"
+                                                   Margin="0,4,8,0"
+                                                   Text="等待数据"
+                                                   Style="{StaticResource MetricHintText}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="已用" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="WeeklyUsedValue"
+                                                   Text="--"
+                                                   Style="{StaticResource MetricValueText}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="余额"
+                                                   HorizontalAlignment="Right"
+                                                   Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="WeeklyRemainingValue"
+                                                   Text="--"
+                                                   HorizontalAlignment="Right"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   Style="{StaticResource MetricValueText}"/>
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Grid.ColumnSpan="2"
+                                            Height="3"
+                                            Margin="0,0,0,1"
+                                            VerticalAlignment="Bottom"
+                                            Background="#DCE1DC"
+                                            CornerRadius="1.5"
+                                            ClipToBounds="True">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition x:Name="WeeklyRemainingColumn" Width="0*"/>
+                                                <ColumnDefinition x:Name="WeeklyUsedColumn" Width="100*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Background="#96A39A"/>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
                             </Grid>
-                            </Border>
 
-                            <Border Grid.Row="1"
-                                    Height="1"
-                                    VerticalAlignment="Center"
-                                    Background="#E0E5DF"/>
+                            <Grid x:Name="ProviderMetricPanel">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="5"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
 
-                            <Border Grid.Row="2"
-                                    Background="Transparent"
-                                    BorderThickness="0">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="18"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="18"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
 
-                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                    <TextBlock x:Name="MetricThreeTitle" Text="今日输入" Style="{StaticResource MetricTitleText}"/>
-                                    <TextBlock x:Name="LastTurnTokens" Text="--" Style="{StaticResource MetricValueText}"/>
-                                    <TextBlock x:Name="ContextText"
-                                               Text="所有本机任务"
-                                               Style="{StaticResource MetricHintText}"
-                                               TextTrimming="CharacterEllipsis"
-                                               ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
-                                </StackPanel>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock x:Name="MetricOneTitle" Text="已用额度" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="PrimaryMetricValue"
+                                                   Text="--"
+                                                   Style="{StaticResource MetricValueText}"
+                                                   Foreground="{DynamicResource StatusStrong}"/>
+                                        <TextBlock x:Name="PrimaryMetricHint"
+                                                   Text="剩余 --"
+                                                   Style="{StaticResource MetricHintText}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
 
-                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                    <TextBlock x:Name="MetricFourTitle" Text="今日输出" Style="{StaticResource MetricTitleText}"/>
-                                    <TextBlock x:Name="CacheHit" Text="--" Style="{StaticResource MetricValueText}"/>
-                                    <TextBlock x:Name="CacheTokenText"
-                                               Text="所有本机任务"
-                                               Style="{StaticResource MetricHintText}"
-                                               TextTrimming="CharacterEllipsis"
-                                               ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
-                                </StackPanel>
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                        <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="TodayTokens" Text="--" Style="{StaticResource MetricValueText}"/>
+                                        <TextBlock x:Name="MetricTwoHint"
+                                                   Text="本机任务累计"
+                                                   Style="{StaticResource MetricHintText}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <Border Grid.Row="1"
+                                        Height="1"
+                                        VerticalAlignment="Center"
+                                        Background="#E0E5DF"/>
+
+                                <Grid Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="18"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock x:Name="MetricThreeTitle" Text="今日输入" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="LastTurnTokens" Text="--" Style="{StaticResource MetricValueText}"/>
+                                        <TextBlock x:Name="ContextText"
+                                                   Text="所有本机任务"
+                                                   Style="{StaticResource MetricHintText}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                        <TextBlock x:Name="MetricFourTitle" Text="今日输出" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="CacheHit" Text="--" Style="{StaticResource MetricValueText}"/>
+                                        <TextBlock x:Name="CacheTokenText"
+                                                   Text="所有本机任务"
+                                                   Style="{StaticResource MetricHintText}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                    </StackPanel>
+                                </Grid>
                             </Grid>
-                            </Border>
                         </Grid>
                     </Border>
 
@@ -463,7 +576,8 @@
                         </Grid.RowDefinitions>
 
                         <Grid Grid.Row="0">
-                            <TextBlock Text="使用趋势"
+                            <TextBlock x:Name="UsageTrendTitle"
+                                       Text="使用趋势"
                                        Style="{StaticResource SectionTitleText}"/>
                             <TextBlock x:Name="PredictionText"
                                        HorizontalAlignment="Right"

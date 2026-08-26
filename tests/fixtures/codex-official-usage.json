@@ -5,6 +5,11 @@
       "used_percent": 37,
       "limit_window_seconds": 604800,
       "reset_at": 1894060800
+    },
+    "secondary_window": {
+      "used_percent": 18,
+      "limit_window_seconds": 18000,
+      "reset_at": 1893517200
     }
   },
   "additional_rate_limits": [
