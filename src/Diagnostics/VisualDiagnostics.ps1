@@ -150,7 +150,9 @@
         WeeklyResetCountdown = '6 天 9 小时后'
         WeeklyResetAt = [DateTimeOffset]::Now.AddDays(6)
         ResetCount = '状态正常'
+        PlanType = 'plus'
         Plan = 'Plus'
+        PrimaryQuotaPeriod = 'FiveHour'
         AccountName = '本地 Codex'
         AccountEmail = '本机账户信息'
         TodayTokens = 382640
@@ -167,21 +169,101 @@
         -Snapshot $codexPreviewSnapshot `
         -Values @(91, 88, 85, 82, 78, 74, 71, 68)
     Update-UsageView -Snapshot $codexPreviewSnapshot
+
+    Clear-EdgeDock
+    $window.Left = 24
+    $window.Top = 24
+    Set-ExpandedState -Expanded $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $codexPlusCompactPath = Join-Path $captureRoot 'codex-plus-compact.png'
+    Save-VisualPng -Element $window -Path $codexPlusCompactPath
+    $captureFiles['codex-plus-compact'] = $codexPlusCompactPath
+
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $codexPlusEdgePath = Join-Path $captureRoot 'codex-plus-edge.png'
+    Save-VisualPng -Element $window -Path $codexPlusEdgePath
+    $captureFiles['codex-plus-edge'] = $codexPlusEdgePath
+
+    Clear-EdgeDock
+    $window.Left = 24
+    $window.Top = 24
     Set-ExpandedState -Expanded $true -Immediate
     Wait-ForCaptureUi -Milliseconds 40
+    if ([Math]::Abs($window.ActualHeight - 522) -gt 0.01) {
+        throw "Plus detail height should fit its content at 522, got $($window.ActualHeight)."
+    }
     $codexQuotaLayoutReady = (
         [string]$CodexQuotaPanel.Visibility -eq 'Visible' -and
         [string]$ProviderMetricPanel.Visibility -eq 'Collapsed' -and
+        [Math]::Abs($QuotaMetricRow.Height.Value - 48) -lt 0.01 -and
+        [string]$FiveHourQuotaBand.Visibility -eq 'Collapsed' -and
+        [string]$QuotaDivider.Visibility -eq 'Collapsed' -and
+        [string]$WeeklyQuotaBand.Visibility -eq 'Visible' -and
+        [string]$WeeklyQuotaBand.VerticalAlignment -eq 'Stretch' -and
+        [double]::IsNaN($WeeklyQuotaBand.Height) -and
+        [string]$WeeklyUsedValue.Visibility -eq 'Collapsed' -and
+        [Windows.Automation.AutomationProperties]::GetName(
+            $WeeklyQuotaBand
+        ) -match '每周额度，剩余 91%，已用 9%' -and
         $FiveHourUsedValue.Text -eq '32%' -and
         $FiveHourRemainingValue.Text -eq '68%' -and
         $WeeklyUsedValue.Text -eq '9%' -and
         $WeeklyRemainingValue.Text -eq '91%' -and
+        $RemainingValue.Text -eq '68' -and
+        $WindowLabel.Text -eq '5 小时余量' -and
         $UsageTrendTitle.Text -eq '5 小时额度趋势' -and
         [Math]::Abs($UltraRemainingProgressRow.Height.Value - 68) -lt 0.01
     )
-    $expandedCodexPath = Join-Path $captureRoot 'expanded-codex.png'
+    $expandedCodexPath = Join-Path $captureRoot 'codex-plus-details.png'
     Save-VisualPng -Element $window -Path $expandedCodexPath
-    $captureFiles['expanded-codex'] = $expandedCodexPath
+    $captureFiles['codex-plus-details'] = $expandedCodexPath
+
+    $codexProPreviewSnapshot = $codexPreviewSnapshot.PSObject.Copy()
+    $codexProPreviewSnapshot.HasProgress = $true
+    $codexProPreviewSnapshot.RemainingPercent = 91
+    $codexProPreviewSnapshot.WindowLabel = '每周余量'
+    $codexProPreviewSnapshot.ResetDate = $codexProPreviewSnapshot.WeeklyResetDate
+    $codexProPreviewSnapshot.ResetCountdown = `
+        $codexProPreviewSnapshot.WeeklyResetCountdown
+    $codexProPreviewSnapshot.ResetAt = $codexProPreviewSnapshot.WeeklyResetAt
+    $codexProPreviewSnapshot.FiveHourAvailable = $false
+    $codexProPreviewSnapshot.PlanType = 'pro'
+    $codexProPreviewSnapshot.Plan = 'Pro'
+    $codexProPreviewSnapshot.PrimaryQuotaPeriod = 'Weekly'
+    Set-CaptureUsageHistory `
+        -Snapshot $codexProPreviewSnapshot `
+        -Values @(99, 98, 97, 95, 94, 93, 92, 91)
+    Update-UsageView -Snapshot $codexProPreviewSnapshot
+
+    Clear-EdgeDock
+    $window.Left = 24
+    $window.Top = 24
+    Set-ExpandedState -Expanded $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $codexProCompactPath = Join-Path $captureRoot 'codex-pro-compact.png'
+    Save-VisualPng -Element $window -Path $codexProCompactPath
+    $captureFiles['codex-pro-compact'] = $codexProCompactPath
+
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $codexProEdgePath = Join-Path $captureRoot 'codex-pro-edge.png'
+    Save-VisualPng -Element $window -Path $codexProEdgePath
+    $captureFiles['codex-pro-edge'] = $codexProEdgePath
+
+    Clear-EdgeDock
+    $window.Left = 24
+    $window.Top = 24
+    Set-ExpandedState -Expanded $true -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    if ([Math]::Abs($window.ActualHeight - 474) -gt 0.01) {
+        throw "Pro detail height should fit its content at 474, got $($window.ActualHeight)."
+    }
+    $expandedCodexProPath = Join-Path $captureRoot 'codex-pro-details.png'
+    Save-VisualPng -Element $window -Path $expandedCodexProPath
+    $captureFiles['codex-pro-details'] = $expandedCodexProPath
 
     $window.Close()
     [pscustomobject]$captureFiles | ConvertTo-Json
@@ -570,39 +652,98 @@ if ($CheckTransitions) {
         -Force
     $startupLocalSnapshot.WindowLabel = '5 小时余量'
     $startupLocalSnapshot.Plan = 'Pro'
+    $startupLocalSnapshot | Add-Member `
+        -NotePropertyName PlanType `
+        -NotePropertyValue 'pro' `
+        -Force
+    $startupLocalSnapshot | Add-Member `
+        -NotePropertyName PrimaryQuotaPeriod `
+        -NotePropertyValue 'Weekly' `
+        -Force
     $startupLocalSnapshot.Source = '本地会话余量快照'
     $startupLocalSnapshot.SampledAt = $diagnosticNow.AddHours(-8)
     Update-UsageView `
         -Snapshot $startupLocalSnapshot `
         -ObservationContext 'StartupLocal'
-    $codexQuotaLayoutReady = (
-        [string]$CodexQuotaPanel.Visibility -eq 'Visible' -and
+    $proQuotaLayoutReady = (
+        [string]$CodexQuotaPanel.Visibility -eq 'Collapsed' -and
         [string]$ProviderMetricPanel.Visibility -eq 'Collapsed' -and
-        $FiveHourUsedValue.Text -eq '13%' -and
-        $FiveHourRemainingValue.Text -eq '87%' -and
+        [Math]::Abs($QuotaMetricRow.Height.Value) -lt 0.01 -and
+        [Math]::Abs((Get-ExpandedHeightForSnapshot -Snapshot $startupLocalSnapshot) - 474) -lt 0.01 -and
+        [string]$FiveHourQuotaBand.Visibility -eq 'Collapsed' -and
+        [string]$QuotaDivider.Visibility -eq 'Collapsed' -and
+        [string]$WeeklyQuotaBand.Visibility -eq 'Visible' -and
+        [string]$WeeklyQuotaBand.VerticalAlignment -eq 'Stretch' -and
+        [double]::IsNaN($WeeklyQuotaBand.Height) -and
         $WeeklyUsedValue.Text -eq '4%' -and
         $WeeklyRemainingValue.Text -eq '96%' -and
-        $UsageTrendTitle.Text -eq '5 小时额度趋势' -and
-        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 87) -lt 0.01
+        $RemainingValue.Text -eq '96' -and
+        $WindowLabel.Text -eq '每周余量' -and
+        $UsageTrendTitle.Text -eq '每周额度趋势' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 96) -lt 0.01
     )
-    $weeklyOnlySnapshot = $startupLocalSnapshot.PSObject.Copy()
-    $weeklyOnlySnapshot.HasProgress = $false
-    $weeklyOnlySnapshot.RemainingPercent = 0
-    $weeklyOnlySnapshot.WindowLabel = '5 小时余量未知'
-    $weeklyOnlySnapshot.ResetDate = '暂无'
-    $weeklyOnlySnapshot.ResetCountdown = '等待 5 小时额度数据'
-    $weeklyOnlySnapshot.ResetAt = $null
-    $weeklyOnlySnapshot.FiveHourAvailable = $false
-    $weeklyOnlySnapshot.FiveHourUsedPercent = 0
-    $weeklyOnlySnapshot.FiveHourRemainingPercent = 0
-    $weeklyOnlySnapshot.FiveHourResetDate = '暂无'
-    $weeklyOnlySnapshot.FiveHourResetCountdown = '等待 5 小时额度数据'
-    $weeklyOnlySnapshot.FiveHourResetAt = $null
-    Update-UsageView -Snapshot $weeklyOnlySnapshot -DisplayOnly
-    $missingFiveHourRemainsUnknown = (
+    if (-not $proQuotaLayoutReady) {
+        throw (
+            'Pro quota layout failed: panel={0}, rowHeight={1}, fiveHour={2}, ' +
+            'divider={3}, weekly={4}, weeklyAlign={5}, weeklyHeight={6}, ' +
+            'used={7}, remaining={8}, compact={9}, label={10}, trend={11}, ' +
+            'progress={12}.'
+        ) -f
+            [string]$CodexQuotaPanel.Visibility,
+            [double]$QuotaMetricRow.Height.Value,
+            [string]$FiveHourQuotaBand.Visibility,
+            [string]$QuotaDivider.Visibility,
+            [string]$WeeklyQuotaBand.Visibility,
+            [string]$WeeklyQuotaBand.VerticalAlignment,
+            [double]$WeeklyQuotaBand.Height,
+            [string]$WeeklyUsedValue.Text,
+            [string]$WeeklyRemainingValue.Text,
+            [string]$RemainingValue.Text,
+            [string]$WindowLabel.Text,
+            [string]$UsageTrendTitle.Text,
+            [double]$UltraRemainingProgressRow.Height.Value
+    }
+    $plusSnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $plusSnapshot.Plan = 'Plus'
+    $plusSnapshot.PlanType = 'plus'
+    $plusSnapshot.PrimaryQuotaPeriod = 'FiveHour'
+    $plusSnapshot.HasProgress = $true
+    $plusSnapshot.RemainingPercent = 87
+    $plusSnapshot.WindowLabel = '5 小时余量'
+    $plusSnapshot.ResetDate = $plusSnapshot.FiveHourResetDate
+    $plusSnapshot.ResetCountdown = $plusSnapshot.FiveHourResetCountdown
+    $plusSnapshot.ResetAt = $plusSnapshot.FiveHourResetAt
+    $alertKeysIsolateQuotaPeriods = (
+        (Get-UsageAlertScopeKey -Snapshot $startupLocalSnapshot) -eq
+            'Codex|Weekly' -and
+        (Get-UsageAlertScopeKey -Snapshot $plusSnapshot) -eq
+            'Codex|FiveHour' -and
+        (Get-UsageAlertScopeKey -Snapshot $startupLocalSnapshot) -ne
+            (Get-UsageAlertScopeKey -Snapshot $plusSnapshot)
+    )
+    $plusWeeklyOnlySnapshot = $plusSnapshot.PSObject.Copy()
+    $plusWeeklyOnlySnapshot.HasProgress = $false
+    $plusWeeklyOnlySnapshot.RemainingPercent = 0
+    $plusWeeklyOnlySnapshot.WindowLabel = '5 小时余量未知'
+    $plusWeeklyOnlySnapshot.ResetDate = '暂无'
+    $plusWeeklyOnlySnapshot.ResetCountdown = '等待 5 小时额度数据'
+    $plusWeeklyOnlySnapshot.ResetAt = $null
+    $plusWeeklyOnlySnapshot.FiveHourAvailable = $false
+    $plusWeeklyOnlySnapshot.FiveHourUsedPercent = 0
+    $plusWeeklyOnlySnapshot.FiveHourRemainingPercent = 0
+    $plusWeeklyOnlySnapshot.FiveHourResetDate = '暂无'
+    $plusWeeklyOnlySnapshot.FiveHourResetCountdown = '等待 5 小时额度数据'
+    $plusWeeklyOnlySnapshot.FiveHourResetAt = $null
+    Update-UsageView -Snapshot $plusWeeklyOnlySnapshot -DisplayOnly
+    $plusMissingFiveHourRemainsUnknown = (
         $RemainingValue.Text -eq '未知' -and
         $CompactSuffix.Text -eq '' -and
         $WindowLabel.Text -eq '5 小时余量未知' -and
+        [Math]::Abs($QuotaMetricRow.Height.Value - 48) -lt 0.01 -and
+        [string]$FiveHourQuotaBand.Visibility -eq 'Collapsed' -and
+        [string]$QuotaDivider.Visibility -eq 'Collapsed' -and
+        [string]$WeeklyQuotaBand.Visibility -eq 'Visible' -and
+        [string]$WeeklyUsedValue.Visibility -eq 'Collapsed' -and
         $FiveHourUsedValue.Text -eq '未知' -and
         $FiveHourRemainingValue.Text -eq '未知' -and
         $WeeklyUsedValue.Text -eq '4%' -and
@@ -620,14 +761,14 @@ if ($CheckTransitions) {
     $lastInsightsBeforeWeeklyOnly = $script:LastUsageInsights
     $lastSnapshotBeforeWeeklyOnly = $script:LastSnapshot
     Update-UsageView `
-        -Snapshot $weeklyOnlySnapshot `
+        -Snapshot $plusWeeklyOnlySnapshot `
         -ObservationContext 'Normal'
-    $weeklyOnlyDoesNotDriveMonitoring = (
+    $plusWeeklyOnlyDoesNotDriveMonitoring = (
         @($script:UsageHistoryCache).Count -eq $historyCountBeforeWeeklyOnly -and
         $null -eq $script:LastUsageInsights.CurrentSample -and
         -not [bool]$script:LastUsageInsights.RapidDrop.Available -and
         -not (Test-LowRemainingAlertCondition `
-            -Snapshot $weeklyOnlySnapshot `
+            -Snapshot $plusWeeklyOnlySnapshot `
             -PreviousSample $null `
             -Threshold 20)
     )
@@ -635,14 +776,15 @@ if ($CheckTransitions) {
     $script:UsageSyncSession.RapidChannels = $rapidChannelsBeforeWeeklyOnly
     $script:LastUsageInsights = $lastInsightsBeforeWeeklyOnly
     $script:LastSnapshot = $lastSnapshotBeforeWeeklyOnly
-    $conflictingQuotaSnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $conflictingQuotaSnapshot = $plusWeeklyOnlySnapshot.PSObject.Copy()
     $conflictingQuotaSnapshot.RemainingPercent = 96
+    $conflictingQuotaSnapshot.FiveHourAvailable = $true
     $conflictingQuotaSnapshot.FiveHourUsedPercent = 82
     $conflictingQuotaSnapshot.FiveHourRemainingPercent = 18
     $conflictingQuotaSnapshot.WeeklyUsedPercent = 4
     $conflictingQuotaSnapshot.WeeklyRemainingPercent = 96
     Update-UsageView -Snapshot $conflictingQuotaSnapshot -DisplayOnly
-    $fiveHourWinsConflictingQuotaValues = (
+    $plusFiveHourWinsConflictingQuotaValues = (
         [double]$conflictingQuotaSnapshot.RemainingPercent -eq 18 -and
         $RemainingValue.Text -eq '18' -and
         [Math]::Abs($UltraRemainingProgressRow.Height.Value - 18) -lt 0.01 -and
@@ -654,15 +796,15 @@ if ($CheckTransitions) {
             }) `
             -Threshold 20)
     )
-    Update-UsageView -Snapshot $startupLocalSnapshot -DisplayOnly
+    Update-UsageView -Snapshot $plusSnapshot -DisplayOnly
     $startupLocalRapidSuppressed = (
         [string]$RapidDropText.Text -match '本地快照不计入快速下降'
     )
     $startupLocalMessage = Format-StartupUsageSnapshotMessage `
-        -Snapshot $startupLocalSnapshot `
+        -Snapshot $plusSnapshot `
         -ObservationContext 'StartupLocal'
 
-    $startupOfficialSnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $startupOfficialSnapshot = $plusSnapshot.PSObject.Copy()
     $startupOfficialSnapshot.RemainingPercent = 56
     $startupOfficialSnapshot.FiveHourRemainingPercent = 56
     $startupOfficialSnapshot.FiveHourUsedPercent = 44
@@ -759,6 +901,15 @@ if ($CheckTransitions) {
     $expandedHeight = $window.ActualHeight
     $expandedVisibility = [string]$DetailsPanel.Visibility
     $window.UpdateLayout()
+    $resetTextBottom = $DetailsResetCountdown.TranslatePoint(
+        (New-Object Windows.Point(0, $DetailsResetCountdown.ActualHeight)),
+        $CompactHit
+    ).Y
+    $headerProgressTop = $ProgressTrack.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $CompactHit
+    ).Y
+    $resetProgressGap = $headerProgressTop - $resetTextBottom
     $expandedHeaderHierarchy = (
         [string]$RemainingSummaryPanel.HorizontalAlignment -eq 'Left' -and
         [string]$RemainingNumberPanel.HorizontalAlignment -eq 'Left' -and
@@ -767,14 +918,29 @@ if ($CheckTransitions) {
         [double]$CompactPrefix.FontSize -eq 12 -and
         [double]$CompactSuffix.FontSize -eq 12 -and
         [string]$WindowLabel.HorizontalAlignment -eq 'Left' -and
-        [string]$ResetSummaryPanel.HorizontalAlignment -eq 'Right' -and
+        [string]$ResetSummaryPanel.HorizontalAlignment -eq 'Stretch' -and
+        [string]$DetailsResetCountdown.TextTrimming -eq 'CharacterEllipsis' -and
         [double]$DetailsResetPrefix.FontSize -eq 12.5 -and
         [double]$DetailsResetDate.FontSize -eq 12.5 -and
         [double]$DetailsResetSeparator.FontSize -eq 12.5 -and
         [double]$DetailsResetCountdown.FontSize -eq 12.5 -and
         [double]$DetailsResetDate.FontSize -lt 23 -and
         [double]$DetailsResetDate.FontSize -lt
-            [double]$RemainingValue.FontSize
+            [double]$RemainingValue.FontSize -and
+        [Math]::Abs($CompactProgressRow.Height.Value - 23) -lt 0.01 -and
+        [Windows.Controls.Grid]::GetColumnSpan($ProgressTrack) -eq 3 -and
+        $ProgressTrack.ActualWidth -gt 340 -and
+        $resetProgressGap -ge 2 -and
+        $resetProgressGap -le 8
+    )
+    $tokenSummaryVisualReady = (
+        $TokenSummaryCard.ActualHeight -ge 45 -and
+        $TokenSummaryCard.ActualHeight -le 47 -and
+        [string]$TokenSummaryCard.Background.Color -eq '#FFF5F6F2' -and
+        [Math]::Abs($TokenSummaryCard.BorderThickness.Left - 1) -lt 0.01 -and
+        [Math]::Abs($TokenSummaryCard.CornerRadius.TopLeft - 9) -lt 0.01 -and
+        [Math]::Abs($TokenSummaryDivider.Width - 1) -lt 0.01 -and
+        $TokenSummaryDivider.ActualHeight -gt 20
     )
     $footerTextRuns = @(
         $VersionLabelText,
@@ -1017,11 +1183,11 @@ if ($CheckTransitions) {
         foreach ($cycle in 1..6) {
             Set-EdgeDockReveal -Revealed $false -Immediate
             Set-EdgeDockReveal -Revealed $true
-            Wait-ForUi -Milliseconds ($script:EdgeRevealDurationMs + 45)
+            Wait-ForUi -Milliseconds ($script:EdgeRevealDurationMs + 90)
             $window.UpdateLayout()
             $animatedRevealPixelGapSamples += Get-CurrentEdgePixelGap
             Set-EdgeDockReveal -Revealed $false
-            Wait-ForUi -Milliseconds ($script:EdgeHideDurationMs + 45)
+            Wait-ForUi -Milliseconds ($script:EdgeHideDurationMs + 90)
             $window.UpdateLayout()
             $animatedEdgePixelGapSamples += Get-CurrentEdgePixelGap
         }
@@ -1286,6 +1452,8 @@ if ($CheckTransitions) {
         Trend24Text = $Trend24Text.Text
         CompactHeaderRestored = $compactHeaderRestored
         ExpandedHeaderHierarchy = $expandedHeaderHierarchy
+        TokenSummaryVisualReady = $tokenSummaryVisualReady
+        AlertKeysIsolateQuotaPeriods = $alertKeysIsolateQuotaPeriods
         Trend7Text = $Trend7Text.Text
         Trend24PointCount = $trend24PointCount
         Trend7PointCount = $trend7PointCount
@@ -1296,10 +1464,10 @@ if ($CheckTransitions) {
         MultipleResetTrendSegmentsRendered = $multipleResetTrendSegmentsRendered
         DynamicTrendVisualsCleared = $dynamicTrendVisualsCleared
         TrendCardsFollowQuotaPalette = $trendCardsFollowQuotaPalette
-        CodexDualQuotaLayoutReady = $codexQuotaLayoutReady
-        MissingFiveHourRemainsUnknown = $missingFiveHourRemainsUnknown
-        WeeklyOnlyDoesNotDriveMonitoring = $weeklyOnlyDoesNotDriveMonitoring
-        FiveHourWinsConflictingQuotaValues = $fiveHourWinsConflictingQuotaValues
+        ProQuotaLayoutReady = $proQuotaLayoutReady
+        PlusMissingFiveHourRemainsUnknown = $plusMissingFiveHourRemainsUnknown
+        PlusWeeklyOnlyDoesNotDriveMonitoring = $plusWeeklyOnlyDoesNotDriveMonitoring
+        PlusFiveHourWinsConflictingQuotaValues = $plusFiveHourWinsConflictingQuotaValues
         TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
         TrendHealthyPaletteColor = $trendHealthyPaletteColor
         TrendLowBackgroundColor = $trendLowBackgroundColor

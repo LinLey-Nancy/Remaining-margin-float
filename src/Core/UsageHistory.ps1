@@ -2,6 +2,15 @@
     return Join-Path (Get-AppDataDirectory) 'usage-history.jsonl'
 }
 
+function Get-UsageQuotaPeriod {
+    param($Value)
+
+    if ($Value -and $Value.PSObject.Properties['QuotaPeriod']) {
+        return [string]$Value.QuotaPeriod
+    }
+    return ''
+}
+
 function Get-UsageHistoryCalendarMetadata {
     param(
         [DateTimeOffset]$ObservedAt,
@@ -45,10 +54,11 @@ function ConvertFrom-UsageHistoryRecord {
     if (
         $providerId -eq 'Codex' -and
         $metricType -eq 'Percent' -and
-        $quotaPeriod -ne 'FiveHour'
+        $quotaPeriod -notin @('FiveHour', 'Weekly')
     ) {
         # Pre-1.9.0 Codex percent samples represented the weekly quota. They
-        # cannot be mixed into the new five-hour trend or rapid-drop alerts.
+        # have no explicit period and cannot be safely mixed into either the
+        # Plus five-hour trend or the Pro weekly trend.
         return $null
     }
 
@@ -169,14 +179,19 @@ function ConvertTo-UsageHistorySample {
     if (-not $Snapshot -or -not [bool]$Snapshot.Available) {
         return $null
     }
-    if (
+    $codexQuotaPeriod = if (
         [string]$Snapshot.ProviderId -eq 'Codex' -and
-        (
-            -not $Snapshot.PSObject.Properties['FiveHourAvailable'] -or
-            -not [bool]$Snapshot.FiveHourAvailable
-        )
-    ) {
-        return $null
+        $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
+        [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
+    ) { 'Weekly' } else { 'FiveHour' }
+    if ([string]$Snapshot.ProviderId -eq 'Codex') {
+        $availabilityProperty = "${codexQuotaPeriod}Available"
+        if (
+            -not $Snapshot.PSObject.Properties[$availabilityProperty] -or
+            -not [bool]$Snapshot.$availabilityProperty
+        ) {
+            return $null
+        }
     }
 
     $metricType = ''
@@ -233,7 +248,7 @@ function ConvertTo-UsageHistorySample {
         UtcOffsetMinutes = $calendar.UtcOffsetMinutes
         MetricType = $metricType
         QuotaPeriod = if ([string]$Snapshot.ProviderId -eq 'Codex') {
-            'FiveHour'
+            $codexQuotaPeriod
         } else { '' }
         RemainingValue = [Math]::Round($remainingValue, 4)
         Unit = $unit
@@ -934,11 +949,13 @@ function Get-PreviousUsageHistorySample {
         $CurrentSample
     )
 
+    $currentQuotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
     for ($index = $Samples.Count - 1; $index -ge 0; $index--) {
         $candidate = $Samples[$index]
         if (
             $candidate.ProviderId -eq $CurrentSample.ProviderId -and
             $candidate.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $candidate) -eq $currentQuotaPeriod -and
             $candidate.Unit -eq $CurrentSample.Unit -and
             $candidate.ObservedAtUtc -le $CurrentSample.ObservedAtUtc
         ) {
@@ -1132,10 +1149,12 @@ function Get-UsageTrend {
 
     $nowUtc = $Now.ToUniversalTime()
     $cutoff = $nowUtc.AddHours(-$Hours)
+    $currentQuotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
     $matching = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $currentQuotaPeriod -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -le $nowUtc.AddMinutes(5)
         } | Sort-Object ObservedAtUtc
@@ -1232,10 +1251,12 @@ function Get-DepletionForecast {
     }
     if (-not $CurrentSample) { return $insufficient }
 
+    $currentQuotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
     $matching = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $currentQuotaPeriod -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -ge $Now.ToUniversalTime().AddDays(-7) -and
             $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
@@ -1498,9 +1519,14 @@ function Measure-RapidUsageDrop {
         $metricType = 'Percent'
         $threshold = $CodexPercent
         $unit = '%'
+        $quotaPeriod = if (
+            $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
+            [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
+        ) { 'Weekly' } else { 'FiveHour' }
+        $quotaLabel = if ($quotaPeriod -eq 'Weekly') { '每周' } else { '5 小时' }
         if (-not [bool]$Snapshot.HasProgress) {
             return & $emptyResult $providerId $metricType $threshold $unit `
-                '等待 Codex 5 小时余量数据'
+                "等待 Codex $quotaLabel 余量数据"
         }
     }
     elseif ($providerId -eq 'DeepSeek') {
@@ -1532,11 +1558,14 @@ function Measure-RapidUsageDrop {
         return & $emptyResult $providerId '' 0.0 '' '暂不支持此数据源'
     }
 
+    if ($providerId -ne 'Codex') { $quotaPeriod = '' }
+
     $cutoff = $Now.ToUniversalTime().AddMinutes(-$WindowMinutes)
     $series = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $providerId -and
             $_.MetricType -eq $metricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $quotaPeriod -and
             $_.Unit -eq $unit -and
             $_.ObservedAtUtc -ge $cutoff -and
             $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)

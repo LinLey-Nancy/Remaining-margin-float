@@ -70,24 +70,47 @@ function ConvertTo-CodexQuotaWindow {
     $resetValue = Get-ObjectPropertyValue -Object $Window -Name $resetName
     if (
         $null -eq $usedValue -or
-        $null -eq $durationValue -or [double]$durationValue -le 0 -or
-        $null -eq $resetValue -or [long]$resetValue -le 0
+        $null -eq $durationValue -or
+        $null -eq $resetValue
     ) {
         return $null
     }
 
-    $windowMinutes = if ($Format -eq 'Official') {
-        [int][Math]::Round([double]$durationValue / 60)
-    } else {
-        [int][Math]::Round([double]$durationValue)
+    try {
+        $usedPercent = [double]$usedValue
+        $duration = [double]$durationValue
+        $resetsAt = [long]$resetValue
     }
+    catch {
+        return $null
+    }
+    if (
+        [double]::IsNaN($usedPercent) -or
+        [double]::IsInfinity($usedPercent) -or
+        [double]::IsNaN($duration) -or
+        [double]::IsInfinity($duration) -or
+        $duration -le 0 -or
+        $resetsAt -le 0
+    ) {
+        return $null
+    }
+
+    $windowMinutesValue = if ($Format -eq 'Official') {
+        $duration / 60
+    } else {
+        $duration
+    }
+    if ($windowMinutesValue -gt [int]::MaxValue) {
+        return $null
+    }
+    $windowMinutes = [int][Math]::Round($windowMinutesValue)
     return [pscustomobject]@{
         UsedPercent = [Math]::Max(
             0.0,
-            [Math]::Min(100.0, [double]$usedValue)
+            [Math]::Min(100.0, $usedPercent)
         )
         WindowMinutes = $windowMinutes
-        ResetsAt = [long]$resetValue
+        ResetsAt = $resetsAt
     }
 }
 
@@ -687,6 +710,21 @@ function Get-PlanLabel {
     return (Get-Culture).TextInfo.ToTitleCase($PlanType.Replace('_', ' '))
 }
 
+function Get-CodexPrimaryQuotaPeriod {
+    param([string]$PlanType)
+
+    # Codex Pro is exposed as either "pro" or "prolite" for the $200 and
+    # $100 variants. These plans only expose the weekly allowance. Plus keeps
+    # the five-hour allowance as its primary quota.
+    $normalizedPlan = if ([string]::IsNullOrWhiteSpace($PlanType)) {
+        ''
+    } else {
+        $PlanType.Trim().ToLowerInvariant().Replace('_', '').Replace('-', '').Replace(' ', '')
+    }
+    if ($normalizedPlan -in @('pro', 'prolite')) { return 'Weekly' }
+    return 'FiveHour'
+}
+
 function Format-CompactNumber {
     param([double]$Value)
 
@@ -751,7 +789,9 @@ function Get-CodexUsageSnapshot {
             WeeklyResetCountdown = '6 天 9 小时后'
             WeeklyResetAt = [DateTimeOffset]::Now.AddDays(6)
             ResetCount = '未提供'
-            Plan = 'Pro'
+            PlanType = 'plus'
+            Plan = 'Plus'
+            PrimaryQuotaPeriod = 'FiveHour'
             AccountName = 'YJ'
             AccountEmail = 'you@example.com'
             TodayTokens = 128420
@@ -826,7 +866,9 @@ function Get-CodexUsageSnapshot {
             WeeklyResetCountdown = '等待每周额度数据'
             WeeklyResetAt = $null
             ResetCount = '未提供'
+            PlanType = ''
             Plan = '--'
+            PrimaryQuotaPeriod = 'FiveHour'
             AccountName = $account.DisplayName
             AccountEmail = $account.Email
             TodayTokens = 0
@@ -859,13 +901,20 @@ function Get-CodexUsageSnapshot {
         -Name 'WeeklyWindow'
     $hasFiveHour = $null -ne $fiveHourWindow
     $hasWeekly = $null -ne $weeklyWindow
-    $usedPercent = if ($hasFiveHour) {
-        [double]$fiveHourWindow.UsedPercent
-    } else { 0.0 }
-    $resetTimestamp = if ($hasFiveHour) {
-        [long]$fiveHourWindow.ResetsAt
-    } else { 0L }
     $planType = [string]$quotaUsage.PlanType
+    $primaryQuotaPeriod = Get-CodexPrimaryQuotaPeriod -PlanType $planType
+    $primaryWindow = if ($primaryQuotaPeriod -eq 'Weekly') {
+        $weeklyWindow
+    } else {
+        $fiveHourWindow
+    }
+    $hasPrimaryQuota = $null -ne $primaryWindow
+    $usedPercent = if ($hasPrimaryQuota) {
+        [double]$primaryWindow.UsedPercent
+    } else { 0.0 }
+    $resetTimestamp = if ($hasPrimaryQuota) {
+        [long]$primaryWindow.ResetsAt
+    } else { 0L }
     $quotaSampledAt = ([DateTimeOffset]$quotaUsage.SampledAt).LocalDateTime
     $source = switch ($quotaUsage.Channel) {
         'Official' { '官方用量接口 · 本地令牌汇总' }
@@ -873,20 +922,21 @@ function Get-CodexUsageSnapshot {
         default { '本地会话余量快照' }
     }
 
-    $remainingPercent = if ($hasFiveHour) {
+    $remainingPercent = if ($hasPrimaryQuota) {
         [Math]::Round(100 - $usedPercent)
     } else { 0 }
-    $windowLabel = if ($hasFiveHour) {
-        '5 小时余量'
+    $periodLabel = if ($primaryQuotaPeriod -eq 'Weekly') { '每周' } else { '5 小时' }
+    $windowLabel = if ($hasPrimaryQuota) {
+        "${periodLabel}余量"
     } else {
-        '5 小时余量未知'
+        "${periodLabel}余量未知"
     }
-    $resetText = if ($hasFiveHour) {
+    $resetText = if ($hasPrimaryQuota) {
         Get-ResetText -UnixSeconds $resetTimestamp
     } else {
         [pscustomobject]@{
             Date = '暂无'
-            Countdown = '等待 5 小时额度数据'
+            Countdown = "等待$periodLabel 额度数据"
         }
     }
     $weeklyResetText = if ($hasWeekly) {
@@ -903,6 +953,20 @@ function Get-CodexUsageSnapshot {
     $weeklyRemainingPercent = if ($hasWeekly) {
         [Math]::Round(100 - $weeklyUsedPercent)
     } else { 0 }
+    $fiveHourUsedPercent = if ($hasFiveHour) {
+        [double]$fiveHourWindow.UsedPercent
+    } else { 0.0 }
+    $fiveHourRemainingPercent = if ($hasFiveHour) {
+        [Math]::Round(100 - $fiveHourUsedPercent)
+    } else { 0 }
+    $fiveHourResetText = if ($hasFiveHour) {
+        Get-ResetText -UnixSeconds ([long]$fiveHourWindow.ResetsAt)
+    } else {
+        [pscustomobject]@{
+            Date = '暂无'
+            Countdown = '等待 5 小时额度数据'
+        }
+    }
 
     $info = Get-ObjectPropertyValue -Object $payload -Name 'info'
     $lastUsage = Get-ObjectPropertyValue -Object $info -Name 'last_token_usage'
@@ -939,7 +1003,7 @@ function Get-CodexUsageSnapshot {
         [Math]::Round(($todayCachedTokens / $todayInputTokens) * 100, 1)
     } else { 0 }
 
-    $status = if (-not $hasFiveHour) { '5 小时余量未知' }
+    $status = if (-not $hasPrimaryQuota) { "${periodLabel}余量未知" }
         elseif ($remainingPercent -ge 60) { '状态舒适' }
         elseif ($remainingPercent -ge 30) { '余量平稳' }
         elseif ($remainingPercent -gt 0) { '建议留意' }
@@ -949,17 +1013,19 @@ function Get-CodexUsageSnapshot {
         ProviderId = 'Codex'
         Available = $true
         RemainingPercent = $remainingPercent
-        HasProgress = $hasFiveHour
+        HasProgress = $hasPrimaryQuota
         WindowLabel = $windowLabel
         ResetDate = $resetText.Date
         ResetCountdown = $resetText.Countdown
         FiveHourAvailable = $hasFiveHour
-        FiveHourUsedPercent = if ($hasFiveHour) { [Math]::Round($usedPercent) } else { 0 }
-        FiveHourRemainingPercent = $remainingPercent
-        FiveHourResetDate = $resetText.Date
-        FiveHourResetCountdown = $resetText.Countdown
+        FiveHourUsedPercent = if ($hasFiveHour) {
+            [Math]::Round($fiveHourUsedPercent)
+        } else { 0 }
+        FiveHourRemainingPercent = $fiveHourRemainingPercent
+        FiveHourResetDate = $fiveHourResetText.Date
+        FiveHourResetCountdown = $fiveHourResetText.Countdown
         FiveHourResetAt = if ($hasFiveHour) {
-            [DateTimeOffset]::FromUnixTimeSeconds($resetTimestamp)
+            [DateTimeOffset]::FromUnixTimeSeconds([long]$fiveHourWindow.ResetsAt)
         } else { $null }
         WeeklyAvailable = $hasWeekly
         WeeklyUsedPercent = if ($hasWeekly) {
@@ -972,7 +1038,9 @@ function Get-CodexUsageSnapshot {
             [DateTimeOffset]::FromUnixTimeSeconds([long]$weeklyWindow.ResetsAt)
         } else { $null }
         ResetCount = '未提供'
+        PlanType = $planType
         Plan = Get-PlanLabel -PlanType $planType
+        PrimaryQuotaPeriod = $primaryQuotaPeriod
         AccountName = $account.DisplayName
         AccountEmail = $account.Email
         TodayTokens = $todayTokens
@@ -987,7 +1055,7 @@ function Get-CodexUsageSnapshot {
         CacheHitPercent = $cacheHit
         ContextPercent = $contextPercent
         SampledAt = $quotaSampledAt
-        ResetAt = if ($hasFiveHour) {
+        ResetAt = if ($hasPrimaryQuota) {
             [DateTimeOffset]::FromUnixTimeSeconds($resetTimestamp)
         } else { $null }
         Status = $status

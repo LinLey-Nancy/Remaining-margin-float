@@ -102,25 +102,53 @@ function Get-CodexCurrentUsageOverride {
     )
 
     if (-not $OfficialUsage) { return $null }
-    $resetsAt = [long](Get-ObjectPropertyValue `
+    $nowUnixSeconds = $Now.ToUnixTimeSeconds()
+    $fiveHourWindow = Get-ObjectPropertyValue `
         -Object $OfficialUsage `
-        -Name 'ResetsAt' `
-        -Default 0)
-    if ($resetsAt -gt 0 -and $resetsAt -le $Now.ToUnixTimeSeconds()) {
-        return $null
+        -Name 'FiveHourWindow'
+    $weeklyWindow = Get-ObjectPropertyValue `
+        -Object $OfficialUsage `
+        -Name 'WeeklyWindow'
+    if ($fiveHourWindow -and [long]$fiveHourWindow.ResetsAt -le $nowUnixSeconds) {
+        $fiveHourWindow = $null
+    }
+    if ($weeklyWindow -and [long]$weeklyWindow.ResetsAt -le $nowUnixSeconds) {
+        $weeklyWindow = $null
+    }
+
+    $planType = [string]$OfficialUsage.PlanType
+    $primaryPeriod = Get-CodexPrimaryQuotaPeriod -PlanType $planType
+    $primaryWindow = if ($primaryPeriod -eq 'Weekly') {
+        $weeklyWindow
+    } else {
+        $fiveHourWindow
+    }
+    if (-not $primaryWindow) {
+        # Preserve compatibility with pre-1.9.0 cached objects that did not
+        # expose named quota windows.
+        if (-not $fiveHourWindow -and -not $weeklyWindow) {
+            $legacyResetsAt = [long](Get-ObjectPropertyValue `
+                -Object $OfficialUsage `
+                -Name 'ResetsAt' `
+                -Default 0)
+            if ($legacyResetsAt -gt $nowUnixSeconds) {
+                $primaryWindow = [pscustomobject]@{
+                    UsedPercent = [double]$OfficialUsage.UsedPercent
+                    WindowMinutes = [int]$OfficialUsage.WindowMinutes
+                    ResetsAt = $legacyResetsAt
+                }
+            }
+        }
+        if (-not $primaryWindow) { return $null }
     }
 
     return [pscustomobject]@{
-        UsedPercent = [double]$OfficialUsage.UsedPercent
-        WindowMinutes = [int]$OfficialUsage.WindowMinutes
-        ResetsAt = $resetsAt
-        FiveHourWindow = Get-ObjectPropertyValue `
-            -Object $OfficialUsage `
-            -Name 'FiveHourWindow'
-        WeeklyWindow = Get-ObjectPropertyValue `
-            -Object $OfficialUsage `
-            -Name 'WeeklyWindow'
-        PlanType = [string]$OfficialUsage.PlanType
+        UsedPercent = [double]$primaryWindow.UsedPercent
+        WindowMinutes = [int]$primaryWindow.WindowMinutes
+        ResetsAt = [long]$primaryWindow.ResetsAt
+        FiveHourWindow = $fiveHourWindow
+        WeeklyWindow = $weeklyWindow
+        PlanType = $planType
         SampledAt = [DateTimeOffset]$OfficialUsage.SampledAt
         IsCached = $true
     }

@@ -104,6 +104,29 @@ Assert-Diagnostic -Condition (
     $contracts.CodexPlan -eq 'prolite'
 ) -Message 'Codex official response contract fixture'
 Assert-Diagnostic -Condition (
+    $contracts.CodexPlusPrimaryPeriod -eq 'FiveHour' -and
+    $contracts.CodexProPrimaryPeriod -eq 'Weekly' -and
+    $contracts.CodexProLitePrimaryPeriod -eq 'Weekly' -and
+    @($contracts.CodexProAliasPeriods | Where-Object { $_ -ne 'Weekly' }).Count -eq 0
+) -Message 'Codex plan selects the correct primary quota period'
+Assert-Diagnostic -Condition (
+    $contracts.CodexSnapshotPrimaryPeriod -eq 'Weekly' -and
+    $contracts.CodexSnapshotRemainingPercent -eq 63 -and
+    $contracts.CodexSnapshotFiveHourUsedPercent -eq 18 -and
+    $contracts.CodexSnapshotFiveHourRemainingPercent -eq 82 -and
+    $contracts.CodexSnapshotWeeklyUsedPercent -eq 37 -and
+    $contracts.CodexSnapshotWeeklyRemainingPercent -eq 63
+) -Message 'Codex snapshot preserves both quota windows for Pro'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexProWithoutWeeklyRemainsUnknown
+) -Message 'Codex Pro does not fall back to five-hour quota when weekly data is missing'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexNonFiniteQuotaValuesRejected
+) -Message 'Codex quota parser rejects non-finite percentage and duration values'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.ProCacheIgnoresExpiredFiveHourWindow
+) -Message 'Codex Pro cache validity follows the weekly quota window'
+Assert-Diagnostic -Condition (
     $contracts.DeepSeekEventCount -eq 2 -and
     $contracts.DeepSeekPrimaryTokens -eq 3000000 -and
     [Math]::Abs([double]$contracts.DeepSeekPrimaryCostCny - 9.025) -lt 0.0001
@@ -235,6 +258,8 @@ Assert-Diagnostic -Condition ([bool]$history.LegacyHistoryMigration) `
     -Message 'Legacy history schema migration'
 Assert-Diagnostic -Condition ([bool]$history.LegacyWeeklyCodexExcluded) `
     -Message 'Legacy weekly Codex history isolation'
+Assert-Diagnostic -Condition ([bool]$history.WeeklyQuotaHistoryIsolated) `
+    -Message 'Explicit weekly Codex history remains isolated from five-hour data'
 Assert-Diagnostic -Condition ([bool]$history.CalendarDateAligned) `
     -Message 'History local calendar date alignment'
 Assert-Diagnostic -Condition ([bool]$history.ImportMergeRoundTrip) `
@@ -356,9 +381,9 @@ Assert-Diagnostic -Condition ([bool]$transitions.TaskViewHidden) `
     -Message 'Task view visibility'
 Assert-Diagnostic -Condition (
     $transitions.ExpandedWidth -eq 400 -and
-    $transitions.ExpandedHeight -eq 560 -and
+    $transitions.ExpandedHeight -eq 522 -and
     $transitions.ReopenedWidth -eq 400 -and
-    $transitions.ReopenedHeight -eq 560 -and
+    $transitions.ReopenedHeight -eq 522 -and
     $transitions.InactiveWidth -eq 80 -and
     $transitions.InactiveHeight -eq 80 -and
     $transitions.ExpandedVisibility -eq 'Visible' -and
@@ -455,6 +480,10 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.CompactHeaderRestored -and
     [bool]$transitions.ExpandedHeaderHierarchy
 ) -Message 'Expanded header alignment and font hierarchy'
+Assert-Diagnostic -Condition ([bool]$transitions.TokenSummaryVisualReady) `
+    -Message 'Token summary visual grouping'
+Assert-Diagnostic -Condition ([bool]$transitions.AlertKeysIsolateQuotaPeriods) `
+    -Message 'Codex alert deduplication isolates five-hour and weekly periods'
 
 Assert-Diagnostic `
     -Condition (
@@ -478,17 +507,17 @@ Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendCardsFollowQuotaPalette) `
     -Message 'Trend card backgrounds follow quota palette'
 Assert-Diagnostic `
-    -Condition ([bool]$transitions.CodexDualQuotaLayoutReady) `
-    -Message 'Codex five-hour and weekly quota layout'
+    -Condition ([bool]$transitions.ProQuotaLayoutReady) `
+    -Message 'Codex Pro uses the weekly-only quota layout'
 Assert-Diagnostic `
-    -Condition ([bool]$transitions.MissingFiveHourRemainsUnknown) `
-    -Message 'Missing Codex five-hour quota remains unknown'
+    -Condition ([bool]$transitions.PlusMissingFiveHourRemainsUnknown) `
+    -Message 'Missing Codex Plus five-hour quota remains unknown'
 Assert-Diagnostic `
-    -Condition ([bool]$transitions.WeeklyOnlyDoesNotDriveMonitoring) `
-    -Message 'Weekly-only quota does not drive Codex monitoring'
+    -Condition ([bool]$transitions.PlusWeeklyOnlyDoesNotDriveMonitoring) `
+    -Message 'Weekly-only data does not drive Codex Plus monitoring'
 Assert-Diagnostic `
-    -Condition ([bool]$transitions.FiveHourWinsConflictingQuotaValues) `
-    -Message 'Five-hour quota wins conflicting Codex values'
+    -Condition ([bool]$transitions.PlusFiveHourWinsConflictingQuotaValues) `
+    -Message 'Five-hour quota wins conflicting Codex Plus values'
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendTimeAxisAligned) `
     -Message 'Trend chart uses elapsed-time x coordinates'

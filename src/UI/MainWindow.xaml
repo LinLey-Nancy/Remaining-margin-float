@@ -206,43 +206,64 @@
                         </StackPanel>
 
                         <Grid Grid.Row="1" VerticalAlignment="Stretch">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
                             <TextBlock x:Name="ExpandedWindowLabel"
+                                       Grid.Column="0"
                                        HorizontalAlignment="Left"
-                                       VerticalAlignment="Top"
+                                       VerticalAlignment="Bottom"
+                                       Margin="0,0,0,5"
                                        Visibility="Collapsed"
                                        Text="Codex 余量"
                                        Foreground="{StaticResource TextMuted}"
                                        FontFamily="Microsoft YaHei UI"
                                        FontSize="8.5"
                                        FontWeight="SemiBold"/>
-                            <StackPanel x:Name="ResetSummaryPanel"
-                                        Orientation="Horizontal"
-                                        HorizontalAlignment="Right"
-                                        VerticalAlignment="Top"
-                                        Visibility="Collapsed">
+                            <Grid x:Name="ResetSummaryPanel"
+                                  Grid.Column="2"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Bottom"
+                                  Margin="0,0,0,5"
+                                  Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
                                 <TextBlock x:Name="DetailsResetPrefix"
+                                           Grid.Column="0"
                                            Text="下次重置 "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"/>
                                 <TextBlock x:Name="DetailsResetDate"
+                                           Grid.Column="1"
                                            Text="--"
                                            Foreground="{StaticResource TextSecondary}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"
                                            FontWeight="SemiBold"/>
                                 <TextBlock x:Name="DetailsResetSeparator"
+                                           Grid.Column="2"
                                            Text=" · "
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"/>
                                 <TextBlock x:Name="DetailsResetCountdown"
+                                           Grid.Column="3"
                                            Text="--"
                                            Foreground="{StaticResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
-                                           FontSize="12.5"/>
-                            </StackPanel>
+                                           FontSize="12.5"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                            </Grid>
                             <Border x:Name="ProgressTrack"
+                                    Grid.ColumnSpan="3"
                                     Height="3"
                                     VerticalAlignment="Bottom"
                                     CornerRadius="1.5"
@@ -275,7 +296,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="46"/>
                         <RowDefinition Height="4"/>
-                        <RowDefinition Height="132"/>
+                        <RowDefinition x:Name="QuotaMetricRow" Height="132"/>
                         <RowDefinition Height="52"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="52"/>
@@ -338,12 +359,16 @@
                         <Grid>
                             <Grid x:Name="CodexQuotaPanel" Visibility="Collapsed">
                                 <Grid.RowDefinitions>
-                                    <RowDefinition Height="*"/>
-                                    <RowDefinition Height="5"/>
-                                    <RowDefinition Height="*"/>
+                                    <RowDefinition x:Name="FiveHourQuotaRow" Height="*"/>
+                                    <RowDefinition x:Name="QuotaDividerRow" Height="5"/>
+                                    <RowDefinition x:Name="WeeklyQuotaRow" Height="*"/>
                                 </Grid.RowDefinitions>
 
-                                <Grid Grid.Row="0">
+                                <Grid x:Name="FiveHourQuotaBand" Grid.Row="0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="10"/>
+                                    </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="104"/>
                                         <ColumnDefinition Width="*"/>
@@ -379,10 +404,9 @@
                                                    Foreground="{DynamicResource StatusStrong}"
                                                    Style="{StaticResource MetricValueText}"/>
                                     </StackPanel>
-                                    <Border Grid.Column="1" Grid.ColumnSpan="2"
+                                    <Border Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
                                             Height="3"
-                                            Margin="0,0,0,1"
-                                            VerticalAlignment="Bottom"
+                                            VerticalAlignment="Center"
                                             Background="#DCE1DC"
                                             CornerRadius="1.5"
                                             ClipToBounds="True">
@@ -396,51 +420,59 @@
                                     </Border>
                                 </Grid>
 
-                                <Border Grid.Row="1"
+                                <Border x:Name="QuotaDivider"
+                                        Grid.Row="1"
                                         Height="1"
                                         VerticalAlignment="Center"
                                         Background="#DCE2DC"/>
 
-                                <Grid Grid.Row="2">
+                                <Grid x:Name="WeeklyQuotaBand" Grid.Row="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="8"/>
+                                    </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="104"/>
+                                        <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel VerticalAlignment="Center">
-                                        <TextBlock Text="每周"
-                                                   Foreground="{StaticResource TextPrimary}"
-                                                   FontFamily="Microsoft YaHei UI"
-                                                   FontSize="11.5"
-                                                   FontWeight="SemiBold"/>
-                                        <TextBlock x:Name="WeeklyResetText"
-                                                   Margin="0,4,8,0"
-                                                   Text="等待数据"
-                                                   Style="{StaticResource MetricHintText}"
-                                                   TextTrimming="CharacterEllipsis"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                        <TextBlock Text="已用" Style="{StaticResource MetricTitleText}"/>
-                                        <TextBlock x:Name="WeeklyUsedValue"
-                                                   Text="--"
-                                                   Style="{StaticResource MetricValueText}"/>
-                                    </StackPanel>
+                                    <TextBlock Text="每周额度"
+                                               VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextPrimary}"
+                                               FontFamily="Microsoft YaHei UI"
+                                               FontSize="11.5"
+                                               FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="WeeklyResetText"
+                                               Grid.Column="1"
+                                               Margin="10,0,12,0"
+                                               VerticalAlignment="Center"
+                                               Text="等待数据"
+                                               Style="{StaticResource MetricHintText}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock x:Name="WeeklyUsedValue"
+                                               Visibility="Collapsed"
+                                               Text="--"/>
                                     <StackPanel Grid.Column="2"
+                                                Orientation="Horizontal"
                                                 HorizontalAlignment="Right"
                                                 VerticalAlignment="Center">
-                                        <TextBlock Text="余额"
-                                                   HorizontalAlignment="Right"
-                                                   Style="{StaticResource MetricTitleText}"/>
                                         <TextBlock x:Name="WeeklyRemainingValue"
                                                    Text="--"
-                                                   HorizontalAlignment="Right"
                                                    Foreground="{StaticResource TextPrimary}"
-                                                   Style="{StaticResource MetricValueText}"/>
+                                                   FontFamily="Segoe UI Variable Display"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   LineHeight="22"/>
+                                        <TextBlock Margin="4,3,0,0"
+                                                   Text="剩余"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontFamily="Microsoft YaHei UI"
+                                                   FontSize="9.5"
+                                                   FontWeight="SemiBold"/>
                                     </StackPanel>
-                                    <Border Grid.Column="1" Grid.ColumnSpan="2"
+                                    <Border Grid.Row="1" Grid.ColumnSpan="3"
                                             Height="3"
-                                            Margin="0,0,0,1"
-                                            VerticalAlignment="Bottom"
+                                            VerticalAlignment="Center"
                                             Background="#DCE1DC"
                                             CornerRadius="1.5"
                                             ClipToBounds="True">
@@ -527,19 +559,21 @@
                         </Grid>
                     </Border>
 
-                    <Border Grid.Row="3"
-                            Margin="0,8,0,0"
-                            Background="Transparent"
-                            BorderBrush="{StaticResource Divider}"
-                            BorderThickness="0,1,0,0"
-                            CornerRadius="0"
-                            Padding="4,9,4,0">
+                    <Border x:Name="TokenSummaryCard"
+                            Grid.Row="3"
+                            Margin="0,6,0,0"
+                            Background="#F5F6F2"
+                            BorderBrush="#E5E8E3"
+                            BorderThickness="1"
+                            CornerRadius="9"
+                            Padding="10,5">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="25"/>
+                                <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <StackPanel>
+                            <StackPanel VerticalAlignment="Center">
                                 <TextBlock x:Name="BreakdownTitle" Text="今日缓存" Style="{StaticResource MetricTitleText}"/>
                                 <TextBlock x:Name="TokenBreakdown"
                                            Margin="0,4,0,0"
@@ -549,7 +583,15 @@
                                            FontSize="10.5"
                                            FontWeight="SemiBold"/>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                            <Border x:Name="TokenSummaryDivider"
+                                    Grid.Column="1"
+                                    Width="1"
+                                    Margin="12,2"
+                                    HorizontalAlignment="Center"
+                                    Background="#DDE2DC"/>
+                            <StackPanel Grid.Column="2"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center">
                                 <TextBlock x:Name="SecondaryMetricTitle"
                                            Text="额度状态"
                                            HorizontalAlignment="Right"
