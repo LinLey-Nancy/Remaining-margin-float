@@ -135,6 +135,11 @@
                 limit_window_seconds = 604800
                 reset_at = 1894060800
             }
+            secondary_window = [pscustomobject]@{
+                used_percent = 18.0
+                limit_window_seconds = 18000
+                reset_at = 1893474000
+            }
         }
         additional_rate_limits = @(
             [pscustomobject]@{
@@ -152,6 +157,53 @@
     $officialUsage = ConvertTo-CodexOfficialUsage `
         -Payload $officialPayload `
         -SampledAt ([DateTimeOffset]'2030-01-01T00:05:00Z')
+    $localDualPayloads = @(
+        [pscustomobject]@{
+            rate_limits = [pscustomobject]@{
+                primary = [pscustomobject]@{
+                    used_percent = 40.0
+                    window_minutes = 10080
+                    resets_at = 1894060800
+                }
+                secondary = [pscustomobject]@{
+                    used_percent = 18.0
+                    window_minutes = 300
+                    resets_at = 1893474000
+                }
+                plan_type = 'pro'
+            }
+        },
+        [pscustomobject]@{
+            rate_limits = [pscustomobject]@{
+                primary = [pscustomobject]@{
+                    used_percent = 18.0
+                    window_minutes = 300
+                    resets_at = 1893474000
+                }
+                secondary = [pscustomobject]@{
+                    used_percent = 40.0
+                    window_minutes = 10080
+                    resets_at = 1894060800
+                }
+                plan_type = 'pro'
+            }
+        }
+    )
+    $localDualUsages = @(
+        for ($index = 0; $index -lt $localDualPayloads.Count; $index++) {
+            Resolve-CodexQuotaUsage `
+                -OfficialUsage $null `
+                -SessionSnapshots @(
+                    [pscustomobject]@{
+                        RateLimitPayload = $localDualPayloads[$index]
+                        RateLimitObservedAt = (
+                            [DateTimeOffset]'2030-01-01T00:00:00Z'
+                        ).AddMinutes($index)
+                    }
+                ) `
+                -Now ([DateTimeOffset]'2030-01-01T00:05:00Z')
+        }
+    )
     $officialQuotaUsage = Resolve-CodexQuotaUsage `
         -OfficialUsage $officialUsage `
         -SessionSnapshots $selectionCandidates `
@@ -185,19 +237,35 @@
         )
         EmptySelectionHandled = $null -eq $emptySelection
         OfficialPrimaryUsageSelected = (
-            $officialUsage.UsedPercent -eq 40 -and
-            $officialUsage.WindowMinutes -eq 10080 -and
+            $officialUsage.UsedPercent -eq 18 -and
+            $officialUsage.WindowMinutes -eq 300 -and
+            $officialUsage.FiveHourWindow.UsedPercent -eq 18 -and
+            $officialUsage.WeeklyWindow.UsedPercent -eq 40 -and
             $officialUsage.PlanType -eq 'prolite'
         )
         AdditionalModelLimitIgnored = $officialUsage.UsedPercent -ne 0
         OfficialChannelPreferred = (
             $officialQuotaUsage.Channel -eq 'Official' -and
-            $officialQuotaUsage.UsedPercent -eq 40
+            $officialQuotaUsage.UsedPercent -eq 18 -and
+            $officialQuotaUsage.WeeklyWindow.UsedPercent -eq 40
         )
         LocalChannelFallbackSelected = (
             $localQuotaUsage.Channel -eq 'Local' -and
-            $localQuotaUsage.UsedPercent -eq 22 -and
+            $localQuotaUsage.UsedPercent -eq 0 -and
+            $null -eq $localQuotaUsage.FiveHourWindow -and
+            $localQuotaUsage.WeeklyWindow.UsedPercent -eq 22 -and
             $localQuotaUsage.PlanType -eq 'pro'
+        )
+        LocalDualWindowsOrderIndependent = (
+            $localDualUsages.Count -eq 2 -and
+            @($localDualUsages | Where-Object {
+                $_.Channel -eq 'Local' -and
+                $_.UsedPercent -eq 18 -and
+                $_.FiveHourWindow.UsedPercent -eq 18 -and
+                $_.FiveHourWindow.WindowMinutes -eq 300 -and
+                $_.WeeklyWindow.UsedPercent -eq 40 -and
+                $_.WeeklyWindow.WindowMinutes -eq 10080
+            }).Count -eq 2
         )
         MissingChannelsRemainUnknown = $null -eq $missingQuotaUsage
     } | ConvertTo-Json
@@ -234,6 +302,14 @@ if ($CheckProviderContracts) {
     $codexUsage = ConvertTo-CodexOfficialUsage `
         -Payload $codexPayload `
         -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $codexSnapshot = Get-CodexUsageSnapshot `
+        -OfficialUsageOverride $codexUsage `
+        -SkipOfficialRequest
+    $proWithoutWeeklyUsage = $codexUsage.PSObject.Copy()
+    $proWithoutWeeklyUsage.WeeklyWindow = $null
+    $proWithoutWeeklySnapshot = Get-CodexUsageSnapshot `
+        -OfficialUsageOverride $proWithoutWeeklyUsage `
+        -SkipOfficialRequest
 
     $deepSeekEvents = @([DeepSeekLogScanner]::ReadFile($deepSeekUsageFixturePath))
     $deepSeekPrimaryEvent = $deepSeekEvents |
@@ -278,11 +354,19 @@ if ($CheckProviderContracts) {
         -OfficialUsage $codexUsage `
         -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
     $expiredOfficialUsage = $codexUsage.PSObject.Copy()
-    $expiredOfficialUsage.ResetsAt = (
+    $expiredOfficialUsage.PlanType = 'plus'
+    $expiredFiveHourWindow = $codexUsage.FiveHourWindow.PSObject.Copy()
+    $expiredFiveHourWindow.ResetsAt = (
         [DateTimeOffset]'2030-01-01T11:59:00Z'
     ).ToUnixTimeSeconds()
+    $expiredOfficialUsage.FiveHourWindow = $expiredFiveHourWindow
     $expiredCurrentUsage = Get-CodexCurrentUsageOverride `
         -OfficialUsage $expiredOfficialUsage `
+        -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $proUsageWithExpiredFiveHour = $codexUsage.PSObject.Copy()
+    $proUsageWithExpiredFiveHour.FiveHourWindow = $expiredFiveHourWindow
+    $currentProWeeklyUsage = Get-CodexCurrentUsageOverride `
+        -OfficialUsage $proUsageWithExpiredFiveHour `
         -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
     $fixtureLocalRateLimitPayload = [pscustomobject]@{
         rate_limits = [pscustomobject]@{
@@ -322,7 +406,53 @@ if ($CheckProviderContracts) {
     [pscustomobject]@{
         CodexUsedPercent = $codexUsage.UsedPercent
         CodexWindowMinutes = $codexUsage.WindowMinutes
+        CodexFiveHourUsedPercent = $codexUsage.FiveHourWindow.UsedPercent
+        CodexWeeklyUsedPercent = $codexUsage.WeeklyWindow.UsedPercent
         CodexPlan = $codexUsage.PlanType
+        CodexPlusPrimaryPeriod = Get-CodexPrimaryQuotaPeriod -PlanType 'plus'
+        CodexProPrimaryPeriod = Get-CodexPrimaryQuotaPeriod -PlanType 'pro'
+        CodexProLitePrimaryPeriod = Get-CodexPrimaryQuotaPeriod -PlanType 'prolite'
+        CodexProAliasPeriods = @(
+            Get-CodexPrimaryQuotaPeriod -PlanType 'pro-lite'
+            Get-CodexPrimaryQuotaPeriod -PlanType 'Pro Lite'
+            Get-CodexPrimaryQuotaPeriod -PlanType 'pro_lite'
+        )
+        CodexSnapshotPrimaryPeriod = $codexSnapshot.PrimaryQuotaPeriod
+        CodexSnapshotRemainingPercent = $codexSnapshot.RemainingPercent
+        CodexSnapshotFiveHourUsedPercent = $codexSnapshot.FiveHourUsedPercent
+        CodexSnapshotFiveHourRemainingPercent = $codexSnapshot.FiveHourRemainingPercent
+        CodexSnapshotWeeklyUsedPercent = $codexSnapshot.WeeklyUsedPercent
+        CodexSnapshotWeeklyRemainingPercent = $codexSnapshot.WeeklyRemainingPercent
+        CodexProWithoutWeeklyRemainsUnknown = (
+            $proWithoutWeeklySnapshot.PrimaryQuotaPeriod -eq 'Weekly' -and
+            -not [bool]$proWithoutWeeklySnapshot.HasProgress -and
+            $proWithoutWeeklySnapshot.WindowLabel -eq '每周余量未知' -and
+            [bool]$proWithoutWeeklySnapshot.FiveHourAvailable -and
+            -not [bool]$proWithoutWeeklySnapshot.WeeklyAvailable
+        )
+        CodexNonFiniteQuotaValuesRejected = (
+            $null -eq (ConvertTo-CodexQuotaWindow `
+                -Window ([pscustomobject]@{
+                    used_percent = 'NaN'
+                    limit_window_seconds = 18000
+                    reset_at = 1893459600
+                }) `
+                -Format 'Official') -and
+            $null -eq (ConvertTo-CodexQuotaWindow `
+                -Window ([pscustomobject]@{
+                    used_percent = 18
+                    limit_window_seconds = 'Infinity'
+                    reset_at = 1893459600
+                }) `
+                -Format 'Official') -and
+            $null -eq (ConvertTo-CodexQuotaWindow `
+                -Window ([pscustomobject]@{
+                    used_percent = 18
+                    limit_window_seconds = 1e300
+                    reset_at = 1893459600
+                }) `
+                -Format 'Official')
+        )
         DeepSeekEventCount = $deepSeekEvents.Count
         DeepSeekPrimaryTokens = $deepSeekPrimaryEvent.TotalTokens
         DeepSeekPrimaryCostCny = $deepSeekPrimaryCost
@@ -343,14 +473,25 @@ if ($CheckProviderContracts) {
             $fallbackSnapshot.SampledAt -eq $freshSnapshot.SampledAt
         )
         CurrentOfficialUsagePreferred = (
-            $currentOfficialUsage.UsedPercent -eq $codexUsage.UsedPercent -and
+            $currentOfficialUsage.UsedPercent -eq 37 -and
+            $currentOfficialUsage.WindowMinutes -eq 10080 -and
             $currentOfficialUsage.SampledAt -eq $codexUsage.SampledAt -and
+            $currentOfficialUsage.FiveHourWindow.UsedPercent -eq 18 -and
+            $currentOfficialUsage.WeeklyWindow.UsedPercent -eq 37 -and
             [bool]$currentOfficialUsage.IsCached
+        )
+        ProCacheIgnoresExpiredFiveHourWindow = (
+            $currentProWeeklyUsage.UsedPercent -eq 37 -and
+            $currentProWeeklyUsage.WindowMinutes -eq 10080 -and
+            $null -eq $currentProWeeklyUsage.FiveHourWindow -and
+            $currentProWeeklyUsage.WeeklyWindow.UsedPercent -eq 37
         )
         ExpiredOfficialUsageFallsBackToLocal = (
             $null -eq $expiredCurrentUsage -and
             $expiredFallbackUsage.Channel -eq 'Local' -and
-            $expiredFallbackUsage.UsedPercent -eq 22
+            $expiredFallbackUsage.UsedPercent -eq 0 -and
+            $null -eq $expiredFallbackUsage.FiveHourWindow -and
+            $expiredFallbackUsage.WeeklyWindow.UsedPercent -eq 22
         )
         TransientRefreshFailuresClassified = (
             (Test-TransientRefreshFailure -StatusCode 0) -and
@@ -789,8 +930,10 @@ if ($CheckStateHistory) {
         ProviderId = 'Codex'
         Available = $true
         HasProgress = $true
+        FiveHourAvailable = $true
+        FiveHourRemainingPercent = 72.5
         RemainingPercent = 72.5
-        WindowLabel = 'Weekly quota'
+        WindowLabel = 'Five-hour quota'
         ResetDate = 'January 12'
         ResetCountdown = '4 days'
         ResetCount = 'Unavailable'
@@ -1175,14 +1318,22 @@ if ($CheckUsageHistory) {
             [string]$ProviderId = 'Codex',
             [string]$MetricType = 'Percent',
             [string]$Unit = '%',
-            [string]$ResetAtUtc = ''
+            [string]$ResetAtUtc = '',
+            [string]$QuotaPeriod = ''
         )
 
         return [pscustomobject]@{
-            Version = 1
+            Version = 3
             ProviderId = $ProviderId
             ObservedAtUtc = $now.AddHours(-$HoursAgo)
             MetricType = $MetricType
+            QuotaPeriod = if (
+                $ProviderId -eq 'Codex' -and $MetricType -eq 'Percent'
+            ) {
+                if ([string]::IsNullOrWhiteSpace($QuotaPeriod)) {
+                    'FiveHour'
+                } else { $QuotaPeriod }
+            } else { '' }
             RemainingValue = $Value
             Unit = $Unit
             ResetAtUtc = $ResetAtUtc
@@ -1296,6 +1447,7 @@ if ($CheckUsageHistory) {
         ProviderId = 'Codex'
         Available = $true
         HasProgress = $true
+        FiveHourAvailable = $true
         RemainingPercent = 65
     }
     $codexRapidSamples = @(
@@ -1313,6 +1465,37 @@ if ($CheckUsageHistory) {
         -Snapshot $codexRapidSnapshot `
         -WindowMinutes 30 `
         -CodexPercent 20 `
+        -Now $now
+    $weeklyHistorySnapshot = [pscustomobject]@{
+        ProviderId = 'Codex'
+        Available = $true
+        HasProgress = $true
+        PrimaryQuotaPeriod = 'Weekly'
+        WeeklyAvailable = $true
+        RemainingPercent = 91
+        ResetAt = $now.AddDays(6)
+    }
+    $weeklyHistorySample = ConvertTo-UsageHistorySample `
+        -Snapshot $weeklyHistorySnapshot `
+        -ObservedAt $now
+    $mixedPeriodSamples = @(
+        (New-HistoryCheckSample `
+            -HoursAgo 2 `
+            -Value 10 `
+            -QuotaPeriod 'FiveHour'),
+        (New-HistoryCheckSample `
+            -HoursAgo 1 `
+            -Value 96 `
+            -QuotaPeriod 'Weekly'),
+        (New-HistoryCheckSample `
+            -HoursAgo 0 `
+            -Value 91 `
+            -QuotaPeriod 'Weekly')
+    )
+    $weeklyPeriodTrend = Get-UsageTrend `
+        -Samples $mixedPeriodSamples `
+        -CurrentSample $mixedPeriodSamples[-1] `
+        -Hours 24 `
         -Now $now
     $codexNetDropSamples = @(
         (New-HistoryCheckSample -HoursAgo 0.5 -Value 68.2),
@@ -1428,6 +1611,9 @@ if ($CheckUsageHistory) {
     $legacyHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.HistoryLegacyDiagnostic.{0}.jsonl' -f $PID
     )
+    $legacyCodexHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryLegacyCodexDiagnostic.{0}.jsonl' -f $PID
+    )
     $invalidHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.HistoryInvalidDiagnostic.{0}.jsonl' -f $PID
     )
@@ -1446,6 +1632,7 @@ if ($CheckUsageHistory) {
     $persistenceRoundTrip = $false
     $restartReloadRoundTrip = $false
     $legacyMigration = $false
+    $legacyWeeklyCodexExcluded = $false
     $calendarDateAligned = $false
     $importMergeRoundTrip = $false
     $invalidImportRejected = $false
@@ -1472,9 +1659,10 @@ if ($CheckUsageHistory) {
         $savedSample = $savedLines[0] | ConvertFrom-Json
         $persistenceRoundTrip = (
             $savedLines.Count -eq 3 -and
-            $savedSample.v -eq 2 -and
+            $savedSample.v -eq 3 -and
             $savedSample.ProviderId -eq 'Codex' -and
             $savedSample.MetricType -eq 'Percent' -and
+            $savedSample.QuotaPeriod -eq 'FiveHour' -and
             $savedSample.PSObject.Properties.Name -contains 'LocalDate' -and
             $savedSample.TimeZoneId -eq $calendarTimeZone.Id -and
             $savedSample.PSObject.Properties.Name -notcontains 'AccountName' -and
@@ -1491,13 +1679,14 @@ if ($CheckUsageHistory) {
         )
         $restartReloadRoundTrip = (
             $reloaded.Count -eq 3 -and
-            $reloaded[0].Version -eq 2 -and
+            $reloaded[0].Version -eq 3 -and
+            $reloaded[0].QuotaPeriod -eq 'FiveHour' -and
             $reloaded[-1].RemainingValue -eq 60
         )
 
         $calendarRecord = [ordered]@{
             v = 1
-            ProviderId = 'Codex'
+            ProviderId = 'DeepSeek'
             ObservedAtUtc = '2029-12-31T16:30:00.0000000+00:00'
             MetricType = 'Percent'
             RemainingValue = 50
@@ -1518,13 +1707,34 @@ if ($CheckUsageHistory) {
         )
         $legacyMigration = (
             $legacyReloaded.Count -eq 1 -and
-            $legacyReloaded[0].Version -eq 2
+            $legacyReloaded[0].Version -eq 3
         )
         $calendarDateAligned = (
             $legacyReloaded.Count -eq 1 -and
             $legacyReloaded[0].LocalDate -eq '2030-01-01' -and
             $legacyReloaded[0].UtcOffsetMinutes -eq 480
         )
+
+        $legacyCodexRecord = [ordered]@{
+            v = 2
+            ProviderId = 'Codex'
+            ObservedAtUtc = '2030-01-01T11:00:00.0000000+00:00'
+            MetricType = 'Percent'
+            RemainingValue = 97
+            Unit = '%'
+            ResetAtUtc = '2030-01-08T00:00:00.0000000+00:00'
+        } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText(
+            $legacyCodexHistoryPath,
+            $legacyCodexRecord,
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $legacyWeeklyCodexExcluded = @(
+            Read-UsageHistory `
+                -Path $legacyCodexHistoryPath `
+                -Now $now `
+                -BypassCache
+        ).Count -eq 0
 
         $importResult = Import-UsageHistory `
             -Path $historyTestPath `
@@ -1592,6 +1802,7 @@ if ($CheckUsageHistory) {
             ProviderId = 'Codex'
             Available = $true
             HasProgress = $true
+            FiveHourAvailable = $true
             RemainingPercent = 75
         }
         for ($minute = 59; $minute -ge 0; $minute--) {
@@ -1642,6 +1853,7 @@ if ($CheckUsageHistory) {
             $historyTestPath
             $historyImportPath
             $legacyHistoryPath
+            $legacyCodexHistoryPath
             $invalidHistoryPath
             $oversizedHistoryPath
             $minuteHistoryPath
@@ -1813,6 +2025,13 @@ if ($CheckUsageHistory) {
         PersistenceRoundTrip = $persistenceRoundTrip
         RestartReloadRoundTrip = $restartReloadRoundTrip
         LegacyHistoryMigration = $legacyMigration
+        LegacyWeeklyCodexExcluded = $legacyWeeklyCodexExcluded
+        WeeklyQuotaHistoryIsolated = (
+            $weeklyHistorySample.QuotaPeriod -eq 'Weekly' -and
+            $weeklyHistorySample.RemainingValue -eq 91 -and
+            $weeklyPeriodTrend.SampleCount -eq 2 -and
+            $weeklyPeriodTrend.Change -eq -5
+        )
         CalendarDateAligned = $calendarDateAligned
         ImportMergeRoundTrip = $importMergeRoundTrip
         InvalidImportRejected = $invalidImportRejected

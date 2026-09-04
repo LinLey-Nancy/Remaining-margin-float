@@ -97,10 +97,35 @@ Assert-Diagnostic -Condition ($codex.SelectedResetAt -eq 1893459600) `
 
 $contracts = Invoke-JsonDiagnostic -Name 'CheckProviderContracts'
 Assert-Diagnostic -Condition (
-    [Math]::Abs([double]$contracts.CodexUsedPercent - 37) -lt 0.0001 -and
-    $contracts.CodexWindowMinutes -eq 10080 -and
+    [Math]::Abs([double]$contracts.CodexUsedPercent - 18) -lt 0.0001 -and
+    $contracts.CodexWindowMinutes -eq 300 -and
+    $contracts.CodexFiveHourUsedPercent -eq 18 -and
+    $contracts.CodexWeeklyUsedPercent -eq 37 -and
     $contracts.CodexPlan -eq 'prolite'
 ) -Message 'Codex official response contract fixture'
+Assert-Diagnostic -Condition (
+    $contracts.CodexPlusPrimaryPeriod -eq 'FiveHour' -and
+    $contracts.CodexProPrimaryPeriod -eq 'Weekly' -and
+    $contracts.CodexProLitePrimaryPeriod -eq 'Weekly' -and
+    @($contracts.CodexProAliasPeriods | Where-Object { $_ -ne 'Weekly' }).Count -eq 0
+) -Message 'Codex plan selects the correct primary quota period'
+Assert-Diagnostic -Condition (
+    $contracts.CodexSnapshotPrimaryPeriod -eq 'Weekly' -and
+    $contracts.CodexSnapshotRemainingPercent -eq 63 -and
+    $contracts.CodexSnapshotFiveHourUsedPercent -eq 18 -and
+    $contracts.CodexSnapshotFiveHourRemainingPercent -eq 82 -and
+    $contracts.CodexSnapshotWeeklyUsedPercent -eq 37 -and
+    $contracts.CodexSnapshotWeeklyRemainingPercent -eq 63
+) -Message 'Codex snapshot preserves both quota windows for Pro'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexProWithoutWeeklyRemainsUnknown
+) -Message 'Codex Pro does not fall back to five-hour quota when weekly data is missing'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexNonFiniteQuotaValuesRejected
+) -Message 'Codex quota parser rejects non-finite percentage and duration values'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.ProCacheIgnoresExpiredFiveHourWindow
+) -Message 'Codex Pro cache validity follows the weekly quota window'
 Assert-Diagnostic -Condition (
     $contracts.DeepSeekEventCount -eq 2 -and
     $contracts.DeepSeekPrimaryTokens -eq 3000000 -and
@@ -231,6 +256,10 @@ Assert-Diagnostic -Condition ([bool]$history.RestartReloadRoundTrip) `
     -Message 'History restart reload round trip'
 Assert-Diagnostic -Condition ([bool]$history.LegacyHistoryMigration) `
     -Message 'Legacy history schema migration'
+Assert-Diagnostic -Condition ([bool]$history.LegacyWeeklyCodexExcluded) `
+    -Message 'Legacy weekly Codex history isolation'
+Assert-Diagnostic -Condition ([bool]$history.WeeklyQuotaHistoryIsolated) `
+    -Message 'Explicit weekly Codex history remains isolated from five-hour data'
 Assert-Diagnostic -Condition ([bool]$history.CalendarDateAligned) `
     -Message 'History local calendar date alignment'
 Assert-Diagnostic -Condition ([bool]$history.ImportMergeRoundTrip) `
@@ -340,7 +369,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.8.8') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.9.0') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -352,9 +381,9 @@ Assert-Diagnostic -Condition ([bool]$transitions.TaskViewHidden) `
     -Message 'Task view visibility'
 Assert-Diagnostic -Condition (
     $transitions.ExpandedWidth -eq 400 -and
-    $transitions.ExpandedHeight -eq 560 -and
+    $transitions.ExpandedHeight -eq 522 -and
     $transitions.ReopenedWidth -eq 400 -and
-    $transitions.ReopenedHeight -eq 560 -and
+    $transitions.ReopenedHeight -eq 522 -and
     $transitions.InactiveWidth -eq 80 -and
     $transitions.InactiveHeight -eq 80 -and
     $transitions.ExpandedVisibility -eq 'Visible' -and
@@ -451,6 +480,10 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.CompactHeaderRestored -and
     [bool]$transitions.ExpandedHeaderHierarchy
 ) -Message 'Expanded header alignment and font hierarchy'
+Assert-Diagnostic -Condition ([bool]$transitions.TokenSummaryVisualReady) `
+    -Message 'Token summary visual grouping'
+Assert-Diagnostic -Condition ([bool]$transitions.AlertKeysIsolateQuotaPeriods) `
+    -Message 'Codex alert deduplication isolates five-hour and weekly periods'
 
 Assert-Diagnostic `
     -Condition (
@@ -473,6 +506,18 @@ Assert-Diagnostic `
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendCardsFollowQuotaPalette) `
     -Message 'Trend card backgrounds follow quota palette'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.ProQuotaLayoutReady) `
+    -Message 'Codex Pro uses the weekly-only quota layout'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusMissingFiveHourRemainsUnknown) `
+    -Message 'Missing Codex Plus five-hour quota remains unknown'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyOnlyDoesNotDriveMonitoring) `
+    -Message 'Weekly-only data does not drive Codex Plus monitoring'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusFiveHourWinsConflictingQuotaValues) `
+    -Message 'Five-hour quota wins conflicting Codex Plus values'
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendTimeAxisAligned) `
     -Message 'Trend chart uses elapsed-time x coordinates'

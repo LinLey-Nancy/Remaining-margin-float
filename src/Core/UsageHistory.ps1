@@ -2,6 +2,15 @@
     return Join-Path (Get-AppDataDirectory) 'usage-history.jsonl'
 }
 
+function Get-UsageQuotaPeriod {
+    param($Value)
+
+    if ($Value -and $Value.PSObject.Properties['QuotaPeriod']) {
+        return [string]$Value.QuotaPeriod
+    }
+    return ''
+}
+
 function Get-UsageHistoryCalendarMetadata {
     param(
         [DateTimeOffset]$ObservedAt,
@@ -33,10 +42,23 @@ function ConvertFrom-UsageHistoryRecord {
     if (-not $Saved) { return $null }
     $providerId = [string]$Saved.ProviderId
     $metricType = [string]$Saved.MetricType
+    $quotaPeriod = if ($Saved.PSObject.Properties['QuotaPeriod']) {
+        [string]$Saved.QuotaPeriod
+    } else { '' }
     if (
         $providerId -notin @('Codex', 'DeepSeek') -or
         $metricType -notin @('Percent', 'Balance')
     ) {
+        return $null
+    }
+    if (
+        $providerId -eq 'Codex' -and
+        $metricType -eq 'Percent' -and
+        $quotaPeriod -notin @('FiveHour', 'Weekly')
+    ) {
+        # Pre-1.9.0 Codex percent samples represented the weekly quota. They
+        # have no explicit period and cannot be safely mixed into either the
+        # Plus five-hour trend or the Pro weekly trend.
         return $null
     }
 
@@ -79,13 +101,14 @@ function ConvertFrom-UsageHistoryRecord {
         -ObservedAt $observedAt `
         -TimeZone $TimeZone
     return [pscustomobject]@{
-        Version = 2
+        Version = 3
         ProviderId = $providerId
         ObservedAtUtc = $observedAt
         LocalDate = $calendar.LocalDate
         TimeZoneId = $calendar.TimeZoneId
         UtcOffsetMinutes = $calendar.UtcOffsetMinutes
         MetricType = $metricType
+        QuotaPeriod = $quotaPeriod
         RemainingValue = [Math]::Round($remainingValue, 4)
         Unit = [string]$Saved.Unit
         ResetAtUtc = $resetAtUtc
@@ -115,13 +138,16 @@ function Select-UsageHistoryRetentionWindow {
             -ObservedAt $observedAt `
             -TimeZone $TimeZone
         $normalized = [pscustomobject]@{
-            Version = 2
+            Version = 3
             ProviderId = [string]$sample.ProviderId
             ObservedAtUtc = $observedAt
             LocalDate = $calendar.LocalDate
             TimeZoneId = $calendar.TimeZoneId
             UtcOffsetMinutes = $calendar.UtcOffsetMinutes
             MetricType = [string]$sample.MetricType
+            QuotaPeriod = if ($sample.PSObject.Properties['QuotaPeriod']) {
+                [string]$sample.QuotaPeriod
+            } else { '' }
             RemainingValue = [Math]::Round(
                 [double]$sample.RemainingValue,
                 4
@@ -129,9 +155,10 @@ function Select-UsageHistoryRetentionWindow {
             Unit = [string]$sample.Unit
             ResetAtUtc = [string]$sample.ResetAtUtc
         }
-        $key = '{0}|{1}|{2}|{3}' -f
+        $key = '{0}|{1}|{2}|{3}|{4}' -f
             $normalized.ProviderId,
             $normalized.MetricType,
+            $normalized.QuotaPeriod,
             $normalized.Unit,
             $normalized.ObservedAtUtc.ToString(
                 'o',
@@ -151,6 +178,20 @@ function ConvertTo-UsageHistorySample {
 
     if (-not $Snapshot -or -not [bool]$Snapshot.Available) {
         return $null
+    }
+    $codexQuotaPeriod = if (
+        [string]$Snapshot.ProviderId -eq 'Codex' -and
+        $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
+        [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
+    ) { 'Weekly' } else { 'FiveHour' }
+    if ([string]$Snapshot.ProviderId -eq 'Codex') {
+        $availabilityProperty = "${codexQuotaPeriod}Available"
+        if (
+            -not $Snapshot.PSObject.Properties[$availabilityProperty] -or
+            -not [bool]$Snapshot.$availabilityProperty
+        ) {
+            return $null
+        }
     }
 
     $metricType = ''
@@ -199,13 +240,16 @@ function ConvertTo-UsageHistorySample {
         -ObservedAt $ObservedAt `
         -TimeZone $TimeZone
     return [pscustomobject]@{
-        Version = 2
+        Version = 3
         ProviderId = [string]$Snapshot.ProviderId
         ObservedAtUtc = $ObservedAt.ToUniversalTime()
         LocalDate = $calendar.LocalDate
         TimeZoneId = $calendar.TimeZoneId
         UtcOffsetMinutes = $calendar.UtcOffsetMinutes
         MetricType = $metricType
+        QuotaPeriod = if ([string]$Snapshot.ProviderId -eq 'Codex') {
+            $codexQuotaPeriod
+        } else { '' }
         RemainingValue = [Math]::Round($remainingValue, 4)
         Unit = $unit
         ResetAtUtc = $resetAtUtc
@@ -249,13 +293,14 @@ function ConvertTo-UsageHistorySamples {
                 'CNY'
             }
             $samples.Add([pscustomobject]@{
-                Version = 2
+                Version = 3
                 ProviderId = 'DeepSeek'
                 ObservedAtUtc = $ObservedAt.ToUniversalTime()
                 LocalDate = $calendar.LocalDate
                 TimeZoneId = $calendar.TimeZoneId
                 UtcOffsetMinutes = $calendar.UtcOffsetMinutes
                 MetricType = 'Balance'
+                QuotaPeriod = ''
                 RemainingValue = [Math]::Round($balance, 4)
                 Unit = $currency
                 ResetAtUtc = ''
@@ -361,7 +406,7 @@ function Save-UsageHistory {
                 -ObservedAt ([DateTimeOffset]$_.ObservedAtUtc) `
                 -TimeZone $TimeZone
             [ordered]@{
-                v = 2
+                v = 3
                 ProviderId = [string]$_.ProviderId
                 ObservedAtUtc = ([DateTimeOffset]$_.ObservedAtUtc).
                     ToUniversalTime().
@@ -370,6 +415,9 @@ function Save-UsageHistory {
                 TimeZoneId = $calendar.TimeZoneId
                 UtcOffsetMinutes = $calendar.UtcOffsetMinutes
                 MetricType = [string]$_.MetricType
+                QuotaPeriod = if ($_.PSObject.Properties['QuotaPeriod']) {
+                    [string]$_.QuotaPeriod
+                } else { '' }
                 RemainingValue = [Math]::Round([double]$_.RemainingValue, 4)
                 Unit = [string]$_.Unit
                 ResetAtUtc = [string]$_.ResetAtUtc
@@ -425,7 +473,7 @@ function Add-UsageHistoryLines {
                 -ObservedAt ([DateTimeOffset]$_.ObservedAtUtc) `
                 -TimeZone $TimeZone
             [ordered]@{
-                v = 2
+                v = 3
                 ProviderId = [string]$_.ProviderId
                 ObservedAtUtc = ([DateTimeOffset]$_.ObservedAtUtc).
                     ToUniversalTime().
@@ -434,6 +482,9 @@ function Add-UsageHistoryLines {
                 TimeZoneId = $calendar.TimeZoneId
                 UtcOffsetMinutes = $calendar.UtcOffsetMinutes
                 MetricType = [string]$_.MetricType
+                QuotaPeriod = if ($_.PSObject.Properties['QuotaPeriod']) {
+                    [string]$_.QuotaPeriod
+                } else { '' }
                 RemainingValue = [Math]::Round([double]$_.RemainingValue, 4)
                 Unit = [string]$_.Unit
                 ResetAtUtc = [string]$_.ResetAtUtc
@@ -497,6 +548,9 @@ function Get-UsageHistoryCoverageFingerprint {
                     [Globalization.CultureInfo]::InvariantCulture
                 )
                 MetricType = [string]$sample.MetricType
+                QuotaPeriod = if ($sample.PSObject.Properties['QuotaPeriod']) {
+                    [string]$sample.QuotaPeriod
+                } else { '' }
                 RemainingValue = [Math]::Round(
                     [double]$sample.RemainingValue,
                     4
@@ -895,11 +949,13 @@ function Get-PreviousUsageHistorySample {
         $CurrentSample
     )
 
+    $currentQuotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
     for ($index = $Samples.Count - 1; $index -ge 0; $index--) {
         $candidate = $Samples[$index]
         if (
             $candidate.ProviderId -eq $CurrentSample.ProviderId -and
             $candidate.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $candidate) -eq $currentQuotaPeriod -and
             $candidate.Unit -eq $CurrentSample.Unit -and
             $candidate.ObservedAtUtc -le $CurrentSample.ObservedAtUtc
         ) {
@@ -1093,10 +1149,12 @@ function Get-UsageTrend {
 
     $nowUtc = $Now.ToUniversalTime()
     $cutoff = $nowUtc.AddHours(-$Hours)
+    $currentQuotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
     $matching = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $currentQuotaPeriod -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -le $nowUtc.AddMinutes(5)
         } | Sort-Object ObservedAtUtc
@@ -1193,10 +1251,12 @@ function Get-DepletionForecast {
     }
     if (-not $CurrentSample) { return $insufficient }
 
+    $currentQuotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
     $matching = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $currentQuotaPeriod -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -ge $Now.ToUniversalTime().AddDays(-7) -and
             $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
@@ -1459,9 +1519,14 @@ function Measure-RapidUsageDrop {
         $metricType = 'Percent'
         $threshold = $CodexPercent
         $unit = '%'
+        $quotaPeriod = if (
+            $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
+            [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
+        ) { 'Weekly' } else { 'FiveHour' }
+        $quotaLabel = if ($quotaPeriod -eq 'Weekly') { '每周' } else { '5 小时' }
         if (-not [bool]$Snapshot.HasProgress) {
             return & $emptyResult $providerId $metricType $threshold $unit `
-                '等待 Codex 余量数据'
+                "等待 Codex $quotaLabel 余量数据"
         }
     }
     elseif ($providerId -eq 'DeepSeek') {
@@ -1493,11 +1558,14 @@ function Measure-RapidUsageDrop {
         return & $emptyResult $providerId '' 0.0 '' '暂不支持此数据源'
     }
 
+    if ($providerId -ne 'Codex') { $quotaPeriod = '' }
+
     $cutoff = $Now.ToUniversalTime().AddMinutes(-$WindowMinutes)
     $series = @(
         $Samples | Where-Object {
             $_.ProviderId -eq $providerId -and
             $_.MetricType -eq $metricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $quotaPeriod -and
             $_.Unit -eq $unit -and
             $_.ObservedAtUtc -ge $cutoff -and
             $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
