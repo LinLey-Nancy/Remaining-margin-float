@@ -52,7 +52,7 @@
 - 使用历史跨重启和版本更新持久化，并按本地日期、时区和 UTC 偏移校准
 - 完整页面状态跨重启和版本更新续接，滚动保留 168 小时；相同内容只保存一份，采集时间节点独立保留
 - 可导出或导入合并脱敏使用记录，便于备份、换机和恢复
-- “数据与诊断”提供 Provider 健康状态及可复制、可导出的脱敏报告
+- “数据与诊断”提供 Provider 健康状态、脱敏运行日志及可复制、可导出的诊断报告
 - 根据最近下降速度预测预计耗尽时间；Codex 会同时考虑额度重置时间
 - 余量首次降到用户设定的阈值时通过通知区域提醒；默认 20%，可在右键菜单调整或关闭
 - 可自定义“短时间快速下降”提醒的时间范围和阈值：Codex 按百分比点，DeepSeek 可选百分比点或具体金额
@@ -115,13 +115,13 @@ Setup 官方不可变 GitHub Release 获取编译器，并在使用前验证其 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.9.0-Setup.exe
-Remaining-Margin-Float-v1.9.0-Setup.exe.sha256
+Remaining-Margin-Float-v1.9.1-Setup.exe
+Remaining-Margin-Float-v1.9.1-Setup.exe.sha256
 ```
 
 本版本的用户可见更新内容见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
-推送与 `VERSION` 一致的标签（例如 `v1.9.0`）后，`Windows 发布`工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.9.1`）后，`Windows 发布`工作流会
 在 Windows Runner 上测试、构建，并真实执行静默安装与卸载验证，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
@@ -195,7 +195,8 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 保留最近 168 小时，每个采集时间节点单独保存；内容完全相同时通过 SHA-256
 引用同一份数据。完整内容使用 Windows DPAPI `CurrentUser` 加密，索引只包含
 时间、数据源、应用版本和内容哈希。状态仓库不保存 API Key、访问令牌、刷新
-令牌、Authorization 或密码字段，也不会通过“数据与诊断”导出。
+令牌、Authorization 或密码字段，也不会通过“数据与诊断”导出。时间节点按天追加到
+小型 JSONL 分片，最新状态使用独立的小索引；刷新和退出不再重写整个 168 小时历史。
 
 趋势历史保存在
 `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`，只包含数据源、
@@ -203,8 +204,13 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 （包括每分钟自动刷新和手动刷新）都会追加样本，并保留最近 8 个本地日历日；
 DeepSeek 设置预算后会同时保留百分比与余额样本，以支持两种快速下降规则。记录不写入账号名称、邮箱、Token、API Key
 或访问令牌。右键菜单“数据与诊断”可导出或导入合并同一脱敏格式；换机导入后
-会依据目标电脑时区重新校准日期。Codex 1.9.0 起只把明确标识为 `FiveHour` 或
-`Weekly` 的同周期样本用于趋势和提醒；旧版本留下的无周期标识 Codex 百分比样本不会混入新趋势。
+会依据目标电脑时区重新校准日期。Codex 1.9.0 起按 `FiveHour` 或 `Weekly`
+隔离趋势和提醒；v1/v2 历史中的 Codex 百分比样本会按升级前语义自动识别为
+`Weekly`，因此 Pro / Pro Lite 覆盖安装或重新安装后仍能继续显示原有趋势，且不会
+混入 Plus 的 5 小时趋势。
+
+运行日志保存在
+`%LOCALAPPDATA%\RemainingMarginFloat\logs\runtime.log`，记录启动、刷新、窗口状态切换、历史写入和关闭耗时及异常。日志为 JSONL，单文件最大 2 MB，最多保留 4 个备份；凭据、邮箱和用户路径会在写入前脱敏。可从托盘右键菜单的“数据与诊断 → 打开运行日志目录”直接查看。
 
 ## 常见问题
 
