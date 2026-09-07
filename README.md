@@ -97,6 +97,7 @@ PowerShell 执行策略。它会优先异步启动 `dist` 中与 `VERSION` 匹�
 
 ```powershell
 powershell.exe -NoProfile -File .\Build-Package.ps1 -SkipArchive
+powershell.exe -NoProfile -File .\Test-Responsiveness.ps1
 powershell.exe -NoProfile -File .\Build-Installer.ps1
 powershell.exe -NoProfile -File .\Test-Installer.ps1
 ```
@@ -106,6 +107,9 @@ powershell.exe -NoProfile -File .\Test-Installer.ps1
 SHA-256，并在自身进程中
 托管 PowerShell；不会释放内嵌脚本、创建隐藏的 `powershell.exe` 子进程或使用
 `ExecutionPolicy Bypass`。
+
+`Test-Responsiveness.ps1` 会启动隔离的打包实例并持续约 75 秒，实际验证展开、
+收起、自动刷新、后台历史补录和关闭期间的界面响应；发布前应至少运行一次。
 
 `Build-Installer.ps1` 使用 Inno Setup 6/7 命令行编译器生成支持选择安装位置、
 覆盖升级、开始菜单、可选桌面快捷方式和标准卸载流程的安装程序。CI 会从 Inno
