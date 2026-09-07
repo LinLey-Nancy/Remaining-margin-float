@@ -236,6 +236,10 @@ $previousInstanceScope = [Environment]::GetEnvironmentVariable(
     'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
     $processEnvironment
 )
+$previousLocalAppData = [Environment]::GetEnvironmentVariable(
+    'LOCALAPPDATA',
+    $processEnvironment
+)
 $previousGuiCheckResult = [Environment]::GetEnvironmentVariable(
     'REMAINING_MARGIN_FLOAT_GUI_CHECK_RESULT',
     $processEnvironment
@@ -292,6 +296,16 @@ try {
     [Environment]::SetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_GUI_CHECK',
         '1',
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'LOCALAPPDATA',
+        (Join-Path $negativeTestRoot 'gui-localappdata'),
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
+        ('GuiCheck.{0}.{1}' -f $PID, [Guid]::NewGuid().ToString('N')),
         $processEnvironment
     )
     $guiCheckResultPath = Join-Path $negativeTestRoot 'gui-check-result.txt'
@@ -376,6 +390,11 @@ finally {
     [Environment]::SetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',
         $previousInstanceScope,
+        $processEnvironment
+    )
+    [Environment]::SetEnvironmentVariable(
+        'LOCALAPPDATA',
+        $previousLocalAppData,
         $processEnvironment
     )
     [Environment]::SetEnvironmentVariable(
