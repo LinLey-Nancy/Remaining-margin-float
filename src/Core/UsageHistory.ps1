@@ -2,6 +2,56 @@
     return Join-Path (Get-AppDataDirectory) 'usage-history.jsonl'
 }
 
+function Enter-UsageHistoryWriteLock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $normalizedPath = [IO.Path]::GetFullPath($Path).ToLowerInvariant()
+    $pathBytes = [Text.Encoding]::UTF8.GetBytes($normalizedPath)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $pathHash = ([BitConverter]::ToString(
+            $algorithm.ComputeHash($pathBytes)
+        )).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+        [Array]::Clear($pathBytes, 0, $pathBytes.Length)
+    }
+    $mutex = New-Object Threading.Mutex(
+        $false,
+        "Local\RemainingMarginFloat.UsageHistory.$pathHash"
+    )
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw '等待使用历史写入锁超时。'
+        }
+        return $mutex
+    }
+    catch {
+        $mutex.Dispose()
+        throw
+    }
+}
+
+function Exit-UsageHistoryWriteLock {
+    param($Mutex)
+
+    if (-not $Mutex) { return }
+    try { $Mutex.ReleaseMutex() } catch {}
+    $Mutex.Dispose()
+}
+
 function Get-UsageQuotaPeriod {
     param($Value)
 
@@ -42,7 +92,11 @@ function ConvertFrom-UsageHistoryRecord {
     if (-not $Saved) { return $null }
     $providerId = [string]$Saved.ProviderId
     $metricType = [string]$Saved.MetricType
-    $quotaPeriod = if ($Saved.PSObject.Properties['QuotaPeriod']) {
+    $recordVersion = if ($Saved.PSObject.Properties['v']) {
+        try { [int]$Saved.v } catch { 0 }
+    } else { 0 }
+    $hasQuotaPeriod = $null -ne $Saved.PSObject.Properties['QuotaPeriod']
+    $quotaPeriod = if ($hasQuotaPeriod) {
         [string]$Saved.QuotaPeriod
     } else { '' }
     if (
@@ -51,15 +105,20 @@ function ConvertFrom-UsageHistoryRecord {
     ) {
         return $null
     }
-    if (
-        $providerId -eq 'Codex' -and
-        $metricType -eq 'Percent' -and
-        $quotaPeriod -notin @('FiveHour', 'Weekly')
-    ) {
-        # Pre-1.9.0 Codex percent samples represented the weekly quota. They
-        # have no explicit period and cannot be safely mixed into either the
-        # Plus five-hour trend or the Pro weekly trend.
-        return $null
+    if ($providerId -eq 'Codex' -and $metricType -eq 'Percent') {
+        if (
+            -not $hasQuotaPeriod -and
+            $recordVersion -ge 1 -and
+            $recordVersion -le 2
+        ) {
+            # Before v1.9.0, Codex percent history always represented the
+            # weekly allowance. Tag it during schema migration so Pro keeps
+            # its trend while Plus still isolates the new five-hour period.
+            $quotaPeriod = 'Weekly'
+        }
+        elseif ($quotaPeriod -notin @('FiveHour', 'Weekly')) {
+            return $null
+        }
     }
 
     $observedAt = [DateTimeOffset]::Parse(
@@ -315,53 +374,42 @@ function Read-UsageHistory {
         [string]$Path = '',
         [DateTimeOffset]$Now = [DateTimeOffset]::Now,
         [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local,
-        [switch]$BypassCache
+        [switch]$BypassCache,
+        [switch]$ForAnalysis
     )
 
     $usesDefaultPath = [string]::IsNullOrWhiteSpace($Path)
     if (
         $usesDefaultPath -and
+        $ForAnalysis -and
         -not $BypassCache -and
         $null -ne $script:UsageHistoryCache
     ) {
         return @($script:UsageHistoryCache)
     }
 
-    $items = New-Object Collections.Generic.List[object]
     if ($usesDefaultPath) {
         $Path = Get-UsageHistoryPath
     }
     $path = [IO.Path]::GetFullPath($Path)
+    $history = @()
     if (Test-Path -LiteralPath $path -PathType Leaf) {
         $historyFile = Get-Item -LiteralPath $path
         if ($historyFile.Length -gt 16MB) {
             throw '使用记录文件超过 16 MB 安全上限。'
         }
-        foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8)) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            if ($line.Length -gt 65536) {
-                throw '使用记录包含超过 64 KB 的异常记录。'
-            }
-            try {
-                $saved = $line | ConvertFrom-Json
-                $sample = ConvertFrom-UsageHistoryRecord `
-                    -Saved $saved `
-                    -TimeZone $TimeZone
-                if ($sample) { $items.Add($sample) }
-            }
-            catch {
-                # A damaged history line is ignored without discarding valid samples.
-            }
+        $history = @(
+            [UsageHistoryLogScanner]::ReadFile($path, $Now, $TimeZone)
+        )
+        if ($ForAnalysis) {
+            $history = @(
+                [UsageHistoryLogScanner]::SelectForAnalysis(
+                    [UsageHistoryRecordData[]]$history
+                )
+            )
         }
     }
-
-    $history = @(
-        Select-UsageHistoryRetentionWindow `
-            -Samples $items `
-            -Now $Now `
-            -TimeZone $TimeZone
-    )
-    if ($usesDefaultPath) {
+    if ($usesDefaultPath -and $ForAnalysis) {
         $script:UsageHistoryCache = $history
     }
     return $history
@@ -372,6 +420,7 @@ function Save-UsageHistory {
         [object[]]$Samples,
         [string]$Path = '',
         [switch]$AllowDiagnosticWrite,
+        [switch]$SkipWriteLock,
         [DateTimeOffset]$Now = [DateTimeOffset]::Now,
         [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
     )
@@ -425,6 +474,11 @@ function Save-UsageHistory {
         }
     )
 
+    $writeLock = if ($SkipWriteLock) {
+        $null
+    } else {
+        Enter-UsageHistoryWriteLock -Path $path
+    }
     try {
         [IO.File]::WriteAllLines(
             $temporaryPath,
@@ -445,6 +499,7 @@ function Save-UsageHistory {
         if (Test-Path -LiteralPath $backupPath) {
             Remove-Item -LiteralPath $backupPath -Force
         }
+        Exit-UsageHistoryWriteLock -Mutex $writeLock
     }
 }
 
@@ -491,25 +546,31 @@ function Add-UsageHistoryLines {
             } | ConvertTo-Json -Compress
         }
     )
-    $encoding = New-Object Text.UTF8Encoding($false)
-    $newBytes = 0L
-    foreach ($line in $lines) {
-        $newBytes += $encoding.GetByteCount($line + [Environment]::NewLine)
-    }
-    $existingBytes = if (Test-Path -LiteralPath $path -PathType Leaf) {
-        (Get-Item -LiteralPath $path).Length
-    } else { 0L }
-    if (($existingBytes + $newBytes) -gt 16MB) {
-        throw 'History file exceeds the 16 MB safety limit.'
-    }
-    $writer = New-Object IO.StreamWriter($path, $true, $encoding)
+    $writeLock = Enter-UsageHistoryWriteLock -Path $path
     try {
+        $encoding = New-Object Text.UTF8Encoding($false)
+        $newBytes = 0L
         foreach ($line in $lines) {
-            $writer.WriteLine($line)
+            $newBytes += $encoding.GetByteCount($line + [Environment]::NewLine)
+        }
+        $existingBytes = if (Test-Path -LiteralPath $path -PathType Leaf) {
+            (Get-Item -LiteralPath $path).Length
+        } else { 0L }
+        if (($existingBytes + $newBytes) -gt 16MB) {
+            throw 'History file exceeds the 16 MB safety limit.'
+        }
+        $writer = New-Object IO.StreamWriter($path, $true, $encoding)
+        try {
+            foreach ($line in $lines) {
+                $writer.WriteLine($line)
+            }
+        }
+        finally {
+            $writer.Dispose()
         }
     }
     finally {
-        $writer.Dispose()
+        Exit-UsageHistoryWriteLock -Mutex $writeLock
     }
 }
 
@@ -797,18 +858,31 @@ function Invoke-UsageHistoryStateBackfill {
 
     if ($added.Count -gt 0) {
         $addedSamples = $added.ToArray()
-        $history = @(
-            Select-UsageHistoryRetentionWindow `
-                -Samples @($history + $addedSamples) `
-                -Now $Now
-        )
-        Save-UsageHistory `
-            -Samples $history `
-            -Path $HistoryPath `
-            -Now $Now `
-            -AllowDiagnosticWrite:$AllowDiagnosticWrite
+        $writeLock = Enter-UsageHistoryWriteLock -Path $HistoryPath
+        try {
+            $latestHistory = @(
+                Read-UsageHistory `
+                    -Path $HistoryPath `
+                    -Now $Now `
+                    -BypassCache
+            )
+            $history = @(
+                Select-UsageHistoryRetentionWindow `
+                    -Samples @($latestHistory + $addedSamples) `
+                    -Now $Now
+            )
+            Save-UsageHistory `
+                -Samples $history `
+                -Path $HistoryPath `
+                -Now $Now `
+                -AllowDiagnosticWrite:$AllowDiagnosticWrite `
+                -SkipWriteLock
+        }
+        finally {
+            Exit-UsageHistoryWriteLock -Mutex $writeLock
+        }
         if ($usesDefaultHistoryPath) {
-            $script:UsageHistoryCache = $history
+            $script:UsageHistoryCache = $null
         }
     }
 
@@ -893,33 +967,45 @@ function Import-UsageHistory {
     }
     $usesDefaultDestination =
         [string]::IsNullOrWhiteSpace($DestinationPath)
-    $existing = @(
-        if ($usesDefaultDestination) {
-            Read-UsageHistory -Now $Now
-        } else {
-            Read-UsageHistory `
-                -Path $DestinationPath `
-                -Now $Now `
-                -BypassCache
-        }
-    )
-    $merged = @(
-        Select-UsageHistoryRetentionWindow `
-            -Samples @($existing + $imported) `
-            -Now $Now
-    )
-    Save-UsageHistory `
-        -Samples $merged `
-        -Path $DestinationPath `
-        -Now $Now `
-        -AllowDiagnosticWrite:$AllowDiagnosticWrite
-    if ($usesDefaultDestination) {
-        $script:UsageHistoryCache = $merged
+    $destinationStoragePath = if ($usesDefaultDestination) {
+        Get-UsageHistoryPath
+    } else {
+        [IO.Path]::GetFullPath($DestinationPath)
     }
-    return [pscustomobject]@{
-        ImportedCount = $imported.Count
-        PreviousCount = $existing.Count
-        TotalCount = $merged.Count
+    $writeLock = Enter-UsageHistoryWriteLock -Path $destinationStoragePath
+    try {
+        $existing = @(
+            if ($usesDefaultDestination) {
+                Read-UsageHistory -Now $Now
+            } else {
+                Read-UsageHistory `
+                    -Path $DestinationPath `
+                    -Now $Now `
+                    -BypassCache
+            }
+        )
+        $merged = @(
+            Select-UsageHistoryRetentionWindow `
+                -Samples @($existing + $imported) `
+                -Now $Now
+        )
+        Save-UsageHistory `
+            -Samples $merged `
+            -Path $DestinationPath `
+            -Now $Now `
+            -AllowDiagnosticWrite:$AllowDiagnosticWrite `
+            -SkipWriteLock
+        if ($usesDefaultDestination) {
+            $script:UsageHistoryCache = $null
+        }
+        return [pscustomobject]@{
+            ImportedCount = $imported.Count
+            PreviousCount = $existing.Count
+            TotalCount = $merged.Count
+        }
+    }
+    finally {
+        Exit-UsageHistoryWriteLock -Mutex $writeLock
     }
 }
 
@@ -992,7 +1078,8 @@ function Add-UsageHistorySample {
             Read-UsageHistory `
                 -Path $Path `
                 -Now $ObservedAt `
-                -BypassCache:(-not $usesDefaultPath)
+                -BypassCache:(-not $usesDefaultPath) `
+                -ForAnalysis:$usesDefaultPath
         )
     })
     if (-not $currentSample) {
@@ -1029,6 +1116,15 @@ function Add-UsageHistorySample {
         $changed = $true
     }
 
+    if ($usesDefaultPath -and $history.Count -gt 720) {
+        $history = @(
+            Select-UsageHistoryAnalysisSamples `
+                -Samples $history `
+                -CurrentSample $currentSample `
+                -Now $ObservedAt
+        )
+    }
+
     if ($changed) {
         try {
             $storagePath = if ($usesDefaultPath) {
@@ -1048,16 +1144,29 @@ function Add-UsageHistorySample {
                     $historyFile.Length -gt 15MB
             } else { $false }
             if ($requiresCompaction) {
-                $history = @(
-                    Select-UsageHistoryRetentionWindow `
-                        -Samples $history `
-                        -Now $ObservedAt
-                )
-                Save-UsageHistory `
-                    -Samples $history `
-                    -Path $Path `
-                    -Now $ObservedAt `
-                    -AllowDiagnosticWrite:$AllowDiagnosticWrite
+                $writeLock = Enter-UsageHistoryWriteLock -Path $storagePath
+                try {
+                    $fullHistory = @(
+                        Read-UsageHistory `
+                            -Path $storagePath `
+                            -Now $ObservedAt `
+                            -BypassCache
+                    )
+                    $retainedHistory = @(
+                        Select-UsageHistoryRetentionWindow `
+                            -Samples @($fullHistory + $currentSamples) `
+                            -Now $ObservedAt
+                    )
+                    Save-UsageHistory `
+                        -Samples $retainedHistory `
+                        -Path $Path `
+                        -Now $ObservedAt `
+                        -AllowDiagnosticWrite:$AllowDiagnosticWrite `
+                        -SkipWriteLock
+                }
+                finally {
+                    Exit-UsageHistoryWriteLock -Mutex $writeLock
+                }
             }
             else {
                 Add-UsageHistoryLines `
@@ -1614,6 +1723,79 @@ function Measure-RapidUsageDrop {
     }
 }
 
+function Select-UsageHistoryAnalysisSamples {
+    param(
+        [object[]]$Samples,
+        $CurrentSample,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    if (-not $CurrentSample) { return @() }
+    $quotaPeriod = Get-UsageQuotaPeriod -Value $CurrentSample
+    $futureLimit = $Now.ToUniversalTime().AddMinutes(5)
+    $matching = @(
+        $Samples | Where-Object {
+            $_.ProviderId -eq $CurrentSample.ProviderId -and
+            $_.MetricType -eq $CurrentSample.MetricType -and
+            (Get-UsageQuotaPeriod -Value $_) -eq $quotaPeriod -and
+            $_.Unit -eq $CurrentSample.Unit -and
+            $_.ObservedAtUtc -le $futureLimit
+        } | Sort-Object ObservedAtUtc
+    )
+    if ($matching.Count -le 720) { return $matching }
+
+    $selected = New-Object Collections.Generic.List[object]
+    $previous = $null
+    $bucketFirst = $null
+    $bucketLast = $null
+    $bucketKey = [long]::MinValue
+    foreach ($sample in $matching) {
+        $observedAt = ([DateTimeOffset]$sample.ObservedAtUtc).ToUniversalTime()
+        $sampleBucket = [long][Math]::Floor(
+            $observedAt.UtcDateTime.Ticks /
+                [TimeSpan]::FromHours(1).Ticks
+        )
+        if ($sampleBucket -ne $bucketKey) {
+            if ($bucketFirst) { [void]$selected.Add($bucketFirst) }
+            if (
+                $bucketLast -and
+                -not [object]::ReferenceEquals($bucketLast, $bucketFirst)
+            ) {
+                [void]$selected.Add($bucketLast)
+            }
+            $bucketKey = $sampleBucket
+            $bucketFirst = $sample
+            $bucketLast = $sample
+        }
+        else {
+            $bucketLast = $sample
+        }
+
+        if (
+            $previous -and
+            [Math]::Abs(
+                [double]$sample.RemainingValue -
+                [double]$previous.RemainingValue
+            ) -gt 0.0001
+        ) {
+            if (-not $selected.Contains($previous)) {
+                [void]$selected.Add($previous)
+            }
+            if (-not $selected.Contains($sample)) {
+                [void]$selected.Add($sample)
+            }
+        }
+        $previous = $sample
+    }
+    if ($bucketFirst -and -not $selected.Contains($bucketFirst)) {
+        [void]$selected.Add($bucketFirst)
+    }
+    if ($bucketLast -and -not $selected.Contains($bucketLast)) {
+        [void]$selected.Add($bucketLast)
+    }
+    return @($selected.ToArray() | Sort-Object ObservedAtUtc -Unique)
+}
+
 function Measure-UsageInsights {
     param(
         [object[]]$Samples,
@@ -1629,25 +1811,31 @@ function Measure-UsageInsights {
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
+    $analysisSamples = @(
+        Select-UsageHistoryAnalysisSamples `
+            -Samples $Samples `
+            -CurrentSample $CurrentSample `
+            -Now $Now
+    )
     return [pscustomobject]@{
         CurrentSample = $CurrentSample
         PreviousSample = $PreviousSample
         Trend24Hours = Get-UsageTrend `
-            -Samples $Samples `
+            -Samples $analysisSamples `
             -CurrentSample $CurrentSample `
             -Hours 24 `
             -Now $Now
         Trend7Days = Get-UsageTrend `
-            -Samples $Samples `
+            -Samples $analysisSamples `
             -CurrentSample $CurrentSample `
             -Hours (24 * 7) `
             -Now $Now
         Forecast = Get-DepletionForecast `
-            -Samples $Samples `
+            -Samples $analysisSamples `
             -CurrentSample $CurrentSample `
             -Now $Now
         RapidDrop = Measure-RapidUsageDrop `
-            -Samples $Samples `
+            -Samples $analysisSamples `
             -Snapshot $Snapshot `
             -WindowMinutes $RapidDropWindowMinutes `
             -CodexPercent $CodexRapidDropPercent `

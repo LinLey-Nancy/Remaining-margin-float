@@ -4,6 +4,8 @@ param(
     [switch]$CheckDeepSeekUsage,
     [switch]$CheckUsageHistory,
     [switch]$CheckStateHistory,
+    [switch]$CheckRuntimeLog,
+    [switch]$RepairUsageHistory,
     [switch]$CheckProviderContracts,
     [switch]$CheckRefreshPerformance,
     [switch]$CheckCodexRateLimitSelection,
@@ -23,6 +25,15 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+if (
+    [Environment]::GetEnvironmentVariable(
+        'REMAINING_MARGIN_FLOAT_REPAIR_USAGE_HISTORY',
+        [EnvironmentVariableTarget]::Process
+    ) -eq '1'
+) {
+    $RepairUsageHistory = $true
+}
+
 $releaseGuiCheck = (
     [Environment]::GetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_GUI_CHECK',
@@ -35,6 +46,8 @@ $isDiagnosticRun = (
     $CheckDeepSeekUsage -or
     $CheckUsageHistory -or
     $CheckStateHistory -or
+    $CheckRuntimeLog -or
+    $RepairUsageHistory -or
     $CheckProviderContracts -or
     $CheckRefreshPerformance -or
     $CheckCodexRateLimitSelection -or
@@ -68,6 +81,8 @@ $script:RmfRefreshTimerProbePassed = $false
 $script:RmfRefreshDataProbePassed = $false
 $script:RmfRefreshDataProbeDetails = ''
 $script:RmfActivatedExistingInstance = $false
+$script:RmfProcessStartedAt = [DateTimeOffset]::Now
+$script:RmfStartupStopwatch = [Diagnostics.Stopwatch]::StartNew()
 
 # RMF_BUNDLE_HEADER_END
 
@@ -90,8 +105,20 @@ foreach ($relativeComponentPath in @($componentManifest.Components)) {
     if (-not (Test-Path -LiteralPath $componentPath -PathType Leaf)) {
         throw "Application component is missing: $componentPath"
     }
-    . $componentPath
+    try {
+        . $componentPath
+    }
+    catch {
+        if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+            Write-RuntimeLog `
+                -Level 'Error' `
+                -Event 'App.Startup.Failed' `
+                -Message $_.Exception.Message `
+                -Data @{ Component = $relativeComponentPath }
+        }
+        throw
+    }
     if ($script:RmfStopLoading) {
-        exit 0
+        return
     }
 }

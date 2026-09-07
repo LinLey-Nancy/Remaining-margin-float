@@ -212,10 +212,22 @@ foreach ($propertyName in @(
     'CurrentIndexWritten'
     'CorruptLatestFallback'
     'CorruptManifestFallback'
+    'LargeLegacyRestoreFast'
+    'LargeLegacyIncrementalSaveFast'
+    'LegacyManifestUntouched'
     'TemporaryFilesCleaned'
 )) {
     Assert-Diagnostic -Condition ([bool]$stateHistory.$propertyName) `
         -Message "StateHistory.$propertyName"
+}
+
+$runtimeLog = Invoke-JsonDiagnostic -Name 'CheckRuntimeLog'
+foreach ($property in $runtimeLog.PSObject.Properties) {
+    if ($property.Value -is [bool]) {
+        Assert-Diagnostic -Condition $property.Value -Message (
+            "RuntimeLog.$($property.Name)"
+        )
+    }
 }
 
 $history = Invoke-JsonDiagnostic -Name 'CheckUsageHistory'
@@ -243,6 +255,11 @@ Assert-Diagnostic -Condition (
     [bool]$history.MinuteSamplesRetained -and
     [bool]$history.ManualRefreshSampleRetained
 ) -Message 'Automatic and manual refresh sample retention'
+Assert-Diagnostic -Condition (
+    [bool]$history.LargeHistoryReadFast -and
+    [bool]$history.LargeHistoryInsightsFast -and
+    $history.LargeHistorySampleCount -eq 7200
+) -Message 'Large usage-history read and insight performance'
 Assert-Diagnostic -Condition ([bool]$history.LowThresholdCrossingDetected) `
     -Message 'Low threshold crossing'
 Assert-Diagnostic -Condition ([bool]$history.RepeatedLowAlertSuppressed) `
@@ -256,8 +273,8 @@ Assert-Diagnostic -Condition ([bool]$history.RestartReloadRoundTrip) `
     -Message 'History restart reload round trip'
 Assert-Diagnostic -Condition ([bool]$history.LegacyHistoryMigration) `
     -Message 'Legacy history schema migration'
-Assert-Diagnostic -Condition ([bool]$history.LegacyWeeklyCodexExcluded) `
-    -Message 'Legacy weekly Codex history isolation'
+Assert-Diagnostic -Condition ([bool]$history.LegacyWeeklyCodexMigrated) `
+    -Message 'Legacy weekly Codex history migration'
 Assert-Diagnostic -Condition ([bool]$history.WeeklyQuotaHistoryIsolated) `
     -Message 'Explicit weekly Codex history remains isolated from five-hour data'
 Assert-Diagnostic -Condition ([bool]$history.CalendarDateAligned) `
@@ -369,7 +386,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.9.0') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.9.1') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -577,6 +594,11 @@ Assert-Diagnostic -Condition (
     [bool]$refresh.ManualStateCaptured -and
     [bool]$refresh.AutomaticStateCaptured
 ) -Message 'Successful manual and automatic refreshes capture full state'
+Assert-Diagnostic -Condition (
+    [bool]$refresh.OfficialRefreshKeepsVisibleSnapshot -and
+    [bool]$refresh.InitialOfficialRefreshCanUseLocalPreview -and
+    [bool]$refresh.InitialOfficialLocalPreviewIsDisplayOnly
+) -Message 'Official refresh suppresses repeated local preview UI updates'
 
 
 [pscustomobject]@{
@@ -593,6 +615,7 @@ Assert-Diagnostic -Condition (
     DeepSeekData = 'Passed'
     UsageHistory = 'Passed'
     StateHistory = 'Passed'
+    RuntimeLog = 'Passed'
     Placement = 'Passed'
     EdgeDocking = 'Passed'
     Startup = 'Passed'

@@ -28,6 +28,27 @@ function Get-UsageStateObjectsDirectory {
         'objects'
 }
 
+function Get-UsageStateEntriesDirectory {
+    param([string]$RootPath = '')
+
+    return Join-Path (Get-UsageStateHistoryDirectory -RootPath $RootPath) `
+        'entries'
+}
+
+function Get-UsageStateJournalPath {
+    param(
+        [DateTimeOffset]$ObservedAt,
+        [string]$RootPath = ''
+    )
+
+    $fileName = $ObservedAt.ToUniversalTime().ToString(
+        'yyyyMMdd',
+        [Globalization.CultureInfo]::InvariantCulture
+    ) + '.jsonl'
+    return Join-Path (Get-UsageStateEntriesDirectory -RootPath $RootPath) `
+        $fileName
+}
+
 function ConvertTo-UsageStatePayloadValue {
     param(
         $Value,
@@ -250,7 +271,7 @@ function Read-UsageStateCurrentEntries {
     }
 }
 
-function Read-UsageStateEntries {
+function Read-LegacyUsageStateEntries {
     param(
         [string]$RootPath = '',
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
@@ -258,12 +279,13 @@ function Read-UsageStateEntries {
 
     $path = Get-UsageStateManifestPath -RootPath $RootPath
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        return @(
-            Read-UsageStateCurrentEntries -RootPath $RootPath -Now $Now
-        )
+        return @()
     }
     try {
         $file = Get-Item -LiteralPath $path
+        if ($file.LastWriteTimeUtc -lt $Now.ToUniversalTime().AddHours(-168).UtcDateTime) {
+            return @()
+        }
         if ($file.Length -gt 64MB) {
             throw '全量状态索引超过 64 MB 安全上限。'
         }
@@ -283,10 +305,93 @@ function Read-UsageStateEntries {
         )
     }
     catch {
+        return @()
+    }
+}
+
+function Read-JournalUsageStateEntries {
+    param(
+        [string]$RootPath = '',
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $directory = Get-UsageStateEntriesDirectory -RootPath $RootPath
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return @()
+    }
+    $cutoffDate = $Now.ToUniversalTime().AddHours(-168).Date
+    $items = New-Object Collections.Generic.List[object]
+    foreach ($file in @(
+        Get-ChildItem -LiteralPath $directory -File -Filter '*.jsonl' |
+            Sort-Object Name
+    )) {
+        if ($file.Name -notmatch '^(?<date>\d{8})\.jsonl$') { continue }
+        $fileDate = [DateTime]::MinValue
+        if (-not [DateTime]::TryParseExact(
+            $matches.date,
+            'yyyyMMdd',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal,
+            [ref]$fileDate
+        )) {
+            continue
+        }
+        if ($fileDate.Date -lt $cutoffDate) { continue }
+        if ($file.Length -gt 16MB) {
+            throw "全量状态分片超过 16 MB 安全上限：$($file.Name)"
+        }
+        foreach ($line in Get-Content -LiteralPath $file.FullName -Encoding UTF8) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line.Length -gt 65536) { continue }
+            try {
+                $entry = ConvertFrom-UsageStateEntry `
+                    -Saved ($line | ConvertFrom-Json)
+                if ($entry) { $items.Add($entry) }
+            }
+            catch {
+                # A damaged journal line does not invalidate the other entries.
+            }
+        }
+    }
+    return @(
+        Select-UsageStateRetentionWindow -Entries $items -Now $Now
+    )
+}
+
+function Read-UsageStateEntries {
+    param(
+        [string]$RootPath = '',
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $deduplicated = @{}
+    foreach ($entry in @(
+        @(Read-LegacyUsageStateEntries -RootPath $RootPath -Now $Now) +
+        @(Read-JournalUsageStateEntries -RootPath $RootPath -Now $Now)
+    )) {
+        if (-not $entry) { continue }
+        $key = if (-not [string]::IsNullOrWhiteSpace([string]$entry.EntryId)) {
+            [string]$entry.EntryId
+        }
+        else {
+            '{0}|{1}|{2}|{3}' -f
+                $entry.ProviderId,
+                $entry.ObservedAtUtc,
+                $entry.PayloadHash,
+                $entry.Reason
+        }
+        $deduplicated[$key] = $entry
+    }
+    if ($deduplicated.Count -eq 0) {
         return @(
             Read-UsageStateCurrentEntries -RootPath $RootPath -Now $Now
         )
     }
+    return @(
+        Select-UsageStateRetentionWindow `
+            -Entries @($deduplicated.Values) `
+            -Now $Now
+    )
 }
 
 function ConvertTo-UsageStateEntryDocument {
@@ -312,7 +417,7 @@ function ConvertTo-UsageStateEntryDocument {
     }
 }
 
-function Write-UsageStateIndexes {
+function Write-UsageStateCurrentIndex {
     param(
         [object[]]$Entries,
         [string]$RootPath = '',
@@ -320,22 +425,6 @@ function Write-UsageStateIndexes {
     )
 
     $retained = @(Select-UsageStateRetentionWindow -Entries $Entries -Now $Now)
-    $entryDocuments = @(
-        $retained | ForEach-Object { ConvertTo-UsageStateEntryDocument -Entry $_ }
-    )
-    $manifest = [ordered]@{
-        v = 1
-        UpdatedAtUtc = $Now.ToUniversalTime().ToString(
-            'o',
-            [Globalization.CultureInfo]::InvariantCulture
-        )
-        RetentionHours = 168
-        Entries = $entryDocuments
-    } | ConvertTo-Json -Depth 6
-    Write-UsageStateAtomicText `
-        -Path (Get-UsageStateManifestPath -RootPath $RootPath) `
-        -Text $manifest
-
     $latest = New-Object Collections.Generic.List[object]
     foreach ($providerId in @('Codex', 'DeepSeek')) {
         $entry = @(
@@ -356,6 +445,82 @@ function Write-UsageStateIndexes {
     Write-UsageStateAtomicText `
         -Path (Get-UsageStateCurrentPath -RootPath $RootPath) `
         -Text $current
+    return $latest.ToArray()
+}
+
+function Add-UsageStateJournalEntry {
+    param(
+        [Parameter(Mandatory = $true)]$Entry,
+        [string]$RootPath = ''
+    )
+
+    $path = Get-UsageStateJournalPath `
+        -ObservedAt ([DateTimeOffset]$Entry.ObservedAtUtc) `
+        -RootPath $RootPath
+    $parent = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        [void](New-Item -Path $parent -ItemType Directory -Force)
+    }
+    $line = (ConvertTo-UsageStateEntryDocument -Entry $Entry) |
+        ConvertTo-Json -Compress
+    if ([Text.Encoding]::UTF8.GetByteCount($line) -gt 65536) {
+        throw '全量状态索引记录超过 64 KB 安全上限。'
+    }
+    [IO.File]::AppendAllText(
+        $path,
+        $line + [Environment]::NewLine,
+        (New-Object Text.UTF8Encoding($false))
+    )
+}
+
+function Write-UsageStateIndexes {
+    param(
+        [object[]]$Entries,
+        [string]$RootPath = '',
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    $retained = @(Select-UsageStateRetentionWindow -Entries $Entries -Now $Now)
+    $directory = Get-UsageStateEntriesDirectory -RootPath $RootPath
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        [void](New-Item -Path $directory -ItemType Directory -Force)
+    }
+    $expectedPaths = @{}
+    foreach ($group in @(
+        $retained | Group-Object {
+            ([DateTimeOffset]$_.ObservedAtUtc).ToUniversalTime().ToString(
+                'yyyyMMdd',
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+    )) {
+        $path = Join-Path $directory ($group.Name + '.jsonl')
+        $expectedPaths[[IO.Path]::GetFullPath($path)] = $true
+        $lines = @(
+            $group.Group | Sort-Object ObservedAtUtc | ForEach-Object {
+                (ConvertTo-UsageStateEntryDocument -Entry $_) |
+                    ConvertTo-Json -Compress
+            }
+        )
+        Write-UsageStateAtomicText `
+            -Path $path `
+            -Text (($lines -join [Environment]::NewLine) +
+                $(if ($lines.Count -gt 0) { [Environment]::NewLine } else { '' }))
+    }
+    foreach ($file in @(
+        Get-ChildItem -LiteralPath $directory -File -Filter '*.jsonl'
+    )) {
+        if (
+            $file.Name -match '^\d{8}\.jsonl$' -and
+            -not $expectedPaths.ContainsKey([IO.Path]::GetFullPath($file.FullName))
+        ) {
+            Remove-Item -LiteralPath $file.FullName -Force
+        }
+    }
+    [void](Write-UsageStateCurrentIndex `
+        -Entries $retained `
+        -RootPath $RootPath `
+        -Now $Now)
     return $retained
 }
 
@@ -380,6 +545,99 @@ function Remove-UnreferencedUsageStatePayloads {
         if ($hash -match '^[0-9a-f]{64}$' -and -not $referenced.ContainsKey($hash)) {
             Remove-Item -LiteralPath $file.FullName -Force
         }
+    }
+}
+
+function Invoke-UsageStateLightweightMaintenance {
+    param(
+        [string]$RootPath = '',
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
+        [ValidateRange(1, 256)]
+        [int]$MaxObjectDeletes = 24,
+        [switch]$AllowDiagnosticWrite
+    )
+
+    if ($isDiagnosticRun -and -not $AllowDiagnosticWrite) { return }
+    $root = Get-UsageStateHistoryDirectory -RootPath $RootPath
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
+    if (-not (Get-Variable `
+        -Name 'UsageStateMaintenanceDueByRoot' `
+        -Scope Script `
+        -ErrorAction SilentlyContinue)) {
+        $script:UsageStateMaintenanceDueByRoot = @{}
+    }
+    $key = $root.ToLowerInvariant()
+    if (
+        $script:UsageStateMaintenanceDueByRoot.ContainsKey($key) -and
+        $Now -lt $script:UsageStateMaintenanceDueByRoot[$key]
+    ) {
+        return
+    }
+    $script:UsageStateMaintenanceDueByRoot[$key] = $Now.AddHours(1)
+
+    $cutoffUtc = $Now.ToUniversalTime().AddHours(-168)
+    $removedJournals = 0
+    $entriesDirectory = Get-UsageStateEntriesDirectory -RootPath $root
+    if (Test-Path -LiteralPath $entriesDirectory -PathType Container) {
+        foreach ($file in @(
+            Get-ChildItem -LiteralPath $entriesDirectory -File -Filter '*.jsonl'
+        )) {
+            if ($file.Name -notmatch '^(?<date>\d{8})\.jsonl$') { continue }
+            $fileDate = [DateTime]::MinValue
+            if (
+                [DateTime]::TryParseExact(
+                    $matches.date,
+                    'yyyyMMdd',
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::AssumeUniversal,
+                    [ref]$fileDate
+                ) -and
+                $fileDate.Date -lt $cutoffUtc.Date
+            ) {
+                Remove-Item -LiteralPath $file.FullName -Force
+                $removedJournals++
+            }
+        }
+    }
+
+    $legacyPath = Get-UsageStateManifestPath -RootPath $root
+    if (Test-Path -LiteralPath $legacyPath -PathType Leaf) {
+        $legacy = Get-Item -LiteralPath $legacyPath
+        if ($legacy.LastWriteTimeUtc -lt $cutoffUtc.UtcDateTime) {
+            Remove-Item -LiteralPath $legacyPath -Force
+        }
+    }
+
+    $removedObjects = 0
+    $objectsDirectory = Get-UsageStateObjectsDirectory -RootPath $root
+    if (Test-Path -LiteralPath $objectsDirectory -PathType Container) {
+        foreach ($path in [IO.Directory]::EnumerateFiles(
+            $objectsDirectory,
+            '*.json',
+            [IO.SearchOption]::TopDirectoryOnly
+        )) {
+            if ($removedObjects -ge $MaxObjectDeletes) { break }
+            $file = New-Object IO.FileInfo($path)
+            if (
+                $file.BaseName -match '^[0-9a-f]{64}$' -and
+                $file.LastWriteTimeUtc -lt $cutoffUtc.UtcDateTime
+            ) {
+                Remove-Item -LiteralPath $file.FullName -Force
+                $removedObjects++
+            }
+        }
+    }
+    if (
+        ($removedJournals -gt 0 -or $removedObjects -gt 0) -and
+        (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue)
+    ) {
+        Write-RuntimeLog `
+            -Event 'StateHistory.Maintenance' `
+            -Message '已清理过期状态历史' `
+            -Data @{
+                Journals = $removedJournals
+                Objects = $removedObjects
+            }
     }
 }
 
@@ -417,19 +675,24 @@ function Save-UsageStateSnapshot {
         [void](New-Item -Path $objectsDirectory -ItemType Directory -Force)
     }
     $objectPath = Join-Path $objectsDirectory ($payloadHash + '.json')
-    $protectedPayload = Protect-LocalSecret -Value $payloadJson
-    if ([string]::IsNullOrWhiteSpace($protectedPayload)) {
-        throw '无法使用 Windows 当前用户加密全量状态。'
+    if (Test-Path -LiteralPath $objectPath -PathType Leaf) {
+        [IO.File]::SetLastWriteTimeUtc($objectPath, $ObservedAt.UtcDateTime)
     }
-    $objectDocument = [ordered]@{
-        v = 1
-        Encoding = 'dpapi-current-user'
-        PayloadHash = $payloadHash
-        ProtectedPayload = $protectedPayload
-    } | ConvertTo-Json -Compress
-    Write-UsageStateAtomicText -Path $objectPath -Text $objectDocument
+    else {
+        $protectedPayload = Protect-LocalSecret -Value $payloadJson
+        if ([string]::IsNullOrWhiteSpace($protectedPayload)) {
+            throw '无法使用 Windows 当前用户加密全量状态。'
+        }
+        $objectDocument = [ordered]@{
+            v = 1
+            Encoding = 'dpapi-current-user'
+            PayloadHash = $payloadHash
+            ProtectedPayload = $protectedPayload
+        } | ConvertTo-Json -Compress
+        Write-UsageStateAtomicText -Path $objectPath -Text $objectDocument
+        [IO.File]::SetLastWriteTimeUtc($objectPath, $ObservedAt.UtcDateTime)
+    }
 
-    $entries = @(Read-UsageStateEntries -RootPath $root -Now $ObservedAt)
     $entry = [pscustomobject]@{
         Version = 1
         EntryId = [Guid]::NewGuid().ToString('N')
@@ -442,15 +705,15 @@ function Save-UsageStateSnapshot {
         } else { $Reason }
         AppVersion = [string]$script:AppVersion
     }
-    $retained = @(
-        Write-UsageStateIndexes `
-            -Entries @($entries + $entry) `
-            -RootPath $root `
-            -Now $ObservedAt
+    Add-UsageStateJournalEntry -Entry $entry -RootPath $root
+    $currentEntries = @(
+        Read-UsageStateCurrentEntries -RootPath $root -Now $ObservedAt |
+            Where-Object { $_.ProviderId -ne $providerId }
     )
-    Remove-UnreferencedUsageStatePayloads `
-        -Entries $retained `
-        -RootPath $root
+    [void](Write-UsageStateCurrentIndex `
+        -Entries @($currentEntries + $entry) `
+        -RootPath $root `
+        -Now $ObservedAt)
     return $entry
 }
 
@@ -554,17 +817,35 @@ function Get-LatestUsageStateSnapshot {
     )
 
     $root = Get-UsageStateHistoryDirectory -RootPath $RootPath
+    $attempted = @{}
+    $currentEntries = @(
+        Read-UsageStateCurrentEntries -RootPath $root -Now $Now |
+            Where-Object { $_.ProviderId -eq $ProviderId } |
+            Sort-Object ObservedAtUtc -Descending
+    )
+    foreach ($entry in $currentEntries) {
+        try {
+            $attempted[[string]$entry.EntryId] = $true
+            $snapshot = Read-UsageStatePayload -Entry $entry -RootPath $root
+            if ($snapshot) { return $snapshot }
+        }
+        catch {
+            # Fall back to the next valid retained snapshot.
+        }
+    }
     $entries = @(Read-UsageStateEntries -RootPath $root -Now $Now)
     foreach ($entry in @(
-        $entries | Where-Object { $_.ProviderId -eq $ProviderId } |
-            Sort-Object ObservedAtUtc -Descending
+        $entries | Where-Object {
+            $_.ProviderId -eq $ProviderId -and
+            -not $attempted.ContainsKey([string]$_.EntryId)
+        } | Sort-Object ObservedAtUtc -Descending
     )) {
         try {
             $snapshot = Read-UsageStatePayload -Entry $entry -RootPath $root
             if ($snapshot) { return $snapshot }
         }
         catch {
-            # Fall back to the next valid retained snapshot.
+            # Keep walking backward if a payload is missing or damaged.
         }
     }
     return $null
@@ -593,7 +874,6 @@ function Invoke-UsageStateMaintenance {
 function Restore-LatestUsageState {
     if ($isDiagnosticRun) { return $false }
     try {
-        [void](Invoke-UsageStateMaintenance)
         $snapshot = Get-LatestUsageStateSnapshot `
             -ProviderId $script:ActiveProvider
         if (-not $snapshot) { return $false }

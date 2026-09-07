@@ -643,13 +643,20 @@ function Restore-Settings {
         $path = Get-SettingsPath
         if (Test-Path -LiteralPath $path) {
             $settings = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            if ($null -ne $settings.Left -and $null -ne $settings.Top) {
+            if (
+                $settings.PSObject.Properties['Left'] -and
+                $settings.PSObject.Properties['Top'] -and
+                $null -ne $settings.Left -and
+                $null -ne $settings.Top
+            ) {
                 # Preserve coordinates from secondary monitors. Once the HWND
                 # exists, Ensure-WindowVisible clamps them to that monitor.
                 $window.Left = [double]$settings.Left
                 $window.Top = [double]$settings.Top
             }
-            if ($null -ne $settings.Topmost) { $window.Topmost = [bool]$settings.Topmost }
+            if ($settings.PSObject.Properties['Topmost']) {
+                $window.Topmost = [bool]$settings.Topmost
+            }
             if ($settings.PSObject.Properties['EdgeDockEnabled']) {
                 $script:EdgeDockEnabled = [bool]$settings.EdgeDockEnabled
             }

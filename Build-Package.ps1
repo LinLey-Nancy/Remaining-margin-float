@@ -212,8 +212,20 @@ internal static class Launcher
     }
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        bool repairUsageHistory = false;
+        foreach (string argument in args ?? new string[0])
+        {
+            if (String.Equals(
+                argument,
+                "--repair-usage-history",
+                StringComparison.OrdinalIgnoreCase
+            ))
+            {
+                repairUsageHistory = true;
+            }
+        }
         bool launcherCheck = String.Equals(
             Environment.GetEnvironmentVariable(
                 "REMAINING_MARGIN_FLOAT_LAUNCHER_CHECK",
@@ -266,7 +278,11 @@ internal static class Launcher
                 {
                     powerShell.Runspace = runspace;
                     powerShell.AddScript(scriptText, false);
-                    if (launcherCheck)
+                    if (repairUsageHistory)
+                    {
+                        powerShell.AddParameter("RepairUsageHistory", true);
+                    }
+                    else if (launcherCheck)
                     {
                         powerShell.AddParameter("CheckTransitions", true);
                     }
@@ -307,7 +323,11 @@ internal static class Launcher
                     existingInstanceResult is bool &&
                     (bool)existingInstanceResult;
 
-                if (!launcherCheck && !activatedExistingInstance)
+                if (
+                    !launcherCheck &&
+                    !repairUsageHistory &&
+                    !activatedExistingInstance
+                )
                 {
                     Window applicationWindow =
                         runspace.SessionStateProxy.GetVariable("window") as Window;
@@ -458,7 +478,7 @@ internal static class Launcher
         }
         catch (Exception exception)
         {
-            if (launcherCheck || guiCheck)
+            if (launcherCheck || guiCheck || repairUsageHistory)
             {
                 string diagnosticPath =
                     Environment.GetEnvironmentVariable(

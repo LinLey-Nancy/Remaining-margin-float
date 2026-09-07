@@ -821,8 +821,9 @@ function Get-CodexUsageSnapshot {
     $sessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
     $files = @()
     if (Test-Path -LiteralPath $sessionsRoot) {
-        $files = @(Get-ChildItem -LiteralPath $sessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending)
+        $files = @(
+            [LocalJsonlFileScanner]::GetFilesNewestFirst($sessionsRoot)
+        )
     }
     # Quota selection only needs the newest sessions. Checking root/subagent
     # metadata for the entire archive makes the first UI refresh scale with

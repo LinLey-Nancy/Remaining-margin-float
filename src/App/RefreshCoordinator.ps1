@@ -11,6 +11,31 @@ function Set-RefreshBusy {
 
     if ($Busy -and -not $script:AppContext.Refresh.IsBusy) {
         $script:AppContext.Refresh.StartedAt = [DateTimeOffset]::Now
+        if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+            Write-RuntimeLog `
+                -Event 'Refresh.Started' `
+                -Message '开始刷新用量' `
+                -Data @{ Provider = $script:ActiveProvider }
+        }
+    }
+    elseif (-not $Busy -and $script:AppContext.Refresh.IsBusy) {
+        $elapsedMilliseconds = if ($script:AppContext.Refresh.StartedAt) {
+            [long]([DateTimeOffset]::Now -
+                $script:AppContext.Refresh.StartedAt).TotalMilliseconds
+        } else { 0L }
+        if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+            Write-RuntimeLog `
+                -Level $(if ($elapsedMilliseconds -ge 2000) {
+                    'Warning'
+                } else {
+                    'Info'
+                }) `
+                -Event 'Refresh.Completed' `
+                -Message '用量刷新结束' `
+                -ElapsedMilliseconds $elapsedMilliseconds `
+                -Data @{ Provider = $script:ActiveProvider }
+        }
+        $script:AppContext.Refresh.StartedAt = $null
     }
     elseif (-not $Busy) {
         $script:AppContext.Refresh.StartedAt = $null
@@ -785,6 +810,62 @@ function Show-DeepSeekSettings {
     return $false
 }
 
+function Test-ShouldPresentCodexLocalSnapshot {
+    if (-not $script:CodexOfficialAccessEnabled) { return $true }
+    return (
+        -not $script:LastSnapshot -or
+        -not [bool]$script:LastSnapshot.Available
+    )
+}
+
+function Test-ShouldPersistCodexLocalSnapshot {
+    return -not [bool]$script:CodexOfficialAccessEnabled
+}
+
+function Complete-CodexLocalRefresh {
+    $pending = $script:PendingCodexLocalRefresh
+    $script:PendingCodexLocalRefresh = $null
+    if (-not $pending -or $script:IsClosing) { return }
+    try {
+        if (Test-ShouldPresentCodexLocalSnapshot) {
+            $persistLocalSnapshot = Test-ShouldPersistCodexLocalSnapshot
+            Update-UsageView `
+                -Snapshot $pending.Snapshot `
+                -ObservationContext $pending.ObservationContext `
+                -DisplayOnly:(-not $persistLocalSnapshot)
+            if (-not $persistLocalSnapshot) {
+                Write-RuntimeLog `
+                    -Level 'Debug' `
+                    -Event 'Refresh.LocalPreviewPresented' `
+                    -Message 'Presented a display-only local preview while waiting for official usage' `
+                    -Data @{ DisplayOnly = $true }
+            }
+        }
+        else {
+            Write-RuntimeLog `
+                -Level 'Debug' `
+                -Event 'Refresh.LocalPreviewSuppressed' `
+                -Message '保留当前官方结果，本地读取仅作为刷新候选'
+        }
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Healthy' `
+            -Message $(if ($script:CodexOfficialAccessEnabled) {
+                '本地读取完成，等待 Codex 官方接口'
+            } else {
+                '本地用量读取成功'
+            })
+        Start-CodexRefresh
+    }
+    catch {
+        Write-RuntimeLog `
+            -Level 'Error' `
+            -Event 'Refresh.LocalCompletionFailed' `
+            -Message $_.Exception.Message
+        Reset-FailedRefreshOperation -Message $_.Exception.Message
+    }
+}
+
 function Invoke-Refresh {
     if ($script:AppContext.Refresh.IsBusy) { return }
     try {
@@ -810,18 +891,40 @@ function Invoke-Refresh {
             $observationContext = 'LocalPreview'
         }
         $currentOfficialUsage = Get-CodexCurrentUsageOverride
-        Update-UsageView -Snapshot (
+        $localSnapshot = (
             Get-CodexUsageSnapshot `
                 -OfficialUsageOverride $currentOfficialUsage `
                 -SkipOfficialRequest
-        ) -ObservationContext $observationContext
-        Set-RuntimeDiagnosticStatus `
-            -Area 'Refresh' `
-            -Status 'Healthy' `
-            -Message '本地用量读取成功'
-        Start-CodexRefresh
+        )
+        if ($isDiagnosticRun) {
+            Update-UsageView `
+                -Snapshot $localSnapshot `
+                -ObservationContext $observationContext
+            Set-RuntimeDiagnosticStatus `
+                -Area 'Refresh' `
+                -Status 'Healthy' `
+                -Message '本地用量读取成功'
+            Start-CodexRefresh
+        }
+        else {
+            $script:PendingCodexLocalRefresh = [pscustomobject]@{
+                Snapshot = $localSnapshot
+                ObservationContext = $observationContext
+            }
+            $window.Dispatcher.BeginInvoke(
+                [Windows.Threading.DispatcherPriority]::Background,
+                (New-RmfAction -Callback { Complete-CodexLocalRefresh })
+            ) | Out-Null
+        }
     }
     catch {
+        if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+            Write-RuntimeLog `
+                -Level 'Error' `
+                -Event 'Refresh.Failed' `
+                -Message $_.Exception.Message `
+                -Data @{ Provider = $script:ActiveProvider }
+        }
         Set-RuntimeDiagnosticStatus `
             -Area 'Refresh' `
             -Status 'Error' `
@@ -904,6 +1007,7 @@ function Set-AutoRefreshStatusText {
 }
 
 function Invoke-RefreshTimerTick {
+    [void](Complete-UsageHistoryRepair)
     try {
         [void](Sync-EdgeDockEnvironment)
     }

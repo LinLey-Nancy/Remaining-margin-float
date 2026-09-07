@@ -76,6 +76,12 @@ function Set-RuntimeDiagnosticStatus {
     }
     elseif ($Status -in @('Degraded', 'Error')) {
         $state.LastFailureAt = $ObservedAt
+        if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+            Write-RuntimeLog `
+                -Level $(if ($Status -eq 'Error') { 'Error' } else { 'Warning' }) `
+                -Event ("Health.{0}.{1}" -f $Area, $Status) `
+                -Message $state.Message
+        }
     }
 }
 
@@ -130,6 +136,10 @@ function Get-RuntimeDiagnosticSnapshot {
                 Path = Protect-RuntimeDiagnosticText -Text $history.Path
             }
         } else { $null }
+        RuntimeLog = [ordered]@{
+            Path = Protect-RuntimeDiagnosticText -Text (Get-RuntimeLogPath)
+            Recent = @(Get-RuntimeLogTail -MaxLines 120)
+        }
         Health = $areas
     }
 }
@@ -172,7 +182,15 @@ function ConvertTo-RuntimeDiagnosticText {
         $lines.Add(('历史路径：{0}' -f $Snapshot.History.Path))
     }
     $lines.Add('')
-    $lines.Add('报告不包含访问令牌、API Key、账户名称、邮箱或原始日志。')
+    $lines.Add(('运行日志：{0}' -f $Snapshot.RuntimeLog.Path))
+    if ($Snapshot.RuntimeLog.Recent.Count -gt 0) {
+        $lines.Add('最近的脱敏日志：')
+        foreach ($logLine in $Snapshot.RuntimeLog.Recent) {
+            $lines.Add(('  {0}' -f $logLine))
+        }
+    }
+    $lines.Add('')
+    $lines.Add('报告不包含访问令牌、API Key、账户名称或邮箱；运行日志已脱敏。')
     return $lines -join [Environment]::NewLine
 }
 
@@ -274,6 +292,11 @@ function Show-RuntimeDiagnostics {
     $exportButton.Width = 92
     $exportButton.Height = 32
     $exportButton.Margin = New-Object Windows.Thickness(0, 12, 8, 0)
+    $logsButton = New-Object Windows.Controls.Button
+    $logsButton.Content = '打开日志目录'
+    $logsButton.Width = 104
+    $logsButton.Height = 32
+    $logsButton.Margin = New-Object Windows.Thickness(0, 12, 8, 0)
     $closeButton = New-Object Windows.Controls.Button
     $closeButton.Content = '关闭'
     $closeButton.Width = 76
@@ -282,6 +305,7 @@ function Show-RuntimeDiagnostics {
     $closeButton.IsDefault = $true
     [void]$buttons.Children.Add($copyButton)
     [void]$buttons.Children.Add($exportButton)
+    [void]$buttons.Children.Add($logsButton)
     [void]$buttons.Children.Add($closeButton)
 
     $reportBox = New-Object Windows.Controls.TextBox
@@ -325,6 +349,9 @@ function Show-RuntimeDiagnostics {
                 ) | Out-Null
             }
         }
+    }))
+    $logsButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+        Open-RuntimeLogDirectory
     }))
     $closeButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
         $dialog.Close()

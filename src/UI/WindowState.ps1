@@ -505,6 +505,7 @@ function Set-ExpandedState {
         [switch]$DeferEdgeDock
     )
 
+    $transitionTimer = [Diagnostics.Stopwatch]::StartNew()
     if ($Expanded -and -not $script:IsExpanded) {
         if ($script:EdgeDockSide -and -not $DeferEdgeDock) {
             Set-EdgeDockReveal -Revealed $true -Immediate
@@ -601,6 +602,22 @@ function Set-ExpandedState {
     }
 
     Save-Settings
+    $transitionTimer.Stop()
+    if (
+        -not $script:IsRestoringSettings -and
+        (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue)
+    ) {
+        Write-RuntimeLog `
+            -Level $(if ($transitionTimer.ElapsedMilliseconds -ge 250) {
+                'Warning'
+            } else {
+                'Info'
+            }) `
+            -Event 'Window.ExpandedStateChanged' `
+            -Message $(if ($Expanded) { '已展开详情' } else { '已收起详情' }) `
+            -ElapsedMilliseconds $transitionTimer.ElapsedMilliseconds `
+            -Data @{ Expanded = $Expanded }
+    }
 }
 
 function Collapse-DetailsIfInactive {
@@ -2328,6 +2345,128 @@ function Get-CodexQuotaPresentation {
     }
 }
 
+function Invoke-PendingUsageHistoryUpdate {
+    if (
+        $script:IsClosing -or
+        $script:PendingUsageHistoryUpdates.Count -eq 0
+    ) { return }
+    $pending = $script:PendingUsageHistoryUpdates.Dequeue()
+    $snapshot = $pending.Snapshot
+    $observedAt = [DateTimeOffset]$pending.ObservedAt
+    $observationContext = [string]$pending.ObservationContext
+    try {
+        $historyUpdateTimer = [Diagnostics.Stopwatch]::StartNew()
+        $skipUsageHistoryPersistence = (
+            $observationContext -eq 'LocalPreview' -or
+            (
+                $observationContext -eq 'StartupLocal' -and
+                $script:CodexOfficialAccessEnabled
+            )
+        )
+        $insights = Update-UsageHistory `
+            -Snapshot $snapshot `
+            -ObservedAt $observedAt `
+            -RapidDropWindowMinutes $script:RapidDropWindowMinutes `
+            -CodexRapidDropPercent $script:CodexRapidDropPercent `
+            -DeepSeekRapidDropMode $script:DeepSeekRapidDropMode `
+            -DeepSeekRapidDropPercent $script:DeepSeekRapidDropPercent `
+            -DeepSeekRapidDropAmount $script:DeepSeekRapidDropAmount `
+            -SkipPersistence:$skipUsageHistoryPersistence
+        $insights = Set-SessionRapidDropInsight `
+            -Snapshot $snapshot `
+            -Insights $insights `
+            -ObservationContext $observationContext `
+            -ObservedAt $observedAt
+        $script:LastUsageInsights = $insights
+        Update-UsageInsightView -Insights $insights
+        $historyUpdateTimer.Stop()
+        $script:UsageHistoryUpdateCount++
+        $script:UsageHistoryUpdateLastMilliseconds =
+            $historyUpdateTimer.ElapsedMilliseconds
+        $script:UsageHistoryUpdateLastError = ''
+        Write-RuntimeLog `
+            -Level $(if ($historyUpdateTimer.ElapsedMilliseconds -ge 500) {
+                'Warning'
+            } else {
+                'Debug'
+            }) `
+            -Event 'History.Updated' `
+            -Message '历史趋势已更新' `
+            -ElapsedMilliseconds $historyUpdateTimer.ElapsedMilliseconds
+        if ($observationContext -in @('StartupLocal', 'StartupOfficial')) {
+            [void](Invoke-StartupUsageSnapshotNotification `
+                -Snapshot $snapshot `
+                -ObservationContext $observationContext)
+        }
+        elseif ($observationContext -eq 'Normal') {
+            $lowAlertShown = Invoke-LowRemainingAlert `
+                -Snapshot $snapshot `
+                -Insights $insights
+            if (-not $lowAlertShown) {
+                [void](Invoke-RapidDropAlert `
+                    -Snapshot $snapshot `
+                    -Insights $insights)
+            }
+        }
+    }
+    catch {
+        $script:LastUsageHistoryError = $_.Exception.Message
+        $script:UsageHistoryUpdateLastError = $_.Exception.Message
+        Write-RuntimeLog `
+            -Level 'Error' `
+            -Event 'History.UpdateFailed' `
+            -Message $_.Exception.Message
+        if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
+            Set-RuntimeDiagnosticStatus `
+                -Area 'History' `
+                -Status 'Error' `
+                -Message $_.Exception.Message
+        }
+        $Trend24Text.Text = '24 小时：暂不可用'
+        $Trend7Text.Text = '7 天：暂不可用'
+        $Trend24MetaText.Text = '历史记录读取失败'
+        $Trend7MetaText.Text = '历史记录读取失败'
+        $Trend24Line.Points.Clear()
+        $Trend24Area.Points.Clear()
+        $Trend7Line.Points.Clear()
+        $Trend7Area.Points.Clear()
+        $Trend24StartMarker.Visibility = 'Collapsed'
+        $Trend24EndMarker.Visibility = 'Collapsed'
+        $Trend7StartMarker.Visibility = 'Collapsed'
+        $Trend7EndMarker.Visibility = 'Collapsed'
+        $PredictionText.Text = '趋势暂不可用'
+        $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
+            [Windows.Media.ColorConverter]::ConvertFromString('#9A765E')
+        )
+        $RapidDropText.Text = '快速下降监控 · 历史记录暂不可用'
+    }
+    if (
+        $script:PendingUsageHistoryUpdates.Count -eq 0 -and
+        -not $script:AppContext.Refresh.IsBusy -and
+        (Get-Command Start-UsageHistoryRepair -ErrorAction SilentlyContinue)
+    ) {
+        Start-UsageHistoryRepair
+    }
+}
+
+function Queue-UsageHistoryUpdate {
+    param(
+        $Snapshot,
+        [DateTimeOffset]$ObservedAt,
+        [string]$ObservationContext
+    )
+
+    [void]$script:PendingUsageHistoryUpdates.Enqueue([pscustomobject]@{
+        Snapshot = $Snapshot
+        ObservedAt = $ObservedAt
+        ObservationContext = $ObservationContext
+    })
+    $window.Dispatcher.BeginInvoke(
+        [Windows.Threading.DispatcherPriority]::Background,
+        (New-RmfAction -Callback { Invoke-PendingUsageHistoryUpdate })
+    ) | Out-Null
+}
+
 function Update-UsageView {
     param(
         $Snapshot,
@@ -2371,10 +2510,27 @@ function Update-UsageView {
         $script:LastSnapshot = $Snapshot
         if ([bool]$Snapshot.Available) {
             try {
+                $stateSaveTimer = [Diagnostics.Stopwatch]::StartNew()
                 [void](Save-UsageStateSnapshot `
                     -Snapshot $Snapshot `
                     -ObservedAt $observedAt `
                     -Reason $ObservationContext)
+                $stateSaveTimer.Stop()
+                if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+                    Write-RuntimeLog `
+                        -Level $(if ($stateSaveTimer.ElapsedMilliseconds -ge 250) {
+                            'Warning'
+                        } else {
+                            'Debug'
+                        }) `
+                        -Event 'StateHistory.Saved' `
+                        -Message '完整状态已增量保存' `
+                        -ElapsedMilliseconds $stateSaveTimer.ElapsedMilliseconds `
+                        -Data @{
+                            Provider = [string]$Snapshot.ProviderId
+                            Reason = $ObservationContext
+                        }
+                }
                 if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
                     Set-RuntimeDiagnosticStatus `
                         -Area 'StateHistory' `
@@ -2383,6 +2539,16 @@ function Update-UsageView {
                 }
             }
             catch {
+                if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+                    Write-RuntimeLog `
+                        -Level 'Error' `
+                        -Event 'StateHistory.SaveFailed' `
+                        -Message $_.Exception.Message `
+                        -Data @{
+                            Provider = [string]$Snapshot.ProviderId
+                            Reason = $ObservationContext
+                        }
+                }
                 if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
                     Set-RuntimeDiagnosticStatus `
                         -Area 'StateHistory' `
@@ -2660,71 +2826,19 @@ function Update-UsageView {
         return
     }
 
-    try {
-        $skipUsageHistoryPersistence = (
-            $ObservationContext -eq 'LocalPreview' -or
-            (
-                $ObservationContext -eq 'StartupLocal' -and
-                $script:CodexOfficialAccessEnabled
-            )
-        )
-        $insights = Update-UsageHistory `
+    if ($isDiagnosticRun) {
+        [void]$script:PendingUsageHistoryUpdates.Enqueue([pscustomobject]@{
+            Snapshot = $Snapshot
+            ObservedAt = $observedAt
+            ObservationContext = $ObservationContext
+        })
+        Invoke-PendingUsageHistoryUpdate
+    }
+    else {
+        Queue-UsageHistoryUpdate `
             -Snapshot $Snapshot `
             -ObservedAt $observedAt `
-            -RapidDropWindowMinutes $script:RapidDropWindowMinutes `
-            -CodexRapidDropPercent $script:CodexRapidDropPercent `
-            -DeepSeekRapidDropMode $script:DeepSeekRapidDropMode `
-            -DeepSeekRapidDropPercent $script:DeepSeekRapidDropPercent `
-            -DeepSeekRapidDropAmount $script:DeepSeekRapidDropAmount `
-            -SkipPersistence:$skipUsageHistoryPersistence
-        $insights = Set-SessionRapidDropInsight `
-            -Snapshot $Snapshot `
-            -Insights $insights `
-            -ObservationContext $ObservationContext `
-            -ObservedAt $observedAt
-        $script:LastUsageInsights = $insights
-        Update-UsageInsightView -Insights $insights
-        if ($ObservationContext -in @('StartupLocal', 'StartupOfficial')) {
-            [void](Invoke-StartupUsageSnapshotNotification `
-                -Snapshot $Snapshot `
-                -ObservationContext $ObservationContext)
-        }
-        elseif ($ObservationContext -eq 'Normal') {
-            $lowAlertShown = Invoke-LowRemainingAlert `
-                -Snapshot $Snapshot `
-                -Insights $insights
-            if (-not $lowAlertShown) {
-                [void](Invoke-RapidDropAlert `
-                    -Snapshot $Snapshot `
-                    -Insights $insights)
-            }
-        }
-    }
-    catch {
-        $script:LastUsageHistoryError = $_.Exception.Message
-        if (Get-Command Set-RuntimeDiagnosticStatus -ErrorAction SilentlyContinue) {
-            Set-RuntimeDiagnosticStatus `
-                -Area 'History' `
-                -Status 'Error' `
-                -Message $_.Exception.Message
-        }
-        $Trend24Text.Text = '24 小时：暂不可用'
-        $Trend7Text.Text = '7 天：暂不可用'
-        $Trend24MetaText.Text = '历史记录读取失败'
-        $Trend7MetaText.Text = '历史记录读取失败'
-        $Trend24Line.Points.Clear()
-        $Trend24Area.Points.Clear()
-        $Trend7Line.Points.Clear()
-        $Trend7Area.Points.Clear()
-        $Trend24StartMarker.Visibility = 'Collapsed'
-        $Trend24EndMarker.Visibility = 'Collapsed'
-        $Trend7StartMarker.Visibility = 'Collapsed'
-        $Trend7EndMarker.Visibility = 'Collapsed'
-        $PredictionText.Text = '趋势暂不可用'
-        $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
-            [Windows.Media.ColorConverter]::ConvertFromString('#9A765E')
-        )
-        $RapidDropText.Text = '快速下降监控 · 历史记录暂不可用'
+            -ObservationContext $ObservationContext
     }
     Reset-RefreshCountdown
 }
