@@ -69,6 +69,44 @@ public sealed class DeepSeekUsageEventData
     }
 }
 
+public static class LocalJsonlFileScanner
+{
+    public static FileInfo[] GetFilesNewestFirst(string root)
+    {
+        if (String.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) {
+            return new FileInfo[0];
+        }
+        List<FileInfo> files = new List<FileInfo>();
+        Stack<DirectoryInfo> pending = new Stack<DirectoryInfo>();
+        pending.Push(new DirectoryInfo(root));
+        while (pending.Count > 0)
+        {
+            DirectoryInfo directory = pending.Pop();
+            try
+            {
+                foreach (FileInfo file in directory.GetFiles("*.jsonl")) {
+                    files.Add(file);
+                }
+                foreach (DirectoryInfo child in directory.GetDirectories())
+                {
+                    if ((child.Attributes & FileAttributes.ReparsePoint) == 0) {
+                        pending.Push(child);
+                    }
+                }
+            }
+            catch (UnauthorizedAccessException) {}
+            catch (IOException) {}
+        }
+        files.Sort(delegate(FileInfo left, FileInfo right) {
+            int modified = right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+            return modified != 0
+                ? modified
+                : StringComparer.OrdinalIgnoreCase.Compare(right.FullName, left.FullName);
+        });
+        return files.ToArray();
+    }
+}
+
 public static class DeepSeekLogScanner
 {
     private static readonly Regex Model = Create("\"model\"\\s*:\\s*\"(?<value>[^\"]+)\"");
@@ -178,9 +216,252 @@ public static class DeepSeekLogScanner
         return result;
     }
 }
+
+public sealed class UsageHistoryRecordData
+{
+    public int Version { get; set; }
+    public string ProviderId { get; set; }
+    public DateTimeOffset ObservedAtUtc { get; set; }
+    public string LocalDate { get; set; }
+    public string TimeZoneId { get; set; }
+    public int UtcOffsetMinutes { get; set; }
+    public string MetricType { get; set; }
+    public string QuotaPeriod { get; set; }
+    public double RemainingValue { get; set; }
+    public string Unit { get; set; }
+    public string ResetAtUtc { get; set; }
+}
+
+public static class UsageHistoryLogScanner
+{
+    private static readonly Regex Version = Create("\\\"v\\\"\\s*:\\s*(?<value>-?\\d+)");
+    private static readonly Regex Provider = Create("\\\"ProviderId\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+    private static readonly Regex Observed = Create("\\\"ObservedAtUtc\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+    private static readonly Regex Metric = Create("\\\"MetricType\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+    private static readonly Regex Period = Create("\\\"QuotaPeriod\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+    private static readonly Regex Remaining = Create("\\\"RemainingValue\\\"\\s*:\\s*(?<value>[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?)");
+    private static readonly Regex Unit = Create("\\\"Unit\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+    private static readonly Regex Reset = Create("\\\"ResetAtUtc\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+
+    private static Regex Create(string pattern)
+    {
+        return new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    }
+
+    private static string Capture(Regex regex, string line)
+    {
+        Match match = regex.Match(line);
+        return match.Success ? match.Groups["value"].Value : String.Empty;
+    }
+
+    private static UsageHistoryRecordData ParseLine(
+        string line,
+        TimeZoneInfo timeZone,
+        DateTime earliestLocalDate
+    ) {
+        if (String.IsNullOrWhiteSpace(line) || line.Length > 65536) {
+            return null;
+        }
+        string provider = Capture(Provider, line);
+        string metric = Capture(Metric, line);
+        if (
+            (provider != "Codex" && provider != "DeepSeek") ||
+            (metric != "Percent" && metric != "Balance")
+        ) {
+            return null;
+        }
+
+        int version;
+        if (!Int32.TryParse(
+            Capture(Version, line),
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out version
+        )) {
+            version = 0;
+        }
+        string quotaPeriod = Capture(Period, line);
+        bool hasQuotaPeriod = Period.IsMatch(line);
+        if (provider == "Codex" && metric == "Percent") {
+            if (!hasQuotaPeriod && version >= 1 && version <= 2) {
+                quotaPeriod = "Weekly";
+            }
+            else if (quotaPeriod != "FiveHour" && quotaPeriod != "Weekly") {
+                return null;
+            }
+        }
+
+        DateTimeOffset observedAt;
+        if (!DateTimeOffset.TryParse(
+            Capture(Observed, line),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out observedAt
+        )) {
+            return null;
+        }
+        observedAt = observedAt.ToUniversalTime();
+        DateTimeOffset localObservedAt = TimeZoneInfo.ConvertTime(observedAt, timeZone);
+        if (localObservedAt.Date < earliestLocalDate) {
+            return null;
+        }
+
+        double remainingValue;
+        if (!Double.TryParse(
+            Capture(Remaining, line),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out remainingValue
+        ) || Double.IsNaN(remainingValue) || Double.IsInfinity(remainingValue) ||
+            remainingValue < 0 || (metric == "Percent" && remainingValue > 100)
+        ) {
+            return null;
+        }
+
+        string resetAtUtc = String.Empty;
+        string resetText = Capture(Reset, line);
+        DateTimeOffset resetAt;
+        if (!String.IsNullOrWhiteSpace(resetText) && DateTimeOffset.TryParse(
+            resetText,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out resetAt
+        )) {
+            resetAtUtc = resetAt.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+        }
+
+        return new UsageHistoryRecordData {
+            Version = 3,
+            ProviderId = provider,
+            ObservedAtUtc = observedAt,
+            LocalDate = localObservedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            TimeZoneId = timeZone.Id,
+            UtcOffsetMinutes = (int)Math.Round(localObservedAt.Offset.TotalMinutes),
+            MetricType = metric,
+            QuotaPeriod = quotaPeriod,
+            RemainingValue = Math.Round(remainingValue, 4),
+            Unit = Capture(Unit, line),
+            ResetAtUtc = resetAtUtc
+        };
+    }
+
+    public static UsageHistoryRecordData[] ReadFile(
+        string path,
+        DateTimeOffset now,
+        TimeZoneInfo timeZone
+    ) {
+        DateTime earliestLocalDate = TimeZoneInfo.ConvertTime(
+            now.ToUniversalTime(),
+            timeZone
+        ).Date.AddDays(-7);
+        Dictionary<string, UsageHistoryRecordData> samples =
+            new Dictionary<string, UsageHistoryRecordData>(StringComparer.Ordinal);
+        using (FileStream stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete
+        ))
+        using (StreamReader reader = new StreamReader(stream))
+        {
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                UsageHistoryRecordData sample = ParseLine(
+                    line,
+                    timeZone,
+                    earliestLocalDate
+                );
+                if (sample == null) {
+                    continue;
+                }
+                string key = String.Join("|", new string[] {
+                    sample.ProviderId,
+                    sample.MetricType,
+                    sample.QuotaPeriod,
+                    sample.Unit,
+                    sample.ObservedAtUtc.ToString("o", CultureInfo.InvariantCulture)
+                });
+                samples[key] = sample;
+            }
+        }
+        List<UsageHistoryRecordData> result =
+            new List<UsageHistoryRecordData>(samples.Values);
+        result.Sort(delegate(UsageHistoryRecordData left, UsageHistoryRecordData right) {
+            return left.ObservedAtUtc.CompareTo(right.ObservedAtUtc);
+        });
+        return result.ToArray();
+    }
+
+    public static UsageHistoryRecordData[] SelectForAnalysis(
+        UsageHistoryRecordData[] samples
+    ) {
+        if (samples == null || samples.Length <= 720) {
+            return samples ?? new UsageHistoryRecordData[0];
+        }
+        Dictionary<string, List<UsageHistoryRecordData>> series =
+            new Dictionary<string, List<UsageHistoryRecordData>>(StringComparer.Ordinal);
+        foreach (UsageHistoryRecordData sample in samples)
+        {
+            string key = String.Join("|", new string[] {
+                sample.ProviderId,
+                sample.MetricType,
+                sample.QuotaPeriod,
+                sample.Unit
+            });
+            List<UsageHistoryRecordData> group;
+            if (!series.TryGetValue(key, out group)) {
+                group = new List<UsageHistoryRecordData>();
+                series[key] = group;
+            }
+            group.Add(sample);
+        }
+
+        HashSet<UsageHistoryRecordData> selected =
+            new HashSet<UsageHistoryRecordData>();
+        long ticksPerBucket = TimeSpan.FromHours(1).Ticks;
+        foreach (List<UsageHistoryRecordData> group in series.Values)
+        {
+            UsageHistoryRecordData previous = null;
+            UsageHistoryRecordData bucketLast = null;
+            long bucket = Int64.MinValue;
+            foreach (UsageHistoryRecordData sample in group)
+            {
+                long sampleBucket = sample.ObservedAtUtc.UtcDateTime.Ticks /
+                    ticksPerBucket;
+                if (sampleBucket != bucket) {
+                    if (bucketLast != null) {
+                        selected.Add(bucketLast);
+                    }
+                    bucket = sampleBucket;
+                }
+                if (previous != null && Math.Abs(
+                    sample.RemainingValue - previous.RemainingValue
+                ) > 0.0001) {
+                    selected.Add(previous);
+                    selected.Add(sample);
+                }
+                if (previous == null) {
+                    selected.Add(sample);
+                }
+                previous = sample;
+                bucketLast = sample;
+            }
+            if (bucketLast != null) {
+                selected.Add(bucketLast);
+            }
+        }
+        List<UsageHistoryRecordData> result =
+            new List<UsageHistoryRecordData>(selected);
+        result.Sort(delegate(UsageHistoryRecordData left, UsageHistoryRecordData right) {
+            return left.ObservedAtUtc.CompareTo(right.ObservedAtUtc);
+        });
+        return result.ToArray();
+    }
+}
 '@
 
-$script:AppVersion = '1.9.0'
+$script:AppVersion = '1.9.1'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -250,6 +531,14 @@ $script:UpdateContext = [pscustomobject]@{
 }
 $script:LastDeepSeekSnapshot = $null
 $script:UsageHistoryCache = $null
+$global:RmfUsageHistoryRepairProcess = $null
+$global:RmfUsageHistoryRepairStarted = $false
+$script:UsageStateMaintenanceDueByRoot = @{}
+$script:PendingCodexLocalRefresh = $null
+$script:PendingUsageHistoryUpdates = New-Object 'Collections.Generic.Queue[object]'
+$script:UsageHistoryUpdateCount = 0
+$script:UsageHistoryUpdateLastMilliseconds = -1L
+$script:UsageHistoryUpdateLastError = ''
 $script:LastUsageInsights = $null
 $script:LastUsageHistoryError = ''
 $script:UsageStateDiagnosticCaptureCount = 0

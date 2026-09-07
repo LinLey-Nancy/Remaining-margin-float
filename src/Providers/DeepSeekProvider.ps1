@@ -244,8 +244,9 @@ function Get-DeepSeekLocalUsage {
         return $emptyResult
     }
 
-    $files = @(Get-ChildItem -LiteralPath $projectsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTimeUtc, FullName -Descending)
+    $files = @(
+        [LocalJsonlFileScanner]::GetFilesNewestFirst($projectsRoot)
+    )
     $inventoryParts = New-Object System.Collections.ArrayList
     [void]$inventoryParts.Add(
         (

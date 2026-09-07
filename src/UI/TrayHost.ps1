@@ -89,6 +89,11 @@ $trayDiagnosticsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Show-ExistingWindow
     Show-RuntimeDiagnostics
 }))
+$trayOpenLogsItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayOpenLogsItem.Text = '打开运行日志目录'
+$trayOpenLogsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Open-RuntimeLogDirectory
+}))
 $trayExportHistoryItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayExportHistoryItem.Text = '导出使用记录…'
 $trayExportHistoryItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
@@ -102,6 +107,7 @@ $trayImportHistoryItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Show-UsageHistoryImportDialog
 }))
 [void]$trayDataItem.DropDownItems.Add($trayDiagnosticsItem)
+[void]$trayDataItem.DropDownItems.Add($trayOpenLogsItem)
 [void]$trayDataItem.DropDownItems.Add(
     (New-Object System.Windows.Forms.ToolStripSeparator)
 )
@@ -165,7 +171,6 @@ $traySeparator = New-Object System.Windows.Forms.ToolStripSeparator
 $trayExitItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayExitItem.Text = '退出'
 $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
-    Save-Settings
     $window.Close()
 }))
 [void]$script:TrayMenu.Items.Add($trayOpenItem)
@@ -306,6 +311,19 @@ if ($CheckRefreshCoordinator) {
         $countdownAfter =
             [int]$script:AppContext.Refresh.RemainingSeconds
 
+        $savedLastSnapshot = $script:LastSnapshot
+        $script:CodexOfficialAccessEnabled = $true
+        $officialRefreshKeepsVisibleSnapshot = -not (
+            Test-ShouldPresentCodexLocalSnapshot
+        )
+        $script:LastSnapshot = $null
+        $initialOfficialRefreshCanUseLocalPreview =
+            Test-ShouldPresentCodexLocalSnapshot
+        $initialOfficialLocalPreviewIsDisplayOnly = -not (
+            Test-ShouldPersistCodexLocalSnapshot
+        )
+        $script:LastSnapshot = $savedLastSnapshot
+
         [pscustomobject]@{
             ManualRefreshSucceeded = (
                 $script:LastSnapshot -and
@@ -332,6 +350,12 @@ if ($CheckRefreshCoordinator) {
             AutomaticText = $automaticText
             CountdownBefore = $countdownBefore
             CountdownAfter = $countdownAfter
+            OfficialRefreshKeepsVisibleSnapshot =
+                $officialRefreshKeepsVisibleSnapshot
+            InitialOfficialRefreshCanUseLocalPreview =
+                $initialOfficialRefreshCanUseLocalPreview
+            InitialOfficialLocalPreviewIsDisplayOnly =
+                $initialOfficialLocalPreviewIsDisplayOnly
         } | ConvertTo-Json
     }
     finally {
@@ -346,11 +370,14 @@ if ($CheckRefreshCoordinator) {
 }
 
 $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
+    $closingTimer = [Diagnostics.Stopwatch]::StartNew()
+    Write-RuntimeLog -Event 'App.Closing.Begin' -Message '开始关闭应用'
     $script:IsClosing = $true
     if ($script:EdgeRevealTimer) { $script:EdgeRevealTimer.Stop() }
     if ($script:EdgeHideTimer) { $script:EdgeHideTimer.Stop() }
     $timer.Stop()
     $activationTimer.Stop()
+    [void](Stop-UsageHistoryRepair)
     if ($script:DeepSeekHttpClient) {
         $script:DeepSeekHttpClient.CancelPendingRequests()
         $script:DeepSeekHttpClient.Dispose()
@@ -378,11 +405,26 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
     }
     if ($script:LastSnapshot -and [bool]$script:LastSnapshot.Available) {
         try {
+            $exitStateTimer = [Diagnostics.Stopwatch]::StartNew()
             [void](Save-UsageStateSnapshot `
                 -Snapshot $script:LastSnapshot `
                 -Reason 'AppExit')
+            $exitStateTimer.Stop()
+            Write-RuntimeLog `
+                -Level $(if ($exitStateTimer.ElapsedMilliseconds -ge 250) {
+                    'Warning'
+                } else {
+                    'Debug'
+                }) `
+                -Event 'App.Closing.StateSaved' `
+                -Message '退出状态已保存' `
+                -ElapsedMilliseconds $exitStateTimer.ElapsedMilliseconds
         }
         catch {
+            Write-RuntimeLog `
+                -Level 'Error' `
+                -Event 'App.Closing.StateSaveFailed' `
+                -Message $_.Exception.Message
             Set-RuntimeDiagnosticStatus `
                 -Area 'StateHistory' `
                 -Status 'Error' `
@@ -410,6 +452,23 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         try { $script:AppMutex.ReleaseMutex() } catch {}
         $script:AppMutex.Dispose()
     }
+    $closingTimer.Stop()
+    Write-RuntimeLog `
+        -Level $(if ($closingTimer.ElapsedMilliseconds -ge 1000) {
+            'Warning'
+        } else {
+            'Info'
+        }) `
+        -Event 'App.Closing.Completed' `
+        -Message '应用关闭清理完成' `
+        -ElapsedMilliseconds $closingTimer.ElapsedMilliseconds `
+        -Data @{
+            EventBridgeFailures = Get-RmfEventBridgeFailureCount
+            HistoryUpdateCount = $script:UsageHistoryUpdateCount
+            HistoryUpdateLastMs = $script:UsageHistoryUpdateLastMilliseconds
+            HistoryUpdateLastError = $script:UsageHistoryUpdateLastError
+            PendingHistoryUpdates = $script:PendingUsageHistoryUpdates.Count
+        }
     Stop-RmfEventBridge
 }))
 

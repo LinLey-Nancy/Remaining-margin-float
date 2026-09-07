@@ -12,7 +12,24 @@
     return
 }
 
+if ($CheckRuntimeLog) {
+    $result = Invoke-RuntimeLogDiagnostic
+    $result | ConvertTo-Json
+    $window.Close()
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ([string]::IsNullOrWhiteSpace($script:RuntimeLogPath)) {
+    [void](Initialize-RuntimeLog)
+}
+Write-RuntimeLog `
+    -Event 'App.Startup.Begin' `
+    -Message '开始初始化应用' `
+    -ElapsedMilliseconds $script:RmfStartupStopwatch.ElapsedMilliseconds
+
 $script:IsRestoringSettings = $true
+$startupPhase = [Diagnostics.Stopwatch]::StartNew()
 Restore-Settings
 if (-not $isDiagnosticRun) {
     Sync-PackagedStartupLauncher
@@ -20,29 +37,19 @@ if (-not $isDiagnosticRun) {
 $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
 $script:IsRestoringSettings = $false
-try {
-    $historyBackfill = Invoke-UsageHistoryStateBackfill
-    if ($historyBackfill.AddedSamples -gt 0) {
-        Set-RuntimeDiagnosticStatus `
-            -Area 'History' `
-            -Status 'Healthy' `
-            -Message ('已恢复 {0} 个历史趋势样本' -f $historyBackfill.AddedSamples)
-    }
-    elseif ($historyBackfill.FailedEntries -gt 0) {
-        Set-RuntimeDiagnosticStatus `
-            -Area 'History' `
-            -Status 'Degraded' `
-            -Message ('有 {0} 个历史状态无法恢复' -f $historyBackfill.FailedEntries)
-    }
-}
-catch {
-    $script:LastUsageHistoryError = $_.Exception.Message
-    Set-RuntimeDiagnosticStatus `
-        -Area 'History' `
-        -Status 'Degraded' `
-        -Message $_.Exception.Message
-}
-[void](Restore-LatestUsageState)
+$settingsElapsed = $startupPhase.ElapsedMilliseconds
+$restorePhase = [Diagnostics.Stopwatch]::StartNew()
+$restoredLatestState = Restore-LatestUsageState
+$restorePhase.Stop()
+Write-RuntimeLog `
+    -Event 'App.Startup.StateRestored' `
+    -Message $(if ($restoredLatestState) {
+        '已恢复最近状态'
+    } else {
+        '没有可恢复的最近状态'
+    }) `
+    -ElapsedMilliseconds $restorePhase.ElapsedMilliseconds `
+    -Data @{ SettingsAndStartupMs = $settingsElapsed }
 
 $script:AppContext.Refresh.IsBusy = $false
 Reset-RefreshCountdown
@@ -106,8 +113,24 @@ if (-not $CheckTransitions -and -not $releaseGuiCheck) {
     $window.Add_Loaded((New-RmfEventHandler -Kind Routed -Callback {
         Ensure-WindowVisible
         $window.Activate() | Out-Null
+        Write-RuntimeLog `
+            -Event 'App.Startup.WindowLoaded' `
+            -Message '主窗口已加载' `
+            -ElapsedMilliseconds $script:RmfStartupStopwatch.ElapsedMilliseconds
     }))
     $window.Add_ContentRendered((New-RmfEventHandler -Kind Event -Callback {
+        if ($script:RmfStartupStopwatch.IsRunning) {
+            $script:RmfStartupStopwatch.Stop()
+            Write-RuntimeLog `
+                -Level $(if ($script:RmfStartupStopwatch.ElapsedMilliseconds -ge 2000) {
+                    'Warning'
+                } else {
+                    'Info'
+                }) `
+                -Event 'App.Startup.Ready' `
+                -Message '界面已可交互' `
+                -ElapsedMilliseconds $script:RmfStartupStopwatch.ElapsedMilliseconds
+        }
         if (-not $script:InitialRefreshQueued) {
             $script:InitialRefreshQueued = $true
             $window.Dispatcher.BeginInvoke(

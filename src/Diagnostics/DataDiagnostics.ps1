@@ -976,6 +976,11 @@ if ($CheckStateHistory) {
     $closeRefreshSamplesPreserved = $false
     $historyReplacementRecovered = $false
     $missingPayloadBlocksCursor = $false
+    $largeLegacyRestoreFast = $false
+    $largeLegacyIncrementalSaveFast = $false
+    $legacyManifestUntouched = $false
+    $largeLegacyRestoreMs = -1
+    $largeLegacySaveMs = -1
     try {
         $emptyBackfill = Invoke-UsageHistoryStateBackfill `
             -HistoryPath (Join-Path $stateRoot 'usage-empty.jsonl') `
@@ -1238,6 +1243,94 @@ if ($CheckStateHistory) {
             @(Get-ChildItem -LiteralPath $stateRoot -File -Filter '*.tmp.*').Count -eq 0
         )
 
+        $largeStateRoot = Join-Path $stateRoot 'large-legacy'
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $snapshot `
+            -ObservedAt $now.AddMinutes(-1) `
+            -Reason 'Automatic' `
+            -RootPath $largeStateRoot `
+            -AllowDiagnosticWrite)
+        $largeBaseEntry = @(
+            Read-UsageStateCurrentEntries `
+                -RootPath $largeStateRoot `
+                -Now $now
+        )[0]
+        $legacyDocuments = New-Object Collections.Generic.List[object]
+        for ($index = 0; $index -lt 5000; $index++) {
+            $observedAt = $now.AddMinutes(-$index)
+            [void]$legacyDocuments.Add([ordered]@{
+                v = 1
+                EntryId = 'legacy-{0:d5}' -f $index
+                ProviderId = 'Codex'
+                ObservedAtUtc = $observedAt.ToString('o')
+                SampledAtUtc = $observedAt.ToString('o')
+                PayloadHash = [string]$largeBaseEntry.PayloadHash
+                Reason = 'Automatic'
+                AppVersion = [string]$script:AppVersion
+            })
+        }
+        $largeManifestPath = Get-UsageStateManifestPath `
+            -RootPath $largeStateRoot
+        $largeManifest = [ordered]@{
+            v = 1
+            UpdatedAtUtc = $now.ToString('o')
+            RetentionHours = 168
+            Entries = $legacyDocuments.ToArray()
+        } | ConvertTo-Json -Depth 6
+        [IO.File]::WriteAllText(
+            $largeManifestPath,
+            $largeManifest,
+            (New-Object Text.UTF8Encoding($false))
+        )
+        [IO.File]::SetLastWriteTimeUtc(
+            $largeManifestPath,
+            $now.UtcDateTime
+        )
+        $largeManifestHashBefore = (
+            Get-FileHash -LiteralPath $largeManifestPath -Algorithm SHA256
+        ).Hash
+        $largeManifestWriteTimeBefore = (
+            Get-Item -LiteralPath $largeManifestPath
+        ).LastWriteTimeUtc
+
+        $largeRestoreTimer = [Diagnostics.Stopwatch]::StartNew()
+        $largeRestored = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Codex' `
+            -RootPath $largeStateRoot `
+            -Now $now
+        $largeRestoreTimer.Stop()
+        $largeLegacyRestoreMs = $largeRestoreTimer.ElapsedMilliseconds
+        $largeLegacyRestoreFast = (
+            $largeRestored -and
+            $largeLegacyRestoreMs -lt 1500
+        )
+
+        $largeChangedSnapshot = $snapshot.PSObject.Copy()
+        $largeChangedSnapshot.RemainingPercent = 61.5
+        $largeSaveTimer = [Diagnostics.Stopwatch]::StartNew()
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $largeChangedSnapshot `
+            -ObservedAt $now `
+            -Reason 'Manual' `
+            -RootPath $largeStateRoot `
+            -AllowDiagnosticWrite)
+        $largeSaveTimer.Stop()
+        $largeLegacySaveMs = $largeSaveTimer.ElapsedMilliseconds
+        $largeLegacyIncrementalSaveFast = $largeLegacySaveMs -lt 1500
+        $largeManifestAfter = Get-Item -LiteralPath $largeManifestPath
+        $legacyManifestUntouched = (
+            (Get-FileHash `
+                -LiteralPath $largeManifestPath `
+                -Algorithm SHA256).Hash -eq $largeManifestHashBefore -and
+            $largeManifestAfter.LastWriteTimeUtc -eq
+                $largeManifestWriteTimeBefore -and
+            (Test-Path -LiteralPath (
+                Get-UsageStateJournalPath `
+                    -ObservedAt $now `
+                    -RootPath $largeStateRoot
+            ) -PathType Leaf)
+        )
+
         $manifestPath = Get-UsageStateManifestPath -RootPath $stateRoot
         [IO.File]::WriteAllText(
             $manifestPath,
@@ -1303,6 +1396,11 @@ if ($CheckStateHistory) {
         CloseRefreshSamplesPreserved = $closeRefreshSamplesPreserved
         HistoryReplacementRecovered = $historyReplacementRecovered
         MissingPayloadBlocksCursor = $missingPayloadBlocksCursor
+        LargeLegacyRestoreFast = $largeLegacyRestoreFast
+        LargeLegacyIncrementalSaveFast = $largeLegacyIncrementalSaveFast
+        LegacyManifestUntouched = $legacyManifestUntouched
+        LargeLegacyRestoreMs = $largeLegacyRestoreMs
+        LargeLegacySaveMs = $largeLegacySaveMs
         TemporaryFilesCleaned = $temporaryFilesCleaned
     } | ConvertTo-Json
     $script:RmfStopLoading = $true
@@ -1623,6 +1721,9 @@ if ($CheckUsageHistory) {
     $minuteHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.MinuteHistoryDiagnostic.{0}.jsonl' -f $PID
     )
+    $largeHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.LargeHistoryDiagnostic.{0}.jsonl' -f $PID
+    )
     $calendarTimeZone = [TimeZoneInfo]::CreateCustomTimeZone(
         'RMF Diagnostic UTC+08',
         [TimeSpan]::FromHours(8),
@@ -1632,7 +1733,7 @@ if ($CheckUsageHistory) {
     $persistenceRoundTrip = $false
     $restartReloadRoundTrip = $false
     $legacyMigration = $false
-    $legacyWeeklyCodexExcluded = $false
+    $legacyWeeklyCodexMigrated = $false
     $calendarDateAligned = $false
     $importMergeRoundTrip = $false
     $invalidImportRejected = $false
@@ -1641,6 +1742,12 @@ if ($CheckUsageHistory) {
     $diagnosticRedaction = $false
     $minuteSamplesRetained = $false
     $manualRefreshSampleRetained = $false
+    $largeHistoryReadFast = $false
+    $largeHistoryReadMs = -1
+    $largeHistorySampleCount = 0
+    $largeHistoryInsightsFast = $false
+    $largeHistoryInsightsMs = -1
+    $largeHistoryAnalysisSampleCount = 0
     try {
         Save-UsageHistory `
             -Samples $depletingSamples `
@@ -1715,7 +1822,16 @@ if ($CheckUsageHistory) {
             $legacyReloaded[0].UtcOffsetMinutes -eq 480
         )
 
-        $legacyCodexRecord = [ordered]@{
+        $legacyCodexV1Record = [ordered]@{
+            v = 1
+            ProviderId = 'Codex'
+            ObservedAtUtc = '2030-01-01T10:59:00.0000000+00:00'
+            MetricType = 'Percent'
+            RemainingValue = 98
+            Unit = '%'
+            ResetAtUtc = '2030-01-08T00:00:00.0000000+00:00'
+        } | ConvertTo-Json -Compress
+        $legacyCodexV2Record = [ordered]@{
             v = 2
             ProviderId = 'Codex'
             ObservedAtUtc = '2030-01-01T11:00:00.0000000+00:00'
@@ -1724,17 +1840,38 @@ if ($CheckUsageHistory) {
             Unit = '%'
             ResetAtUtc = '2030-01-08T00:00:00.0000000+00:00'
         } | ConvertTo-Json -Compress
-        [IO.File]::WriteAllText(
+        $invalidCurrentCodexRecord = [ordered]@{
+            v = 3
+            ProviderId = 'Codex'
+            ObservedAtUtc = '2030-01-01T11:01:00.0000000+00:00'
+            MetricType = 'Percent'
+            RemainingValue = 96
+            Unit = '%'
+            ResetAtUtc = '2030-01-08T00:00:00.0000000+00:00'
+        } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllLines(
             $legacyCodexHistoryPath,
-            $legacyCodexRecord,
+            @(
+                $legacyCodexV1Record,
+                $legacyCodexV2Record,
+                $invalidCurrentCodexRecord
+            ),
             (New-Object Text.UTF8Encoding($false))
         )
-        $legacyWeeklyCodexExcluded = @(
+        $legacyCodexReloaded = @(
             Read-UsageHistory `
                 -Path $legacyCodexHistoryPath `
                 -Now $now `
                 -BypassCache
-        ).Count -eq 0
+        )
+        $legacyWeeklyCodexMigrated = (
+            $legacyCodexReloaded.Count -eq 2 -and
+            @($legacyCodexReloaded | Where-Object {
+                $_.Version -eq 3 -and $_.QuotaPeriod -eq 'Weekly'
+            }).Count -eq 2 -and
+            $legacyCodexReloaded[0].RemainingValue -eq 98 -and
+            $legacyCodexReloaded[1].RemainingValue -eq 97
+        )
 
         $importResult = Import-UsageHistory `
             -Path $historyTestPath `
@@ -1832,6 +1969,61 @@ if ($CheckUsageHistory) {
         )
         $manualRefreshSampleRetained = $manualReload.Count -eq 61
 
+        $largeHistoryLines = New-Object 'string[]' 7200
+        for ($index = 0; $index -lt $largeHistoryLines.Length; $index++) {
+            $observedAt = $now.AddMinutes(-$index).ToString(
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            $largeHistoryLines[$index] = (
+                '{"v":3,"ProviderId":"Codex","ObservedAtUtc":"' +
+                $observedAt +
+                '","MetricType":"Percent","QuotaPeriod":"FiveHour",' +
+                '"RemainingValue":72.5,"Unit":"%","ResetAtUtc":""}'
+            )
+        }
+        [IO.File]::WriteAllLines(
+            $largeHistoryPath,
+            $largeHistoryLines,
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $largeHistoryTimer = [Diagnostics.Stopwatch]::StartNew()
+        $largeHistoryReload = @(
+            Read-UsageHistory `
+                -Path $largeHistoryPath `
+                -Now $now `
+                -BypassCache
+        )
+        $largeHistoryTimer.Stop()
+        $largeHistoryReadMs = $largeHistoryTimer.ElapsedMilliseconds
+        $largeHistorySampleCount = $largeHistoryReload.Count
+        $largeHistoryReadFast = (
+            $largeHistorySampleCount -eq 7200 -and
+            $largeHistoryReadMs -lt 1500
+        )
+        $largeInsightsTimer = [Diagnostics.Stopwatch]::StartNew()
+        $largeAnalysisHistory = @(
+            Read-UsageHistory `
+                -Path $largeHistoryPath `
+                -Now $now `
+                -BypassCache `
+                -ForAnalysis
+        )
+        $largeHistoryInsights = Measure-UsageInsights `
+            -Samples $largeAnalysisHistory `
+            -CurrentSample $largeAnalysisHistory[-1] `
+            -PreviousSample $largeAnalysisHistory[-2] `
+            -Snapshot $codexRapidSnapshot `
+            -Now $now
+        $largeInsightsTimer.Stop()
+        $largeHistoryInsightsMs = $largeInsightsTimer.ElapsedMilliseconds
+        $largeHistoryAnalysisSampleCount = $largeAnalysisHistory.Count
+        $largeHistoryInsightsFast = (
+            $largeHistoryInsights.Trend7Days.SampleCount -gt 0 -and
+            $largeHistoryAnalysisSampleCount -le 240 -and
+            $largeHistoryInsightsMs -lt 1500
+        )
+
         $sensitiveDiagnosticText = (
             '{0}\private user@example.com sk-1234567890abcdef ' +
             'api_key=diagnostic-secret Bearer abcdefghijklmnop ' +
@@ -1857,6 +2049,7 @@ if ($CheckUsageHistory) {
             $invalidHistoryPath
             $oversizedHistoryPath
             $minuteHistoryPath
+            $largeHistoryPath
         )) {
             if (Test-Path -LiteralPath $testPath) {
                 Remove-Item -LiteralPath $testPath -Force
@@ -1937,6 +2130,12 @@ if ($CheckUsageHistory) {
         SubThresholdNoiseIgnored = $subThresholdNoiseIgnored
         MinuteSamplesRetained = $minuteSamplesRetained
         ManualRefreshSampleRetained = $manualRefreshSampleRetained
+        LargeHistoryReadFast = $largeHistoryReadFast
+        LargeHistoryReadMs = $largeHistoryReadMs
+        LargeHistorySampleCount = $largeHistorySampleCount
+        LargeHistoryInsightsFast = $largeHistoryInsightsFast
+        LargeHistoryInsightsMs = $largeHistoryInsightsMs
+        LargeHistoryAnalysisSampleCount = $largeHistoryAnalysisSampleCount
         LowThresholdCrossingDetected = Test-LowRemainingAlertCondition `
             -Snapshot $lowSnapshot `
             -PreviousSample $highPreviousSample
@@ -2025,7 +2224,7 @@ if ($CheckUsageHistory) {
         PersistenceRoundTrip = $persistenceRoundTrip
         RestartReloadRoundTrip = $restartReloadRoundTrip
         LegacyHistoryMigration = $legacyMigration
-        LegacyWeeklyCodexExcluded = $legacyWeeklyCodexExcluded
+        LegacyWeeklyCodexMigrated = $legacyWeeklyCodexMigrated
         WeeklyQuotaHistoryIsolated = (
             $weeklyHistorySample.QuotaPeriod -eq 'Weekly' -and
             $weeklyHistorySample.RemainingValue -eq 91 -and
