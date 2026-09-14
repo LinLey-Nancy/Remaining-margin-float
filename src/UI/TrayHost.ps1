@@ -34,8 +34,24 @@ $script:TrayDeepSeekSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callb
         Sync-ProviderMenuState
     }
 }))
+$script:TrayKimiSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayKimiSourceItem.Text = 'Kimi Code'
+$script:TrayKimiSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Set-ActiveProvider -Provider 'Kimi'
+    $credential = Get-KimiCredential
+    if ($credential.Token) {
+        Invoke-Refresh
+    }
+    else {
+        Show-ExistingWindow
+        $saved = Show-KimiSettings
+        if (-not $saved) { Invoke-Refresh }
+        Sync-ProviderMenuState
+    }
+}))
 [void]$traySourceItem.DropDownItems.Add($script:TrayCodexSourceItem)
 [void]$traySourceItem.DropDownItems.Add($script:TrayDeepSeekSourceItem)
+[void]$traySourceItem.DropDownItems.Add($script:TrayKimiSourceItem)
 $script:TrayCodexOfficialAccessItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayCodexOfficialAccessItem.Text = 'Codex 官方接口（读取登录凭据）'
 $script:TrayCodexOfficialAccessItem.CheckOnClick = $true
@@ -48,6 +64,12 @@ $script:TrayDeepSeekSettingsItem.Text = 'DeepSeek 设置…'
 $script:TrayDeepSeekSettingsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Show-ExistingWindow
     [void](Show-DeepSeekSettings)
+}))
+$script:TrayKimiSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayKimiSettingsItem.Text = 'Kimi Code 手动配置…'
+$script:TrayKimiSettingsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Show-ExistingWindow
+    [void](Show-KimiSettings)
 }))
 $script:TrayTopmostItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayTopmostItem.Text = '始终置顶'
@@ -178,6 +200,7 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($traySourceItem)
 [void]$script:TrayMenu.Items.Add($script:TrayCodexOfficialAccessItem)
 [void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
+[void]$script:TrayMenu.Items.Add($script:TrayKimiSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)
@@ -402,6 +425,21 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
     if ($script:AppContext.Refresh.DeepSeek.Request) {
         $script:AppContext.Refresh.DeepSeek.Request.Dispose()
         $script:AppContext.Refresh.DeepSeek.Request = $null
+    }
+    if (
+        $script:AppContext.Refresh.Kimi.RequestTask -or
+        $script:AppContext.Refresh.Kimi.RetryAfter
+    ) {
+        Cancel-KimiRefresh
+    }
+    if ($script:AppContext.Refresh.Kimi.Request) {
+        $script:AppContext.Refresh.Kimi.Request.Dispose()
+        $script:AppContext.Refresh.Kimi.Request = $null
+    }
+    if ($script:KimiHttpClient) {
+        $script:KimiHttpClient.CancelPendingRequests()
+        $script:KimiHttpClient.Dispose()
+        $script:KimiHttpClient = $null
     }
     if ($script:LastSnapshot -and [bool]$script:LastSnapshot.Available) {
         try {

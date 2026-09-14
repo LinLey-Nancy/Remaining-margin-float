@@ -376,9 +376,18 @@ if ($CheckTransitions) {
     $script:ActiveProvider = 'Codex'
     Sync-ProviderMenuState
     $codexSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $kimiManualConfigWhenCodex = [string]$script:KimiSettingsMenuItem.Visibility
     $script:ActiveProvider = 'DeepSeek'
     Sync-ProviderMenuState
     $deepSeekSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $script:ActiveProvider = 'Kimi'
+    Sync-ProviderMenuState
+    $kimiSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $kimiCodexAccessVisibility = [string]$script:CodexOfficialAccessMenuItem.Visibility
+    $kimiManualConfigVisibility = [string]$script:KimiSettingsMenuItem.Visibility
+    $kimiSourceChecked = [bool]$script:KimiSourceMenuItem.IsChecked
+    $script:ActiveProvider = 'DeepSeek'
+    Sync-ProviderMenuState
     $diagnosticNow = [DateTimeOffset]::Now
     $script:UsageHistoryCache = @(
         foreach ($item in @(
@@ -552,6 +561,33 @@ if ($CheckTransitions) {
     )
     if (-not $multipleResetTrendSegmentsRendered) {
         throw '24-hour resets were not segmented or the 7-day trend was not connected smoothly.'
+    }
+
+    $singlePointSegmentSamples = @(
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 35; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' }
+    )
+    $singlePointSegmentInsights = Measure-UsageInsights `
+        -Samples $singlePointSegmentSamples `
+        -CurrentSample $singlePointSegmentSamples[-1] `
+        -PreviousSample $singlePointSegmentSamples[-2] `
+        -Now $diagnosticNow
+    Update-UsageInsightView -Insights $singlePointSegmentInsights
+    $singlePointSegmentRendered = (
+        $Trend24Line.Points.Count -eq 2 -and
+        @($Trend24Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 1 -and
+        $Trend7Line.Points.Count -gt $singlePointSegmentSamples.Count -and
+        @($Trend7Canvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 0 -and
+        $Trend24MetaText.Text -eq '等待更多样本' -and
+        $Trend7MetaText.Text -eq '等待更多样本'
+    )
+    if (-not $singlePointSegmentRendered) {
+        throw 'A reset segment with exactly one sample was not rendered.'
     }
 
     Update-UsageInsightView -Insights $null
@@ -1333,6 +1369,40 @@ if ($CheckTransitions) {
         $null -ne $lowAlertThresholdDialog.FindName('ErrorText')
     )
     $lowAlertThresholdDialog.Close()
+    $script:ActiveProvider = 'Kimi'
+    $kimiDemoSnapshot = Get-KimiDemoSnapshot
+    Update-UsageView -Snapshot $kimiDemoSnapshot
+    $kimiCompactValue = $RemainingValue.Text
+    $kimiCompactSuffix = $CompactSuffix.Text
+    $kimiLabel = $WindowLabel.Text
+    $kimiQuotaPanelVisible = [string]$CodexQuotaPanel.Visibility
+    $kimiMetricPanelVisible = [string]$ProviderMetricPanel.Visibility
+    $kimiWeeklyBandText = $WeeklyResetText.Text
+    $kimiPlanBadge = $PlanBadge.Text
+    $kimiBreakdownTitle = $BreakdownTitle.Text
+    $kimiExpandedHeight = Get-ExpandedHeightForSnapshot -Snapshot $kimiDemoSnapshot
+    $script:ActiveProvider = 'Codex'
+
+    $script:ActiveProvider = 'DeepSeek'
+    Set-ExpandedState -Expanded $true -Immediate
+    Update-UsageView -Snapshot (Get-DeepSeekDemoSnapshot)
+    $window.UpdateLayout()
+    $deepSeekExpandedLabelVisible = (
+        [string]$WindowLabel.Visibility -eq 'Collapsed' -and
+        [string]$ExpandedWindowLabel.Visibility -eq 'Visible'
+    )
+    $deepSeekLabelBottom = $ExpandedWindowLabel.TranslatePoint(
+        (New-Object Windows.Point(0, $ExpandedWindowLabel.ActualHeight)),
+        $CompactHit
+    ).Y
+    $deepSeekProgressTop = $ProgressTrack.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $CompactHit
+    ).Y
+    $deepSeekLabelProgressGap = $deepSeekProgressTop - $deepSeekLabelBottom
+    Set-ExpandedState -Expanded $false -Immediate
+    $script:ActiveProvider = 'Codex'
+
     $lastSnapshotBeforeFallback = $script:LastSnapshot
     $historyCountBeforeFallback = @($script:UsageHistoryCache).Count
     $staleFallbackSnapshot = New-UsageFallbackSnapshot `
@@ -1374,6 +1444,22 @@ if ($CheckTransitions) {
         FractionalBlendRed = $fractionalBlend.R
         CodexSettingsVisibility = $codexSettingsVisibility
         DeepSeekSettingsVisibility = $deepSeekSettingsVisibility
+        KimiSettingsVisibility = $kimiSettingsVisibility
+        KimiCodexAccessVisibility = $kimiCodexAccessVisibility
+        KimiManualConfigVisibility = $kimiManualConfigVisibility
+        KimiManualConfigWhenCodex = $kimiManualConfigWhenCodex
+        KimiSourceChecked = $kimiSourceChecked
+        KimiCompactValue = $kimiCompactValue
+        KimiCompactSuffix = $kimiCompactSuffix
+        KimiLabel = $kimiLabel
+        KimiQuotaPanelVisible = $kimiQuotaPanelVisible
+        KimiMetricPanelVisible = $kimiMetricPanelVisible
+        KimiWeeklyBandText = $kimiWeeklyBandText
+        KimiPlanBadge = $kimiPlanBadge
+        KimiBreakdownTitle = $kimiBreakdownTitle
+        KimiExpandedHeight = $kimiExpandedHeight
+        DeepSeekExpandedLabelVisible = $deepSeekExpandedLabelVisible
+        DeepSeekLabelProgressGap = $deepSeekLabelProgressGap
         DeepSeekCompactValue = $deepSeekCompactValue
         DeepSeekCompactSuffix = $deepSeekCompactSuffix
         DeepSeekLabel = $deepSeekLabel

@@ -1,0 +1,31 @@
+{
+  "user": {
+    "userId": "fixture-user",
+    "region": "REGION_CN",
+    "membership": { "level": "LEVEL_ADVANCED" },
+    "businessId": ""
+  },
+  "usage": {
+    "limit": "100",
+    "used": "2",
+    "remaining": "98",
+    "resetTime": "2030-01-08T12:00:00.000000Z"
+  },
+  "limits": [
+    {
+      "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+      "detail": {
+        "limit": "100",
+        "used": "10",
+        "remaining": "90",
+        "resetTime": "2030-01-01T17:00:00.000000Z"
+      }
+    }
+  ],
+  "parallel": { "limit": "30" },
+  "totalQuota": {},
+  "authentication": { "method": "METHOD_API_KEY", "scope": "FEATURE_CODING" },
+  "subType": "TYPE_PURCHASE",
+  "domain": "DOMAIN_NEXUS",
+  "version": "GOODS_VERSION_V1"
+}

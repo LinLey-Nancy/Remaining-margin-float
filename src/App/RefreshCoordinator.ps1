@@ -549,6 +549,272 @@ function Complete-DeepSeekRefresh {
     }
 }
 
+function Cancel-KimiRefresh {
+    $kimi = $script:AppContext.Refresh.Kimi
+    if ($kimi.RequestTask -and -not $kimi.RequestTask.IsCompleted) {
+        if ($script:KimiHttpClient) {
+            $script:KimiHttpClient.CancelPendingRequests()
+        }
+    }
+    elseif (
+        $kimi.RequestTask -and
+        -not $kimi.RequestTask.IsCanceled -and
+        -not $kimi.RequestTask.IsFaulted
+    ) {
+        $abandonedResponse = $kimi.RequestTask.GetAwaiter().GetResult()
+        if ($abandonedResponse) { $abandonedResponse.Dispose() }
+    }
+    if ($kimi.Request) {
+        $kimi.Request.Dispose()
+    }
+    $kimi.Request = $null
+    $kimi.RequestTask = $null
+    $kimi.Attempt = 0
+    $kimi.RetryAfter = $null
+    Set-RefreshBusy -Busy $false
+}
+
+function Start-KimiOfficialRequest {
+    $request = $null
+    $kimi = $script:AppContext.Refresh.Kimi
+    try {
+        $request = New-KimiUsageRequest
+        $kimi.Attempt++
+        $kimi.RetryAfter = $null
+        $kimi.Request = $request
+        $kimi.RequestTask = (Get-KimiHttpClient).SendAsync($request)
+        return $true
+    }
+    catch {
+        if ($request) { $request.Dispose() }
+        $kimi.Request = $null
+        $kimi.RequestTask = $null
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Kimi' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Degraded' `
+            -Message $_.Exception.Message
+        if ($script:ActiveProvider -eq 'Kimi') {
+            if ($script:LastKimiSnapshot) {
+                $fallback = New-UsageFallbackSnapshot `
+                    -Snapshot $script:LastKimiSnapshot `
+                    -Reason ('官方接口请求未能启动 · ' + $_.Exception.Message)
+                Update-UsageView -Snapshot $fallback -DisplayOnly
+            }
+            else {
+                Update-UsageView -Snapshot (
+                    Get-KimiUnavailableSnapshot -Reason $_.Exception.Message
+                )
+            }
+        }
+        return $false
+    }
+}
+
+function Start-KimiRefresh {
+    if ($Demo) {
+        $snapshot = Get-KimiDemoSnapshot
+        $script:LastKimiSnapshot = $snapshot
+        Update-UsageView -Snapshot $snapshot
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $credential = Get-KimiCredential
+    if ([string]::IsNullOrWhiteSpace($credential.Token)) {
+        $script:AppContext.Refresh.Kimi.Attempt = 0
+        $script:AppContext.Refresh.Kimi.RetryAfter = $null
+        Update-UsageView -Snapshot (Get-KimiUsageSnapshot -SkipOfficialRequest)
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $now = [DateTimeOffset]::Now
+    $currentOfficialUsage = Get-KimiCurrentUsageOverride -Now $now
+    if (
+        $currentOfficialUsage -and
+        ($now - $currentOfficialUsage.SampledAt).TotalSeconds -lt 15
+    ) {
+        $snapshot = Get-KimiUsageSnapshot `
+            -OfficialUsageOverride $currentOfficialUsage `
+            -SkipOfficialRequest
+        $script:LastKimiSnapshot = $snapshot
+        Update-UsageView -Snapshot $snapshot
+        Set-RefreshBusy -Busy $false
+        return
+    }
+
+    $script:AppContext.Refresh.Kimi.Attempt = 0
+    if (-not (Start-KimiOfficialRequest)) {
+        Set-RefreshBusy -Busy $false
+    }
+}
+
+function Complete-KimiRefresh {
+    $kimi = $script:AppContext.Refresh.Kimi
+    if (-not $kimi.RequestTask) {
+        if (
+            $kimi.RetryAfter -and
+            [DateTimeOffset]::Now -ge $kimi.RetryAfter
+        ) {
+            $kimi.RetryAfter = $null
+            if (-not (Start-KimiOfficialRequest)) {
+                $kimi.Attempt = 0
+                Set-RefreshBusy -Busy $false
+                Reset-RefreshCountdown
+            }
+        }
+        return
+    }
+    if (-not $kimi.RequestTask.IsCompleted) {
+        return
+    }
+
+    $task = $kimi.RequestTask
+    $request = $kimi.Request
+    $kimi.RequestTask = $null
+    $kimi.Request = $null
+    $response = $null
+    $statusCode = 0
+    $retryStarted = $false
+    $failureMessage = ''
+    try {
+        if ($task.IsCanceled) { throw '官方用量请求超时。' }
+        if ($task.IsFaulted) {
+            throw ($task.Exception.GetBaseException().Message)
+        }
+
+        $response = $task.GetAwaiter().GetResult()
+        $statusCode = [int]$response.StatusCode
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            $message = switch ($statusCode) {
+                401 { '登录信息无效或已过期，请在 Kimi Code 中重新登录。' }
+                403 { '当前账号无权访问 Kimi Code 用量接口。' }
+                429 { '请求过于频繁，稍后会自动重试。' }
+                default { 'Kimi 返回 HTTP {0}。' -f $statusCode }
+            }
+            throw $message
+        }
+
+        $payload = $body | ConvertFrom-Json
+        $usage = ConvertTo-KimiOfficialUsage `
+            -Payload $payload `
+            -SampledAt ([DateTimeOffset]::Now)
+        if (-not $usage) { throw '官方用量响应缺少有效限额周期。' }
+
+        $script:KimiOfficialUsageCache = $usage
+        if ($script:ActiveProvider -eq 'Kimi') {
+            $snapshot = Get-KimiUsageSnapshot `
+                -OfficialUsageOverride $usage `
+                -SkipOfficialRequest
+            $script:LastKimiSnapshot = $snapshot
+            Update-UsageView -Snapshot $snapshot
+        }
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Kimi' `
+            -Status 'Healthy' `
+            -Message 'Kimi 官方用量刷新成功'
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Healthy' `
+            -Message 'Kimi 官方用量刷新成功'
+    }
+    catch {
+        $failureMessage = $_.Exception.Message
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Kimi' `
+            -Status 'Degraded' `
+            -Message $failureMessage
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Degraded' `
+            -Message $failureMessage
+        $transientFailure = (
+            $task.IsCanceled -or
+            $task.IsFaulted -or
+            (Test-TransientRefreshFailure -StatusCode $statusCode)
+        )
+        if (
+            $transientFailure -and
+            $kimi.Attempt -lt $kimi.MaxAttempts -and
+            $script:ActiveProvider -eq 'Kimi' -and
+            -not $script:IsClosing
+        ) {
+            $serverDelaySeconds = 0.0
+            if (
+                $response -and
+                $response.Headers.RetryAfter -and
+                $response.Headers.RetryAfter.Delta
+            ) {
+                $serverDelaySeconds =
+                    $response.Headers.RetryAfter.Delta.Value.TotalSeconds
+            }
+            $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
+                -Attempt $kimi.Attempt `
+                -ServerDelaySeconds $serverDelaySeconds
+            $kimi.RetryAfter =
+                [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+            $retryStarted = $true
+        }
+        if (
+            $retryStarted -and
+            $script:LastKimiSnapshot -and
+            $script:ActiveProvider -eq 'Kimi'
+        ) {
+            $fallback = New-UsageFallbackSnapshot `
+                -Snapshot $script:LastKimiSnapshot `
+                -Reason (
+                    '官方接口暂时不可用，{0:0} 秒后重试 · {1}' -f
+                    $retryDelaySeconds,
+                    $failureMessage
+                )
+            Update-UsageView -Snapshot $fallback -DisplayOnly
+        }
+        $cachedUsage = Get-KimiCurrentUsageOverride
+        if (
+            -not $retryStarted -and
+            $cachedUsage -and
+            ([DateTimeOffset]::Now - $cachedUsage.SampledAt).TotalMinutes -lt 10 -and
+            $script:ActiveProvider -eq 'Kimi'
+        ) {
+            $cachedSnapshot = Get-KimiUsageSnapshot `
+                -OfficialUsageOverride $cachedUsage `
+                -SkipOfficialRequest
+            $fallback = New-UsageFallbackSnapshot `
+                -Snapshot $cachedSnapshot `
+                -Reason ('官方接口刷新失败 · ' + $failureMessage)
+            Update-UsageView -Snapshot $fallback -DisplayOnly
+        }
+        elseif (-not $retryStarted -and $script:ActiveProvider -eq 'Kimi') {
+            if ($script:LastKimiSnapshot) {
+                $fallback = New-UsageFallbackSnapshot `
+                    -Snapshot $script:LastKimiSnapshot `
+                    -Reason ('官方接口刷新失败 · ' + $failureMessage)
+                Update-UsageView -Snapshot $fallback -DisplayOnly
+            }
+            else {
+                Update-UsageView -Snapshot (
+                    Get-KimiUnavailableSnapshot -Reason $failureMessage
+                )
+            }
+        }
+    }
+    finally {
+        if ($response) { $response.Dispose() }
+        if ($request) { $request.Dispose() }
+        if (-not $retryStarted) {
+            $kimi.Attempt = 0
+            $kimi.RetryAfter = $null
+            Set-RefreshBusy -Busy $false
+            Reset-RefreshCountdown
+        }
+    }
+}
+
 function Sync-ProviderMenuState {
     if ($script:CodexSourceMenuItem) {
         $script:CodexSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'Codex'
@@ -561,6 +827,12 @@ function Sync-ProviderMenuState {
     }
     if ($script:TrayDeepSeekSourceItem) {
         $script:TrayDeepSeekSourceItem.Checked = $script:ActiveProvider -eq 'DeepSeek'
+    }
+    if ($script:KimiSourceMenuItem) {
+        $script:KimiSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'Kimi'
+    }
+    if ($script:TrayKimiSourceItem) {
+        $script:TrayKimiSourceItem.Checked = $script:ActiveProvider -eq 'Kimi'
     }
     if ($script:CodexOfficialAccessMenuItem) {
         $script:CodexOfficialAccessMenuItem.Visibility = if (
@@ -583,11 +855,19 @@ function Sync-ProviderMenuState {
     if ($script:TrayDeepSeekSettingsItem) {
         $script:TrayDeepSeekSettingsItem.Visible = $script:ActiveProvider -eq 'DeepSeek'
     }
+    if ($script:KimiSettingsMenuItem) {
+        $script:KimiSettingsMenuItem.Visibility = if (
+            $script:ActiveProvider -eq 'Kimi'
+        ) { 'Visible' } else { 'Collapsed' }
+    }
+    if ($script:TrayKimiSettingsItem) {
+        $script:TrayKimiSettingsItem.Visible = $script:ActiveProvider -eq 'Kimi'
+    }
 }
 
 function Set-ActiveProvider {
     param(
-        [ValidateSet('Codex', 'DeepSeek')]
+        [ValidateSet('Codex', 'DeepSeek', 'Kimi')]
         [string]$Provider,
         [switch]$Refresh
     )
@@ -605,6 +885,12 @@ function Set-ActiveProvider {
             $script:AppContext.Refresh.Codex.RetryAfter
         ) {
             Cancel-CodexRefresh
+        }
+        if (
+            $script:AppContext.Refresh.Kimi.RequestTask -or
+            $script:AppContext.Refresh.Kimi.RetryAfter
+        ) {
+            Cancel-KimiRefresh
         }
     }
     $script:ActiveProvider = $Provider
@@ -810,6 +1096,110 @@ function Show-DeepSeekSettings {
     return $false
 }
 
+function Show-KimiSettings {
+    $credential = Get-KimiCredential
+    [xml]$dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Kimi Code 手动配置"
+        Width="430"
+        Height="330"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#FCFBF8"
+        FontFamily="Microsoft YaHei UI">
+    <Grid x:Name="SettingsRoot" Background="#FCFBF8">
+      <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="18"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="38"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="连接 Kimi 官方配额接口" FontSize="18" FontWeight="SemiBold" Foreground="#343A35"/>
+        <TextBlock x:Name="AutoDetectText" Grid.Row="2" FontSize="11" Foreground="#5C665E" TextWrapping="Wrap"/>
+        <StackPanel Grid.Row="4">
+            <TextBlock Text="API Key（手动配置，自动读取不可用时生效）" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
+            <PasswordBox x:Name="ApiKeyBox" Height="34" Margin="0,7,0,0" Padding="9,6"
+                         BorderBrush="#D8DDD7" Background="White"
+                         AutomationProperties.Name="Kimi API Key"/>
+            <TextBlock x:Name="KeyHelp" Margin="0,6,0,0" FontSize="10" Foreground="#7B847D" TextWrapping="Wrap"/>
+            <CheckBox x:Name="RemoveKeyBox" Margin="0,8,0,0" Content="清除手动配置的 API Key"
+                      Foreground="#6B746D" FontSize="11"/>
+        </StackPanel>
+        <TextBlock x:Name="ErrorText" Grid.Row="5" Margin="0,8,0,0"
+                   Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
+        <Grid Grid.Row="6">
+            <Button x:Name="CancelButton" Width="82" Height="34" HorizontalAlignment="Right"
+                    Margin="0,0,92,0" Content="取消" IsCancel="True"/>
+            <Button x:Name="SaveButton" Width="82" Height="34" HorizontalAlignment="Right"
+                    Content="保存" IsDefault="True" Background="#E9F0EA"
+                    BorderBrush="#BFCDBF" Foreground="#344A3B"/>
+        </Grid>
+      </Grid>
+    </Grid>
+</Window>
+'@
+    $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
+    $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
+    $dialog.Owner = $window
+    $apiKeyBox = $dialog.FindName('ApiKeyBox')
+    $keyHelp = $dialog.FindName('KeyHelp')
+    $removeKeyBox = $dialog.FindName('RemoveKeyBox')
+    $autoDetectText = $dialog.FindName('AutoDetectText')
+    $errorText = $dialog.FindName('ErrorText')
+    $saveButton = $dialog.FindName('SaveButton')
+
+    if ($credential.AutoSource -eq 'OAuth 登录') {
+        $autoDetectText.Text = '已自动读取本机 Kimi Code CLI 的 OAuth 登录。'
+    }
+    elseif ($credential.AutoHint) {
+        $autoDetectText.Text = '已自动读取本机 Kimi Code CLI 配置（••••{0}）。' -f $credential.AutoHint
+    }
+    else {
+        $autoDetectText.Text = '未检测到本机 Kimi Code CLI 配置，请手动输入 API Key。'
+    }
+    if ($credential.ManualHint) {
+        $keyHelp.Text = '已保存手动密钥（••••{0}，Windows DPAPI 加密）。留空会保留原密钥。' -f $credential.ManualHint
+    }
+    else {
+        $keyHelp.Text = '密钥仅加密保存在当前 Windows 用户下，不会写入日志或仓库。'
+        $removeKeyBox.IsEnabled = $false
+    }
+
+    $saveButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+        $errorText.Text = ''
+        $newKey = $apiKeyBox.Password.Trim()
+        if ($newKey -and $newKey.Length -lt 10) {
+            $errorText.Text = 'API Key 长度看起来不正确，请检查后重试。'
+            $apiKeyBox.Focus() | Out-Null
+            return
+        }
+        try {
+            Save-KimiConfiguration `
+                -ApiKey $newKey `
+                -RemoveKey:$removeKeyBox.IsChecked
+            $dialog.DialogResult = $true
+        }
+        catch {
+            $errorText.Text = '保存失败：' + $_.Exception.Message
+        }
+    }))
+
+    $saved = $dialog.ShowDialog()
+    if ($saved) {
+        $script:LastKimiSnapshot = $null
+        $script:KimiOfficialUsageCache = $null
+        Set-ActiveProvider -Provider 'Kimi' -Refresh
+        return $true
+    }
+    return $false
+}
+
 function Test-ShouldPresentCodexLocalSnapshot {
     if (-not $script:CodexOfficialAccessEnabled) { return $true }
     return (
@@ -879,6 +1269,11 @@ function Invoke-Refresh {
             Start-DeepSeekRefresh
             return
         }
+        if ($script:ActiveProvider -eq 'Kimi') {
+            $script:UsageSyncSession.InitialRefreshStarted = $true
+            Start-KimiRefresh
+            return
+        }
 
         $observationContext = 'Normal'
         if (-not $script:UsageSyncSession.InitialRefreshStarted) {
@@ -946,6 +1341,7 @@ function Reset-FailedRefreshOperation {
 
     $codex = $script:AppContext.Refresh.Codex
     $deepSeek = $script:AppContext.Refresh.DeepSeek
+    $kimi = $script:AppContext.Refresh.Kimi
     if ($codex.Request) {
         try { $codex.Request.Dispose() } catch {}
     }
@@ -961,6 +1357,14 @@ function Reset-FailedRefreshOperation {
     $deepSeek.RequestTask = $null
     $deepSeek.Attempt = 0
     $deepSeek.RetryAfter = $null
+
+    if ($kimi.Request) {
+        try { $kimi.Request.Dispose() } catch {}
+    }
+    $kimi.Request = $null
+    $kimi.RequestTask = $null
+    $kimi.Attempt = 0
+    $kimi.RetryAfter = $null
 
     try {
         Set-RefreshBusy -Busy $false
@@ -1021,6 +1425,7 @@ function Invoke-RefreshTimerTick {
     try {
         Complete-CodexRefresh
         Complete-DeepSeekRefresh
+        Complete-KimiRefresh
     }
     catch {
         Reset-FailedRefreshOperation -Message $_.Exception.Message

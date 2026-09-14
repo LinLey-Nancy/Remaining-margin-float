@@ -18,7 +18,7 @@ param(
     [switch]$CaptureVisuals,
     [string]$CaptureDirectory = '',
     [switch]$Demo,
-    [ValidateSet('codex', 'deepseek')]
+    [ValidateSet('codex', 'deepseek', 'kimi')]
     [string]$DemoProvider = 'codex'
 )
 

@@ -140,6 +140,29 @@ Assert-Diagnostic -Condition (
     $contracts.PricingSchemaVersion -eq 1 -and
     $contracts.PricingCurrency -eq 'CNY'
 ) -Message 'DeepSeek versioned pricing catalog'
+Assert-Diagnostic -Condition (
+    [Math]::Abs([double]$contracts.KimiFiveHourUsedPercent - 10) -lt 0.0001 -and
+    [Math]::Abs([double]$contracts.KimiWeeklyUsedPercent - 2) -lt 0.0001 -and
+    $contracts.KimiPlan -eq 'LEVEL_ADVANCED' -and
+    $contracts.KimiPlanLabel -eq 'Advanced'
+) -Message 'Kimi official usages response contract fixture'
+Assert-Diagnostic -Condition (
+    $contracts.KimiSnapshotPrimaryPeriod -eq 'FiveHour' -and
+    $contracts.KimiSnapshotRemainingPercent -eq 90 -and
+    $contracts.KimiSnapshotFiveHourRemainingPercent -eq 90 -and
+    $contracts.KimiSnapshotWeeklyRemainingPercent -eq 98
+) -Message 'Kimi snapshot preserves both quota windows'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.KimiNonFiniteQuotaValuesRejected
+) -Message 'Kimi quota parser rejects non-finite and malformed values'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.KimiCacheDropsExpiredWindows
+) -Message 'Kimi cached usage is discarded after quota windows expire'
+Assert-Diagnostic -Condition (
+    $contracts.KimiWireEventCount -eq 2 -and
+    $contracts.KimiWireLatestTokens -eq 108010 -and
+    $contracts.KimiWireLatestModel -eq 'kimi-for-coding/k3'
+) -Message 'Kimi wire.jsonl usage records contract fixture'
 foreach ($propertyName in @(
     'FreshnessStatesClassified'
     'FallbackSnapshotPreservesSample'
@@ -386,7 +409,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.9.1') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.10.1') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -426,6 +449,28 @@ Assert-Diagnostic -Condition (
     $transitions.CodexSettingsVisibility -eq 'Collapsed' -and
     $transitions.DeepSeekSettingsVisibility -eq 'Visible'
 ) -Message 'Provider settings visibility'
+Assert-Diagnostic -Condition (
+    $transitions.KimiSettingsVisibility -eq 'Collapsed' -and
+    $transitions.KimiCodexAccessVisibility -eq 'Collapsed' -and
+    $transitions.KimiManualConfigVisibility -eq 'Visible' -and
+    $transitions.KimiManualConfigWhenCodex -eq 'Collapsed' -and
+    [bool]$transitions.KimiSourceChecked
+) -Message 'Kimi provider menu state'
+Assert-Diagnostic -Condition (
+    $transitions.KimiCompactValue -eq '90' -and
+    $transitions.KimiCompactSuffix -eq '%' -and
+    [string]$transitions.KimiLabel.StartsWith('5 ') -and
+    $transitions.KimiQuotaPanelVisible -eq 'Visible' -and
+    $transitions.KimiMetricPanelVisible -eq 'Collapsed' -and
+    -not [string]::IsNullOrWhiteSpace([string]$transitions.KimiWeeklyBandText) -and
+    [string]$transitions.KimiPlanBadge -eq 'Advanced' -and
+    -not [string]::IsNullOrWhiteSpace([string]$transitions.KimiBreakdownTitle) -and
+    $transitions.KimiExpandedHeight -eq 522
+) -Message 'Kimi dual-window quota UI'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.DeepSeekExpandedLabelVisible -and
+    [double]$transitions.DeepSeekLabelProgressGap -ge 0
+) -Message 'DeepSeek expanded window label is not clipped'
 Assert-Diagnostic -Condition (
     $transitions.DeepSeekCompactValue -eq '72' -and
     $transitions.DeepSeekCompactSuffix -eq '%' -and

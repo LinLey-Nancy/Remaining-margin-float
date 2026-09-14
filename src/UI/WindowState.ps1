@@ -477,6 +477,9 @@ function Get-ExpandedHeightForSnapshot {
         }
         return $script:CodexPlusExpandedHeight
     }
+    if ($Snapshot -and [string]$Snapshot.ProviderId -eq 'Kimi') {
+        return $script:CodexPlusExpandedHeight
+    }
 
     return $script:ExpandedHeight
 }
@@ -533,16 +536,15 @@ function Set-ExpandedState {
         $DetailsPanel.Visibility = 'Visible'
         $ResetSummaryPanel.Visibility = if (
             $script:LastSnapshot -and
-            $script:LastSnapshot.ProviderId -eq 'Codex'
+            [string]$script:LastSnapshot.ProviderId -in @('Codex', 'Kimi')
         ) { 'Visible' } else { 'Collapsed' }
-        $ExpandedWindowLabel.Visibility = $ResetSummaryPanel.Visibility
-        $WindowLabel.Visibility = if ($ResetSummaryPanel.Visibility -eq 'Visible') {
-            'Collapsed'
-        } else { 'Visible' }
-        if ($ResetSummaryPanel.Visibility -eq 'Visible') {
-            $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
-            $CompactProgressRow.Height = New-Object Windows.GridLength(23)
-        }
+        # The expanded header always moves the window label into the bottom
+        # row next to the progress track; keeping the compact label under the
+        # 34px number clipped it for non-quota providers like DeepSeek.
+        $ExpandedWindowLabel.Visibility = 'Visible'
+        $WindowLabel.Visibility = 'Collapsed'
+        $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
+        $CompactProgressRow.Height = New-Object Windows.GridLength(23)
         $RemainingSummaryPanel.HorizontalAlignment =
             [Windows.HorizontalAlignment]::Left
         $RemainingNumberPanel.HorizontalAlignment =
@@ -1159,11 +1161,11 @@ function Set-TrendChart {
             [void]$segmentPoints.Add($point)
         }
 
-        $renderPoints = if ($Smooth) {
-            @(ConvertTo-SmoothTrendPoints -Points $segmentPoints.ToArray())
+        $renderPoints = @(if ($Smooth) {
+            ConvertTo-SmoothTrendPoints -Points $segmentPoints.ToArray()
         } else {
-            @($segmentPoints.ToArray())
-        }
+            $segmentPoints.ToArray()
+        })
         foreach ($point in $renderPoints) {
             [void]$allPoints.Add($point)
         }
@@ -1374,6 +1376,13 @@ function Get-UsageSnapshotChannel {
     if ([string]$Snapshot.ProviderId -eq 'DeepSeek') {
         return 'DeepSeekOfficial'
     }
+    if ([string]$Snapshot.ProviderId -eq 'Kimi') {
+        $kimiSource = [string]$Snapshot.Source
+        if ($kimiSource.StartsWith('Kimi 官方用量缓存', [StringComparison]::Ordinal)) {
+            return 'KimiOfficialCache'
+        }
+        return 'KimiOfficial'
+    }
 
     $source = [string]$Snapshot.Source
     if ($source.StartsWith('官方用量接口', [StringComparison]::Ordinal)) {
@@ -1445,11 +1454,11 @@ function Set-SessionRapidDropInsight {
     }
     elseif ($ObservationContext -eq 'LocalPreview') {
         $excludeCurrentSample = $true
-        if ($channel -ne 'CodexOfficialCache') {
+        if ($channel -notin @('CodexOfficialCache', 'KimiOfficialCache')) {
             $summaryOverride = '等待官方同步，本地快照不计入快速下降'
         }
     }
-    elseif ($channel -eq 'CodexOfficialCache') {
+    elseif ($channel -in @('CodexOfficialCache', 'KimiOfficialCache')) {
         $excludeCurrentSample = $true
     }
     elseif (
@@ -1934,17 +1943,17 @@ function Show-LowRemainingAlertSettings {
     $saveButton = $dialog.FindName('SaveButton')
     $codexQuotaLabel = if (
         $script:LastSnapshot -and
-        [string]$script:LastSnapshot.ProviderId -eq 'Codex'
+        [string]$script:LastSnapshot.ProviderId -in @('Codex', 'Kimi')
     ) {
         (Get-CodexQuotaPresentation -Snapshot $script:LastSnapshot).Label
     } else { '5 小时' }
     $codexAlertSummary.Text = (
-        "Codex 提醒跟随$codexQuotaLabel 额度；低余量和快速下降分别判断。"
+        "Codex / Kimi Code 提醒跟随$codexQuotaLabel 额度；低余量和快速下降分别判断。"
     )
-    $codexDropLabel.Text = "Codex $codexQuotaLabel 下降"
+    $codexDropLabel.Text = "Codex / Kimi $codexQuotaLabel 下降"
     [Windows.Automation.AutomationProperties]::SetName(
         $codexDropBox,
-        "Codex $codexQuotaLabel 额度快速下降阈值"
+        "Codex / Kimi Code $codexQuotaLabel 额度快速下降阈值"
     )
     $lowEnabledBox.IsChecked = $script:LowRemainingAlertsEnabled
     $thresholdBox.Text = $script:LowRemainingThreshold.ToString(
@@ -2034,7 +2043,7 @@ function Get-UsageAlertScopeKey {
     param($Snapshot)
 
     $providerId = [string]$Snapshot.ProviderId
-    if ($providerId -eq 'Codex') {
+    if ($providerId -in @('Codex', 'Kimi')) {
         $period = (Get-CodexQuotaPresentation -Snapshot $Snapshot).Period
         return "${providerId}|${period}"
     }
@@ -2082,15 +2091,16 @@ function Invoke-LowRemainingAlert {
         return $false
     }
 
-    $codexQuotaLabel = if ($providerId -eq 'Codex') {
+    $codexQuotaLabel = if ($providerId -in @('Codex', 'Kimi')) {
         (Get-CodexQuotaPresentation -Snapshot $Snapshot).Label
     } else { '' }
+    $providerDisplayName = if ($providerId -eq 'Kimi') { 'Kimi Code' } else { $providerId }
     $title = if ($providerId -eq 'DeepSeek') {
         'DeepSeek 预算余量偏低'
     } else {
-        "Codex ${codexQuotaLabel}余量偏低"
+        "$providerDisplayName ${codexQuotaLabel}余量偏低"
     }
-    $message = if ($providerId -eq 'Codex') {
+    $message = if ($providerId -in @('Codex', 'Kimi')) {
         '{0}当前剩余 {1:0}% · {2}' -f `
             $codexQuotaLabel, $remaining, $Insights.Forecast.Text
     } else {
@@ -2146,9 +2156,12 @@ function Invoke-RapidDropAlert {
     ) {
         return $false
     }
-    $title = if ($rapidDrop.ProviderId -eq 'Codex') {
+    $title = if ($rapidDrop.ProviderId -in @('Codex', 'Kimi')) {
         $quotaLabel = (Get-CodexQuotaPresentation -Snapshot $Snapshot).Label
-        "Codex ${quotaLabel}余量快速下降"
+        $providerDisplayName = if ($rapidDrop.ProviderId -eq 'Kimi') {
+            'Kimi Code'
+        } else { 'Codex' }
+        "$providerDisplayName ${quotaLabel}余量快速下降"
     } else {
         '{0} 余量快速下降' -f $rapidDrop.ProviderId
     }
@@ -2481,7 +2494,8 @@ function Update-UsageView {
     )
 
     $codexPrimaryQuota = $null
-    if ([string]$Snapshot.ProviderId -eq 'Codex') {
+    $isQuotaLayout = [string]$Snapshot.ProviderId -in @('Codex', 'Kimi')
+    if ($isQuotaLayout) {
         $codexPrimaryQuota = Get-CodexQuotaPresentation -Snapshot $Snapshot
         $Snapshot | Add-Member `
             -NotePropertyName PrimaryQuotaPeriod `
@@ -2594,9 +2608,8 @@ function Update-UsageView {
             }) `
             -ObservedAt ([DateTimeOffset]$Snapshot.SampledAt)
     }
-    $isCodex = [string]$Snapshot.ProviderId -eq 'Codex'
     $codexFiveHourAvailable = (
-        $isCodex -and
+        $isQuotaLayout -and
         $Snapshot.PSObject.Properties['FiveHourAvailable'] -and
         [bool]$Snapshot.FiveHourAvailable
     )
@@ -2606,16 +2619,16 @@ function Update-UsageView {
             -Name 'FiveHourRemainingPercent' `
             -Default 0)
     } else { 0.0 }
-    $codexPrimaryQuota = if ($isCodex) {
+    $codexPrimaryQuota = if ($isQuotaLayout) {
         Get-CodexQuotaPresentation -Snapshot $Snapshot
     } else { $null }
     $displayWindowLabel = [string]$Snapshot.WindowLabel
     $WindowLabel.Text = $displayWindowLabel
     $ExpandedWindowLabel.Text = $displayWindowLabel
-    $DetailsResetDate.Text = if ($isCodex) {
+    $DetailsResetDate.Text = if ($isQuotaLayout) {
         $codexPrimaryQuota.ResetDate
     } else { [string]$Snapshot.ResetDate }
-    $DetailsResetCountdown.Text = if ($isCodex) {
+    $DetailsResetCountdown.Text = if ($isQuotaLayout) {
         $codexPrimaryQuota.ResetCountdown
     } else { [string]$Snapshot.ResetCountdown }
     $AccountName.Text = $Snapshot.AccountName
@@ -2623,13 +2636,16 @@ function Update-UsageView {
     $AccountEmail.Text = $Snapshot.AccountEmail
     [void](Set-UsageSnapshotProvenance -Snapshot $Snapshot)
     $ResetSummaryPanel.Visibility = if (
-        $script:IsExpanded -and $Snapshot.ProviderId -eq 'Codex'
+        $script:IsExpanded -and
+        [string]$Snapshot.ProviderId -in @('Codex', 'Kimi')
     ) { 'Visible' } else { 'Collapsed' }
-    $ExpandedWindowLabel.Visibility = $ResetSummaryPanel.Visibility
-    $WindowLabel.Visibility = if ($ResetSummaryPanel.Visibility -eq 'Visible') {
+    $ExpandedWindowLabel.Visibility = if ($script:IsExpanded) {
+        'Visible'
+    } else { 'Collapsed' }
+    $WindowLabel.Visibility = if ($script:IsExpanded) {
         'Collapsed'
     } else { 'Visible' }
-    if ($ResetSummaryPanel.Visibility -eq 'Visible') {
+    if ($script:IsExpanded) {
         $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
         $CompactProgressRow.Height = New-Object Windows.GridLength(23)
     }
@@ -2809,12 +2825,16 @@ function Update-UsageView {
                 'DeepSeek 等待配置 · 单击打开详情'
             }
         } else {
+            $providerDisplayName = if ($Snapshot.ProviderId -eq 'Kimi') {
+                'Kimi Code'
+            } else { 'Codex' }
             if ($codexPrimaryQuota.Available) {
-                'Codex {0}余量 {1}% · 单击打开详情' -f `
+                '{0} {1}余量 {2}% · 单击打开详情' -f `
+                    $providerDisplayName,
                     $codexPrimaryQuota.Label,
                     [int]$codexPrimaryQuota.RemainingPercent
             } else {
-                "Codex $($codexPrimaryQuota.Label)余量未知 · 单击打开详情"
+                "$providerDisplayName $($codexPrimaryQuota.Label)余量未知 · 单击打开详情"
             }
         }
     }

@@ -100,7 +100,7 @@ function ConvertFrom-UsageHistoryRecord {
         [string]$Saved.QuotaPeriod
     } else { '' }
     if (
-        $providerId -notin @('Codex', 'DeepSeek') -or
+        $providerId -notin @('Codex', 'DeepSeek', 'Kimi') -or
         $metricType -notin @('Percent', 'Balance')
     ) {
         return $null
@@ -119,6 +119,13 @@ function ConvertFrom-UsageHistoryRecord {
         elseif ($quotaPeriod -notin @('FiveHour', 'Weekly')) {
             return $null
         }
+    }
+    if (
+        $providerId -eq 'Kimi' -and
+        $metricType -eq 'Percent' -and
+        $quotaPeriod -notin @('FiveHour', 'Weekly')
+    ) {
+        return $null
     }
 
     $observedAt = [DateTimeOffset]::Parse(
@@ -239,11 +246,11 @@ function ConvertTo-UsageHistorySample {
         return $null
     }
     $codexQuotaPeriod = if (
-        [string]$Snapshot.ProviderId -eq 'Codex' -and
+        [string]$Snapshot.ProviderId -in @('Codex', 'Kimi') -and
         $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
         [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
     ) { 'Weekly' } else { 'FiveHour' }
-    if ([string]$Snapshot.ProviderId -eq 'Codex') {
+    if ([string]$Snapshot.ProviderId -in @('Codex', 'Kimi')) {
         $availabilityProperty = "${codexQuotaPeriod}Available"
         if (
             -not $Snapshot.PSObject.Properties[$availabilityProperty] -or
@@ -306,7 +313,7 @@ function ConvertTo-UsageHistorySample {
         TimeZoneId = $calendar.TimeZoneId
         UtcOffsetMinutes = $calendar.UtcOffsetMinutes
         MetricType = $metricType
-        QuotaPeriod = if ([string]$Snapshot.ProviderId -eq 'Codex') {
+        QuotaPeriod = if ([string]$Snapshot.ProviderId -in @('Codex', 'Kimi')) {
             $codexQuotaPeriod
         } else { '' }
         RemainingValue = [Math]::Round($remainingValue, 4)
@@ -1624,7 +1631,8 @@ function Measure-RapidUsageDrop {
         return & $emptyResult '' '' 0.0 '' '当前数据不可用'
     }
     $providerId = [string]$Snapshot.ProviderId
-    if ($providerId -eq 'Codex') {
+    if ($providerId -in @('Codex', 'Kimi')) {
+        $providerDisplayName = if ($providerId -eq 'Kimi') { 'Kimi Code' } else { 'Codex' }
         $metricType = 'Percent'
         $threshold = $CodexPercent
         $unit = '%'
@@ -1635,7 +1643,7 @@ function Measure-RapidUsageDrop {
         $quotaLabel = if ($quotaPeriod -eq 'Weekly') { '每周' } else { '5 小时' }
         if (-not [bool]$Snapshot.HasProgress) {
             return & $emptyResult $providerId $metricType $threshold $unit `
-                "等待 Codex $quotaLabel 余量数据"
+                "等待 $providerDisplayName $quotaLabel 余量数据"
         }
     }
     elseif ($providerId -eq 'DeepSeek') {
@@ -1667,7 +1675,7 @@ function Measure-RapidUsageDrop {
         return & $emptyResult $providerId '' 0.0 '' '暂不支持此数据源'
     }
 
-    if ($providerId -ne 'Codex') { $quotaPeriod = '' }
+    if ($providerId -notin @('Codex', 'Kimi')) { $quotaPeriod = '' }
 
     $cutoff = $Now.ToUniversalTime().AddMinutes(-$WindowMinutes)
     $series = @(

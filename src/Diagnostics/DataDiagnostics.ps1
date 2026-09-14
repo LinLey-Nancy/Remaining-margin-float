@@ -287,10 +287,14 @@ if ($CheckProviderContracts) {
     $codexFixturePath = Join-Path $fixtureRoot 'codex-official-usage.json'
     $deepSeekBalanceFixturePath = Join-Path $fixtureRoot 'deepseek-balance.json'
     $deepSeekUsageFixturePath = Join-Path $fixtureRoot 'deepseek-usage.jsonl'
+    $kimiUsageFixturePath = Join-Path $fixtureRoot 'kimi-usages.json'
+    $kimiWireFixturePath = Join-Path $fixtureRoot 'kimi-usage.jsonl'
     foreach ($fixturePath in @(
         $codexFixturePath
         $deepSeekBalanceFixturePath
         $deepSeekUsageFixturePath
+        $kimiUsageFixturePath
+        $kimiWireFixturePath
     )) {
         if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
             throw "缺少 Provider 契约样例：$fixturePath"
@@ -350,6 +354,36 @@ if ($CheckProviderContracts) {
         -CredentialSource '契约样例' `
         -SampledAt ([datetime]'2030-01-01T12:00:00')
     Assert-UsageSnapshotContract -Snapshot $deepSeekSnapshot
+
+    $kimiPayload = Get-Content -LiteralPath $kimiUsageFixturePath -Raw -Encoding UTF8 |
+        ConvertFrom-Json
+    $kimiUsage = ConvertTo-KimiOfficialUsage `
+        -Payload $kimiPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $kimiSnapshot = Get-KimiUsageSnapshot `
+        -OfficialUsageOverride $kimiUsage `
+        -SkipOfficialRequest
+    Assert-UsageSnapshotContract -Snapshot $kimiSnapshot
+    $kimiExpiredUsage = $kimiUsage.PSObject.Copy()
+    $kimiExpiredFiveHour = $kimiUsage.FiveHourWindow.PSObject.Copy()
+    $kimiExpiredFiveHour.ResetsAt = (
+        [DateTimeOffset]'2030-01-01T11:59:00Z'
+    ).ToUnixTimeSeconds()
+    $kimiExpiredUsage.FiveHourWindow = $kimiExpiredFiveHour
+    $kimiCurrentUsage = Get-KimiCurrentUsageOverride `
+        -OfficialUsage $kimiUsage `
+        -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $kimiExpiredCurrentUsage = Get-KimiCurrentUsageOverride `
+        -OfficialUsage $kimiExpiredUsage `
+        -Now ([DateTimeOffset]'2030-01-09T12:00:00Z')
+    $kimiWireEvents = @(
+        Get-Content -LiteralPath $kimiWireFixturePath -Encoding UTF8 |
+            ForEach-Object { ConvertFrom-KimiWireUsageLine -Line $_ } |
+            Where-Object { $_ }
+    )
+    $kimiWireLatest = $kimiWireEvents |
+        Sort-Object Timestamp -Descending |
+        Select-Object -First 1
     $currentOfficialUsage = Get-CodexCurrentUsageOverride `
         -OfficialUsage $codexUsage `
         -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
@@ -459,6 +493,44 @@ if ($CheckProviderContracts) {
         DeepSeekAvailable = $deepSeekSnapshot.Available
         DeepSeekBalance = $deepSeekSnapshot.TotalBalance
         DeepSeekBudgetPercent = $deepSeekSnapshot.BudgetPercent
+        KimiFiveHourUsedPercent = $kimiUsage.FiveHourWindow.UsedPercent
+        KimiWeeklyUsedPercent = $kimiUsage.WeeklyWindow.UsedPercent
+        KimiPlan = $kimiUsage.PlanType
+        KimiSnapshotPrimaryPeriod = $kimiSnapshot.PrimaryQuotaPeriod
+        KimiSnapshotRemainingPercent = $kimiSnapshot.RemainingPercent
+        KimiSnapshotFiveHourRemainingPercent = $kimiSnapshot.FiveHourRemainingPercent
+        KimiSnapshotWeeklyRemainingPercent = $kimiSnapshot.WeeklyRemainingPercent
+        KimiPlanLabel = Get-KimiPlanLabel -PlanType 'LEVEL_ADVANCED'
+        KimiNonFiniteQuotaValuesRejected = (
+            $null -eq (ConvertTo-KimiQuotaWindow `
+                -Detail ([pscustomobject]@{
+                    used = 'NaN'
+                    resetTime = '2030-01-01T17:00:00Z'
+                }) `
+                -WindowMinutes 300) -and
+            $null -eq (ConvertTo-KimiQuotaWindow `
+                -Detail ([pscustomobject]@{
+                    used = '18'
+                    resetTime = 'not-a-time'
+                }) `
+                -WindowMinutes 300) -and
+            $null -eq (ConvertTo-KimiOfficialUsage -Payload ([pscustomobject]@{}))
+        )
+        KimiCacheDropsExpiredWindows = (
+            $null -eq $kimiExpiredCurrentUsage -and
+            $null -ne $kimiCurrentUsage -and
+            $kimiCurrentUsage.FiveHourWindow.UsedPercent -eq 10 -and
+            $kimiCurrentUsage.WeeklyWindow.UsedPercent -eq 2 -and
+            [bool]$kimiCurrentUsage.IsCached
+        )
+        KimiWireEventCount = $kimiWireEvents.Count
+        KimiWireLatestTokens = (
+            $kimiWireLatest.InputTokens +
+            $kimiWireLatest.OutputTokens +
+            $kimiWireLatest.CachedTokens +
+            $kimiWireLatest.CacheWriteTokens
+        )
+        KimiWireLatestModel = $kimiWireLatest.Model
         PricingSchemaVersion = $pricingCatalog.SchemaVersion
         PricingCurrency = $pricingCatalog.Currency
         FreshnessStatesClassified = (

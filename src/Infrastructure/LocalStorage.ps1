@@ -10,6 +10,7 @@
     if (Test-Path -LiteralPath $legacyDirectory) {
         foreach ($fileName in @(
             'deepseek.json'
+            'kimi.json'
             'settings.json'
             'usage-history.jsonl'
         )) {
@@ -33,6 +34,10 @@
 
 function Get-DeepSeekConfigPath {
     return Join-Path (Get-AppDataDirectory) 'deepseek.json'
+}
+
+function Get-KimiConfigPath {
+    return Join-Path (Get-AppDataDirectory) 'kimi.json'
 }
 
 function Protect-LocalSecret {
@@ -133,4 +138,57 @@ function Save-DeepSeekConfiguration {
         KeyHint = $keyHint
         Budget = [Math]::Max(0.0, $Budget)
     } | ConvertTo-Json | Set-Content -LiteralPath (Get-DeepSeekConfigPath) -Encoding UTF8
+}
+
+function Get-KimiConfiguration {
+    $result = [ordered]@{
+        EncryptedApiKey = ''
+        KeyHint = ''
+    }
+    try {
+        $path = Get-KimiConfigPath
+        if (Test-Path -LiteralPath $path) {
+            $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($saved.PSObject.Properties['EncryptedApiKey']) {
+                $result.EncryptedApiKey = [string]$saved.EncryptedApiKey
+            }
+            if ($saved.PSObject.Properties['KeyHint']) {
+                $result.KeyHint = [string]$saved.KeyHint
+            }
+        }
+    }
+    catch {
+        # A damaged optional configuration must not prevent the widget starting.
+    }
+    return [pscustomobject]$result
+}
+
+function Save-KimiConfiguration {
+    param(
+        [AllowEmptyString()]
+        [string]$ApiKey,
+        [switch]$RemoveKey
+    )
+
+    $current = Get-KimiConfiguration
+    $encryptedApiKey = $current.EncryptedApiKey
+    $keyHint = $current.KeyHint
+    if ($RemoveKey) {
+        $encryptedApiKey = ''
+        $keyHint = ''
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
+        $trimmedKey = $ApiKey.Trim()
+        $encryptedApiKey = Protect-LocalSecret -Value $trimmedKey
+        $keyHint = if ($trimmedKey.Length -gt 4) {
+            $trimmedKey.Substring($trimmedKey.Length - 4)
+        } else {
+            $trimmedKey
+        }
+    }
+
+    [ordered]@{
+        EncryptedApiKey = $encryptedApiKey
+        KeyHint = $keyHint
+    } | ConvertTo-Json | Set-Content -LiteralPath (Get-KimiConfigPath) -Encoding UTF8
 }

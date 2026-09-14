@@ -1,0 +1,3 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1893456000000}
+{"type":"usage.record","agentId":"main","model":"kimi-for-coding/k3","usage":{"inputOther":2924,"output":102,"inputCacheRead":18176,"inputCacheCreation":0},"usageScope":"turn","time":1893459600000}
+{"type":"usage.record","agentId":"main","model":"kimi-for-coding/k3","usage":{"inputOther":551,"output":707,"inputCacheRead":104704,"inputCacheCreation":2048},"usageScope":"turn","time":1893463200000}

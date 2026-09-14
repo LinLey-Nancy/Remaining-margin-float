@@ -188,7 +188,7 @@ function ConvertFrom-UsageStateEntry {
     $providerId = [string]$Saved.ProviderId
     $payloadHash = [string]$Saved.PayloadHash
     if (
-        $providerId -notin @('Codex', 'DeepSeek') -or
+        $providerId -notin @('Codex', 'DeepSeek', 'Kimi') -or
         $payloadHash -notmatch '^[0-9a-f]{64}$'
     ) {
         return $null
@@ -426,7 +426,7 @@ function Write-UsageStateCurrentIndex {
 
     $retained = @(Select-UsageStateRetentionWindow -Entries $Entries -Now $Now)
     $latest = New-Object Collections.Generic.List[object]
-    foreach ($providerId in @('Codex', 'DeepSeek')) {
+    foreach ($providerId in @('Codex', 'DeepSeek', 'Kimi')) {
         $entry = @(
             $retained | Where-Object { $_.ProviderId -eq $providerId }
         ) | Select-Object -Last 1
@@ -658,7 +658,7 @@ function Save-UsageStateSnapshot {
     if (-not [bool]$Snapshot.Available) { return $null }
 
     $providerId = [string]$Snapshot.ProviderId
-    if ($providerId -notin @('Codex', 'DeepSeek')) {
+    if ($providerId -notin @('Codex', 'DeepSeek', 'Kimi')) {
         throw '无法保存未知数据源的全量状态。'
     }
     $sampledAt = ([DateTimeOffset]$Snapshot.SampledAt).ToUniversalTime()
@@ -777,7 +777,7 @@ function Read-UsageStatePayload {
 
 function Get-UsageStateHistory {
     param(
-        [ValidateSet('', 'Codex', 'DeepSeek')]
+        [ValidateSet('', 'Codex', 'DeepSeek', 'Kimi')]
         [string]$ProviderId = '',
         [DateTimeOffset]$From = [DateTimeOffset]::MinValue,
         [DateTimeOffset]$To = [DateTimeOffset]::MaxValue,
@@ -810,7 +810,7 @@ function Get-UsageStateHistory {
 
 function Get-LatestUsageStateSnapshot {
     param(
-        [ValidateSet('Codex', 'DeepSeek')]
+        [ValidateSet('Codex', 'DeepSeek', 'Kimi')]
         [string]$ProviderId,
         [string]$RootPath = '',
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
@@ -881,6 +881,9 @@ function Restore-LatestUsageState {
         $script:LastSnapshot = $snapshot
         if ($snapshot.ProviderId -eq 'DeepSeek') {
             $script:LastDeepSeekSnapshot = $snapshot
+        }
+        if ($snapshot.ProviderId -eq 'Kimi') {
+            $script:LastKimiSnapshot = $snapshot
         }
         Update-UsageView -Snapshot $snapshot -DisplayOnly
         Set-RuntimeDiagnosticStatus `

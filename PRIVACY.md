@@ -9,6 +9,12 @@ Remaining Margin Float 是本地运行的开源桌面工具，不包含广告、
   并读取会话中最近一次有效的额度快照。
 - `%USERPROFILE%\.claude\projects\**\*.jsonl`：仅在 DeepSeek 模式下汇总本机
   Claude Code 会话中的 DeepSeek Token。
+- `%USERPROFILE%\.kimi-code\credentials\*.json` 与
+  `%USERPROFILE%\.kimi-code\config.toml`：仅在 Kimi Code 模式下读取 Kimi
+  Code CLI 已保存的 OAuth 访问令牌或 API Key 与 Base URL，用于请求官方配额
+  接口；设置 `KIMI_CODE_HOME` 环境变量时以该目录为准。
+- `%USERPROFILE%\.kimi-code\sessions\**\agents\main\wire.jsonl`：仅在 Kimi
+  Code 模式下汇总本会话 Token 用量与缓存命中，跳过子代理目录。
 - `%LOCALAPPDATA%\RemainingMarginFloat\settings.json`：保存界面位置、数据源和
   用户主动选择的功能开关。
 - `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`：保存最近 8 个
@@ -71,6 +77,26 @@ Windows DPAPI `CurrentUser` 加密，保存在
 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。也可以使用
 `DEEPSEEK_API_KEY` 环境变量，避免落盘。
 
+## Kimi Code
+
+只有用户选择 Kimi Code 数据源后，应用才会向 Kimi 官方配额接口
+`{base_url}/usages`（默认 `https://api.kimi.com/coding/v1`，国际区为
+`https://api.kimi.ai/coding/v1`）发起 GET 请求，并在 `Authorization` 头中
+携带 Bearer 凭证。
+
+凭证只从 Kimi Code CLI 自身的本地配置读取：优先使用
+`%USERPROFILE%\.kimi-code\credentials\*.json` 中的 OAuth 访问令牌（只读
+使用 access token，不刷新令牌），缺失时回退到
+`%USERPROFILE%\.kimi-code\config.toml` 中 `[providers.*]` 段的 `api_key`
+与 `base_url`；设置 `KIMI_CODE_HOME` 环境变量时以该目录为准。应用不复制、
+不导出这些凭据，也不会把它们写入 RMF 的设置、日志、趋势历史或完整状态。
+
+自动读取不可用时，用户也可以在“Kimi Code 手动配置…”窗口中手动输入 Kimi
+API Key。手动 Key 使用 Windows DPAPI `CurrentUser` 加密，与后四位提示
+（KeyHint）一起保存在 `%LOCALAPPDATA%\RemainingMarginFloat\kimi.json`；
+可随时在同一窗口勾选“清除手动配置的 API Key”移除。自动读取的 CLI 凭据
+始终优先于手动配置。
+
 ## 版本更新
 
 应用启动约 8 秒后会请求
@@ -101,8 +127,10 @@ Windows DPAPI `CurrentUser` 加密，保存在
 ## 删除数据
 
 关闭开机启动并退出应用后，删除
-`%LOCALAPPDATA%\RemainingMarginFloat` 即可清除本应用保存的设置、缓存和
-DeepSeek 加密配置。应用不会删除 Codex 或 Claude Code 自身的数据。
+`%LOCALAPPDATA%\RemainingMarginFloat` 即可清除本应用保存的设置、缓存、
+DeepSeek 加密配置和 Kimi Code 手动配置的加密 API Key（`kimi.json`）；也可
+在“Kimi Code 手动配置…”窗口中勾选清除，仅移除手动 Key。应用不会删除
+Codex、Claude Code 或 Kimi Code 自身的数据。
 
 ## 第三方版本
 

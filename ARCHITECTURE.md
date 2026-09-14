@@ -40,7 +40,7 @@ WPF Dispatcher，待当前回调结束后继续执行。
 |---|---|
 | `App` | 应用初始化、Provider 刷新协调和后台历史补录生命周期 |
 | `Core` | 用量快照契约、Provider 价格目录、趋势历史、加密全量状态仓库、耗尽预测和窗口几何等核心逻辑 |
-| `Providers` | Codex 与 DeepSeek 数据读取、解析和快照生成 |
+| `Providers` | Codex、DeepSeek 与 Kimi Code 数据读取、解析和快照生成 |
 | `Infrastructure` | 本地配置、DPAPI、开机启动、版本更新、持久化和脱敏运行日志 |
 | `UI` | WPF 窗口、状态渲染、交互、托盘与 XAML |
 | `Diagnostics` | 数据、窗口、视觉和发布所需的自诊断流程 |
@@ -66,6 +66,23 @@ Codex 快照还携带 `FiveHour*` 与 `Weekly*` 两组周期字段，包括可�
 Plus 的 `RemainingPercent` / `HasProgress` 代表 5 小时窗口；`pro` / `prolite` 代表
 每周窗口。贴边能量条、趋势、低额度提醒和快速下降提醒统一消费套餐主指标，且
 历史样本按 `FiveHour` / `Weekly` 隔离。
+
+KimiProvider（`Providers\KimiProvider.ps1`）从 Kimi Code CLI 本地配置解析
+凭证：优先 `credentials\*.json` 的 OAuth 访问令牌（只读 access token，不刷新），
+回退 `config.toml` 中 `[providers.*]` 段的 `api_key` 与 `base_url`，并尊重
+`KIMI_CODE_HOME` 环境变量。自动读取不可用时，回退到用户在“Kimi Code
+手动配置…”窗口中输入的 API Key：手动 Key 使用 DPAPI `CurrentUser` 加密，
+与 KeyHint 后四位一起保存在 `%LOCALAPPDATA%\RemainingMarginFloat\kimi.json`，
+并已加入旧目录 `CodexMarginFloat` 的迁移白名单；快照账号行注明凭证来源
+（Kimi Code CLI（OAuth 登录）/ Kimi Code CLI（config.toml）/ 手动配置）。
+官方配额接口为 GET `{base_url}/usages`（Bearer
+认证，默认 `https://api.kimi.com/coding/v1`），返回每周配额（已用百分比与
+重置时间）和 300 分钟的 5 小时滚动窗口。快照契约字段与 Codex 对齐：复用
+`FiveHour*` / `Weekly*` 两组周期字段，5 小时窗口为主额度，每周为补充；本地
+Token 统计解析 `sessions\**\agents\main\wire.jsonl` 的 `usage.record` 记录
+（inputOther/output/inputCacheRead/inputCacheCreation），汇总今日 Token、
+最近一轮与缓存命中率，并跳过子代理目录。官方接口失败时沿用上次成功快照，
+数据过期后按“余量未知”展示，不伪装 0%。
 
 Provider 可以附加自己的余额、Token、缓存和重置字段，但 UI 的公共状态不应
 直接依赖 Provider 的网络响应结构。
@@ -130,7 +147,7 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 - v1.9.0 之前的 v1/v2 Codex 百分比历史没有 `QuotaPeriod`，其既定语义为每周
   额度；读取时必须迁移为 `Weekly`。v3 及后续记录缺少或包含非法周期时仍须拒绝，
   防止损坏数据进入趋势；所有趋势、预测和提醒继续按周期隔离。
-- Codex 与 DeepSeek 的瞬时失败统一使用有界指数退避，并尊重服务端
+- Codex、DeepSeek 与 Kimi Code 的瞬时失败统一使用有界指数退避，并尊重服务端
   `Retry-After`；显示上次成功快照时必须标记采样年龄和失败原因，且不得把展示
   用回退快照写入历史或再次触发提醒。
 - Windows Forms 返回的显示器工作区是物理像素，进入 WPF 布局前必须按当前窗口
@@ -147,8 +164,14 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 - 低余量提醒阈值限制为 1–99 的整数，默认 20；阈值与提醒开关共同写入
   `settings.json`，读取非法旧值时回退默认值，不得阻止窗口启动。
 - 快速下降时间范围限制为 5–1440 分钟；百分比点阈值限制为 0.1–100，金额
-  阈值限制为 0.01–1,000,000,000。Codex 固定使用百分比点，DeepSeek 可在
-  百分比点与余额金额之间切换，所有规则均原子校验后写入 `settings.json`。
+  阈值限制为 0.01–1,000,000,000。Codex 与 Kimi Code 固定使用百分比点，
+  DeepSeek 可在百分比点与余额金额之间切换，所有规则均原子校验后写入
+  `settings.json`。
+- Kimi Code 的 CLI 凭证只读使用本地配置（OAuth 访问令牌不刷新），不得写入
+  应用设置、日志、趋势历史或完整状态；手动配置的 API Key 只能以 DPAPI
+  `CurrentUser` 加密形式保存在 `kimi.json`，同样不得进入日志或历史。官方
+  `usages` 接口与 Codex 共用有界退避重试（上限 30 秒，尊重 `Retry-After`），
+  官方接口另有 15 秒快缓存。
 - 诊断提前结束时使用 `RmfStopLoading` 控制流，不直接依赖点源脚本中的 `exit`。
 - XAML 仅在 `src\UI\MainWindow.xaml` 维护，构建时自动嵌入。
 - 发布包仍以最终合并脚本的 SHA-256 为信任边界。

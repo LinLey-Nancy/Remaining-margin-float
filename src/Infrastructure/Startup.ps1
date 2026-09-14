@@ -669,7 +669,7 @@ function Restore-Settings {
             }
             if (
                 $settings.PSObject.Properties['Provider'] -and
-                [string]$settings.Provider -in @('Codex', 'DeepSeek')
+                [string]$settings.Provider -in @('Codex', 'DeepSeek', 'Kimi')
             ) {
                 $script:ActiveProvider = [string]$settings.Provider
             }
@@ -739,6 +739,10 @@ function Restore-Settings {
     }
 
     if ($Demo) {
-        $script:ActiveProvider = if ($DemoProvider -eq 'deepseek') { 'DeepSeek' } else { 'Codex' }
+        $script:ActiveProvider = switch ($DemoProvider) {
+            'deepseek' { 'DeepSeek' }
+            'kimi' { 'Kimi' }
+            default { 'Codex' }
+        }
     }
 }

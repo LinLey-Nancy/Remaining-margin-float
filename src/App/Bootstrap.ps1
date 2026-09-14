@@ -265,7 +265,7 @@ public static class UsageHistoryLogScanner
         string provider = Capture(Provider, line);
         string metric = Capture(Metric, line);
         if (
-            (provider != "Codex" && provider != "DeepSeek") ||
+            (provider != "Codex" && provider != "DeepSeek" && provider != "Kimi") ||
             (metric != "Percent" && metric != "Balance")
         ) {
             return null;
@@ -289,6 +289,14 @@ public static class UsageHistoryLogScanner
             else if (quotaPeriod != "FiveHour" && quotaPeriod != "Weekly") {
                 return null;
             }
+        }
+        else if (
+            provider == "Kimi" &&
+            metric == "Percent" &&
+            quotaPeriod != "FiveHour" &&
+            quotaPeriod != "Weekly"
+        ) {
+            return null;
         }
 
         DateTimeOffset observedAt;
@@ -461,7 +469,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.9.1'
+$script:AppVersion = '1.10.1'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -486,6 +494,7 @@ $script:TrayEdgeDockItem = $null
 $script:TrayStartupItems = @{}
 $script:IsClosing = $false
 $script:ActiveProvider = 'Codex'
+$script:KimiUsageCache = @{}
 $script:DeepSeekUsageCache = @{}
 $script:DeepSeekLatestUsageCache = @{}
 $script:DeepSeekAggregateUsageCache = $null
@@ -493,6 +502,8 @@ $script:DeepSeekAggregateCacheHits = 0
 $script:DeepSeekAggregateCacheMisses = 0
 $script:CodexHttpClient = $null
 $script:CodexOfficialUsageCache = $null
+$script:KimiHttpClient = $null
+$script:KimiOfficialUsageCache = $null
 $script:DeepSeekHttpClient = $null
 $script:UpdateHttpClient = $null
 $script:UpdateMenuItem = $null
@@ -530,6 +541,7 @@ $script:UpdateContext = [pscustomobject]@{
     Release = $null
 }
 $script:LastDeepSeekSnapshot = $null
+$script:LastKimiSnapshot = $null
 $script:UsageHistoryCache = $null
 $global:RmfUsageHistoryRepairProcess = $null
 $global:RmfUsageHistoryRepairStarted = $false
@@ -554,13 +566,17 @@ $script:DeepSeekRapidDropAmount = 10.0
 $script:RapidDropAlertActive = @{}
 $script:CodexSourceMenuItem = $null
 $script:DeepSeekSourceMenuItem = $null
+$script:KimiSourceMenuItem = $null
 $script:TrayCodexSourceItem = $null
 $script:TrayDeepSeekSourceItem = $null
+$script:TrayKimiSourceItem = $null
 $script:CodexOfficialAccessMenuItem = $null
 $script:TrayCodexOfficialAccessItem = $null
 $script:CodexOfficialAccessEnabled = $false
 $script:DeepSeekSettingsMenuItem = $null
 $script:TrayDeepSeekSettingsItem = $null
+$script:KimiSettingsMenuItem = $null
+$script:TrayKimiSettingsItem = $null
 $script:LowAlertsMenuItem = $null
 $script:TrayLowAlertsItem = $null
 $script:LowAlertThresholdMenuItem = $null
@@ -593,6 +609,13 @@ $script:AppContext = [pscustomobject]@{
             RetryAfter = $null
         }
         DeepSeek = [pscustomobject]@{
+            Request = $null
+            RequestTask = $null
+            Attempt = 0
+            MaxAttempts = 2
+            RetryAfter = $null
+        }
+        Kimi = [pscustomobject]@{
             Request = $null
             RequestTask = $null
             Attempt = 0

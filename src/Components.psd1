@@ -13,6 +13,7 @@
         'App\UsageHistoryRepair.ps1'
         'Diagnostics\RuntimeDiagnostics.ps1'
         'Providers\DeepSeekProvider.ps1'
+        'Providers\KimiProvider.ps1'
         'Diagnostics\DataDiagnostics.ps1'
         'UI\WindowHost.ps1'
         'Infrastructure\Startup.ps1'

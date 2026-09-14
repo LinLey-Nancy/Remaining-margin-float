@@ -305,8 +305,24 @@ $script:DeepSeekSourceMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Call
         Sync-ProviderMenuState
     }
 }))
+$script:KimiSourceMenuItem = New-Object Windows.Controls.MenuItem
+$script:KimiSourceMenuItem.Header = 'Kimi Code'
+$script:KimiSourceMenuItem.IsCheckable = $true
+$script:KimiSourceMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    Set-ActiveProvider -Provider 'Kimi'
+    $credential = Get-KimiCredential
+    if ($credential.Token) {
+        Invoke-Refresh
+    }
+    else {
+        $saved = Show-KimiSettings
+        if (-not $saved) { Invoke-Refresh }
+        Sync-ProviderMenuState
+    }
+}))
 [void]$sourceMenu.Items.Add($script:CodexSourceMenuItem)
 [void]$sourceMenu.Items.Add($script:DeepSeekSourceMenuItem)
+[void]$sourceMenu.Items.Add($script:KimiSourceMenuItem)
 $script:CodexOfficialAccessMenuItem = New-Object Windows.Controls.MenuItem
 $script:CodexOfficialAccessMenuItem.Header = 'Codex 官方接口（读取登录凭据）'
 $script:CodexOfficialAccessMenuItem.IsCheckable = $true
@@ -318,6 +334,11 @@ $script:DeepSeekSettingsMenuItem = New-Object Windows.Controls.MenuItem
 $script:DeepSeekSettingsMenuItem.Header = 'DeepSeek 设置…'
 $script:DeepSeekSettingsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     [void](Show-DeepSeekSettings)
+}))
+$script:KimiSettingsMenuItem = New-Object Windows.Controls.MenuItem
+$script:KimiSettingsMenuItem.Header = 'Kimi Code 手动配置…'
+$script:KimiSettingsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    [void](Show-KimiSettings)
 }))
 $topmostMenu = New-Object Windows.Controls.MenuItem
 $topmostMenu.Header = '始终置顶'
@@ -458,6 +479,7 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$contextMenu.Items.Add($sourceMenu)
 [void]$contextMenu.Items.Add($script:CodexOfficialAccessMenuItem)
 [void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
+[void]$contextMenu.Items.Add($script:KimiSettingsMenuItem)
 [void]$contextMenu.Items.Add($topmostMenu)
 [void]$contextMenu.Items.Add($script:LowAlertsMenuItem)
 [void]$contextMenu.Items.Add($script:LowAlertThresholdMenuItem)
