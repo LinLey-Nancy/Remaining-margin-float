@@ -1245,6 +1245,7 @@ function Get-UsageTrend {
         [object[]]$Samples,
         $CurrentSample,
         [double]$Hours,
+        [switch]$StretchToFit,
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
@@ -1259,6 +1260,8 @@ function Get-UsageTrend {
             Change = 0.0
             StartValue = $null
             EndValue = $null
+            AxisStartUtc = $null
+            AxisEndUtc = $null
             Summary = '暂无数据'
         }
     }
@@ -1276,22 +1279,54 @@ function Get-UsageTrend {
         } | Sort-Object ObservedAtUtc
     )
     $windowSamples = @($matching | Where-Object { $_.ObservedAtUtc -ge $cutoff })
-    $boundarySample = $matching |
-        Where-Object { $_.ObservedAtUtc -lt $cutoff } |
-        Select-Object -Last 1
-    $series = @(if ($boundarySample) {
-        @($boundarySample) + $windowSamples
+    if ($StretchToFit) {
+        $series = @(if ($windowSamples.Count -gt 0) {
+            $windowSamples
+        } elseif ($matching.Count -gt 0) {
+            @($matching[-1])
+        } else {
+            @()
+        })
+        $sampleCount = $windowSamples.Count
+        if (
+            $series.Count -gt 0 -and
+            ($nowUtc - ([DateTimeOffset]$series[-1].ObservedAtUtc)).TotalSeconds -gt 60
+        ) {
+            $nowPoint = [pscustomobject]@{
+                Version = $series[-1].Version
+                ProviderId = $CurrentSample.ProviderId
+                ObservedAtUtc = $nowUtc
+                MetricType = $CurrentSample.MetricType
+                RemainingValue = [double]$CurrentSample.RemainingValue
+                Unit = $CurrentSample.Unit
+                ResetAtUtc = ''
+            }
+            $series = @($series) + @($nowPoint)
+        }
+        $axisStartUtc = if ($series.Count -gt 0) {
+            [DateTimeOffset]$series[0].ObservedAtUtc
+        } else { $null }
+        $axisEndUtc = if ($series.Count -gt 0) { $nowUtc } else { $null }
     } else {
-        $windowSamples
-    })
+        $boundarySample = $matching |
+            Where-Object { $_.ObservedAtUtc -lt $cutoff } |
+            Select-Object -Last 1
+        $series = @(if ($boundarySample) {
+            @($boundarySample) + $windowSamples
+        } else {
+            $windowSamples
+        })
+        $sampleCount = @(
+            $series | Where-Object { $_.ObservedAtUtc -ge $cutoff }
+        ).Count
+        $axisStartUtc = $null
+        $axisEndUtc = $null
+    }
 
     $segments = @(Split-UsageTrendSeries -Samples $series)
     $comparisonSeries = @(if ($segments.Count -gt 0) {
         $segments[-1].Samples
     })
-    $sampleCount = @(
-        $series | Where-Object { $_.ObservedAtUtc -ge $cutoff }
-    ).Count
     $comparisonAvailable = $comparisonSeries.Count -ge 2
     if (-not $comparisonAvailable) {
         return [pscustomobject]@{
@@ -1308,6 +1343,8 @@ function Get-UsageTrend {
             EndValue = if ($comparisonSeries.Count -eq 1) {
                 [double]$comparisonSeries[0].RemainingValue
             } else { $null }
+            AxisStartUtc = $axisStartUtc
+            AxisEndUtc = $axisEndUtc
             Summary = '积累中'
         }
     }
@@ -1348,6 +1385,8 @@ function Get-UsageTrend {
         Change = $change
         StartValue = [double]$comparisonSeries[0].RemainingValue
         EndValue = [double]$comparisonSeries[-1].RemainingValue
+        AxisStartUtc = $axisStartUtc
+        AxisEndUtc = $axisEndUtc
         Summary = $summary
     }
 }
@@ -1828,10 +1867,11 @@ function Measure-UsageInsights {
     return [pscustomobject]@{
         CurrentSample = $CurrentSample
         PreviousSample = $PreviousSample
-        Trend24Hours = Get-UsageTrend `
+        Trend5Hours = Get-UsageTrend `
             -Samples $analysisSamples `
             -CurrentSample $CurrentSample `
-            -Hours 24 `
+            -Hours 5 `
+            -StretchToFit `
             -Now $Now
         Trend7Days = Get-UsageTrend `
             -Samples $analysisSamples `

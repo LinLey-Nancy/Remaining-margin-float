@@ -254,8 +254,8 @@ foreach ($property in $runtimeLog.PSObject.Properties) {
 }
 
 $history = Invoke-JsonDiagnostic -Name 'CheckUsageHistory'
-Assert-Diagnostic -Condition ($history.Trend24Change -eq -20) `
-    -Message '24-hour history trend'
+Assert-Diagnostic -Condition ($history.Trend5HChange -eq -20) `
+    -Message '5-hour history trend'
 Assert-Diagnostic -Condition ($history.Trend7Change -eq -20) `
     -Message '7-day history trend'
 Assert-Diagnostic -Condition (
@@ -409,7 +409,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.10.1') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.10.2') `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -549,13 +549,13 @@ Assert-Diagnostic -Condition ([bool]$transitions.AlertKeysIsolateQuotaPeriods) `
 
 Assert-Diagnostic `
     -Condition (
-        -not [string]::IsNullOrWhiteSpace([string]$transitions.Trend24Text) -and
-        $transitions.Trend24PointCount -ge 2 -and
+        -not [string]::IsNullOrWhiteSpace([string]$transitions.Trend5HText) -and
+        $transitions.Trend5HPointCount -ge 2 -and
         -not [string]::IsNullOrWhiteSpace(
-            [string]$transitions.Trend24MetaText
+            [string]$transitions.Trend5HMetaText
         )
     ) `
-    -Message '24-hour trend UI'
+    -Message '5-hour trend UI'
 Assert-Diagnostic `
     -Condition (
         -not [string]::IsNullOrWhiteSpace([string]$transitions.Trend7Text) -and
@@ -588,7 +588,7 @@ Assert-Diagnostic `
     -Message 'Reset trend UI starts a new baseline without increase text'
 Assert-Diagnostic `
     -Condition ([bool]$transitions.MultipleResetTrendSegmentsRendered) `
-    -Message '24-hour resets stay segmented while 7-day trend connects smoothly'
+    -Message '5-hour resets stay segmented while 7-day trend connects smoothly'
 Assert-Diagnostic `
     -Condition (-not [string]::IsNullOrWhiteSpace([string]$transitions.PredictionText)) `
     -Message 'Depletion forecast UI'

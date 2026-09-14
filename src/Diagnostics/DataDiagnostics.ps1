@@ -2183,7 +2183,7 @@ if ($CheckUsageHistory) {
     }
 
     [pscustomobject]@{
-        Trend24Change = $depletingInsights.Trend24Hours.Change
+        Trend5HChange = $depletingInsights.Trend5Hours.Change
         Trend7Change = $depletingInsights.Trend7Days.Change
         DepletionStatus = $depletingInsights.Forecast.Status
         DepletionHours = [Math]::Round(

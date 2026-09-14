@@ -1050,6 +1050,8 @@ function Set-TrendChart {
         [switch]$ConnectSegments,
         [switch]$Smooth,
         [double]$Hours,
+        [Nullable[DateTimeOffset]]$AxisStartUtc,
+        [Nullable[DateTimeOffset]]$AxisEndUtc,
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
@@ -1136,14 +1138,23 @@ function Set-TrendChart {
         [double]$Canvas.Height
     }
     $plotHeight = [Math]::Max(1.0, $height - 5.0)
-    $cutoff = $Now.ToUniversalTime().AddHours(-$Hours)
-    $totalSeconds = [Math]::Max(1, $Hours * 3600)
+    $useExplicitAxis = $AxisStartUtc -and $AxisEndUtc
+    if ($useExplicitAxis) {
+        $axisStart = ([DateTimeOffset]$AxisStartUtc).ToUniversalTime()
+        $totalSeconds = [Math]::Max(
+            1.0,
+            (([DateTimeOffset]$AxisEndUtc).ToUniversalTime() - $axisStart).TotalSeconds
+        )
+    } else {
+        $axisStart = $Now.ToUniversalTime().AddHours(-$Hours)
+        $totalSeconds = [Math]::Max(1, $Hours * 3600)
+    }
     $allPoints = New-Object Collections.Generic.List[Windows.Point]
     for ($segmentIndex = 0; $segmentIndex -lt $displaySegments.Count; $segmentIndex++) {
         $segmentPoints = New-Object Collections.Generic.List[Windows.Point]
         foreach ($sample in @($displaySegments[$segmentIndex].Samples)) {
             $elapsedSeconds = (
-                ([DateTimeOffset]$sample.ObservedAtUtc) - $cutoff
+                ([DateTimeOffset]$sample.ObservedAtUtc) - $axisStart
             ).TotalSeconds
             $x = [Math]::Max(
                 0.0,
@@ -1232,17 +1243,17 @@ function Update-UsageInsightView {
     param($Insights)
 
     if (-not $Insights -or -not $Insights.CurrentSample) {
-        $Trend24Text.Text = '暂无数据'
+        $Trend5HText.Text = '暂无数据'
         $Trend7Text.Text = '暂无数据'
-        $Trend24MetaText.Text = '等待更多样本'
+        $Trend5HMetaText.Text = '等待更多样本'
         $Trend7MetaText.Text = '等待更多样本'
         $PredictionText.Text = '积累 30 分钟后预测'
         Clear-TrendChartVisuals `
-            -Canvas $Trend24Canvas `
-            -Polyline $Trend24Line `
-            -Area $Trend24Area `
-            -StartMarker $Trend24StartMarker `
-            -EndMarker $Trend24EndMarker
+            -Canvas $Trend5HCanvas `
+            -Polyline $Trend5HLine `
+            -Area $Trend5HArea `
+            -StartMarker $Trend5HStartMarker `
+            -EndMarker $Trend5HEndMarker
         Clear-TrendChartVisuals `
             -Canvas $Trend7Canvas `
             -Polyline $Trend7Line `
@@ -1257,20 +1268,20 @@ function Update-UsageInsightView {
         return
     }
 
-    $Trend24Text.Text = Format-UsageTrendChange `
-        -Trend $Insights.Trend24Hours `
+    $Trend5HText.Text = Format-UsageTrendChange `
+        -Trend $Insights.Trend5Hours `
         -CurrentSample $Insights.CurrentSample
     $Trend7Text.Text = Format-UsageTrendChange `
         -Trend $Insights.Trend7Days `
         -CurrentSample $Insights.CurrentSample
-    $Trend24MetaText.Text = if ($Insights.Trend24Hours.ComparisonAvailable) {
+    $Trend5HMetaText.Text = if ($Insights.Trend5Hours.ComparisonAvailable) {
         '{0} 个样本 · {1} → {2}' -f
-            $Insights.Trend24Hours.SampleCount,
+            $Insights.Trend5Hours.SampleCount,
             (Format-UsageTrendValue `
-                -Value $Insights.Trend24Hours.StartValue `
+                -Value $Insights.Trend5Hours.StartValue `
                 -CurrentSample $Insights.CurrentSample),
             (Format-UsageTrendValue `
-                -Value $Insights.Trend24Hours.EndValue `
+                -Value $Insights.Trend5Hours.EndValue `
                 -CurrentSample $Insights.CurrentSample)
     } else {
         '等待更多样本'
@@ -1294,14 +1305,17 @@ function Update-UsageInsightView {
         $Insights.CurrentSample.Unit
     )
     Set-TrendChart `
-        -Canvas $Trend24Canvas `
-        -Polyline $Trend24Line `
-        -Area $Trend24Area `
-        -StartMarker $Trend24StartMarker `
-        -EndMarker $Trend24EndMarker `
-        -Samples $Insights.Trend24Hours.Samples `
-        -Segments $Insights.Trend24Hours.Segments `
-        -Hours 24
+        -Canvas $Trend5HCanvas `
+        -Polyline $Trend5HLine `
+        -Area $Trend5HArea `
+        -StartMarker $Trend5HStartMarker `
+        -EndMarker $Trend5HEndMarker `
+        -Samples $Insights.Trend5Hours.Samples `
+        -Segments $Insights.Trend5Hours.Segments `
+        -Smooth `
+        -AxisStartUtc $Insights.Trend5Hours.AxisStartUtc `
+        -AxisEndUtc $Insights.Trend5Hours.AxisEndUtc `
+        -Hours 5
     Set-TrendChart `
         -Canvas $Trend7Canvas `
         -Polyline $Trend7Line `
@@ -2435,16 +2449,16 @@ function Invoke-PendingUsageHistoryUpdate {
                 -Status 'Error' `
                 -Message $_.Exception.Message
         }
-        $Trend24Text.Text = '24 小时：暂不可用'
+        $Trend5HText.Text = '近 5 小时：暂不可用'
         $Trend7Text.Text = '7 天：暂不可用'
-        $Trend24MetaText.Text = '历史记录读取失败'
+        $Trend5HMetaText.Text = '历史记录读取失败'
         $Trend7MetaText.Text = '历史记录读取失败'
-        $Trend24Line.Points.Clear()
-        $Trend24Area.Points.Clear()
+        $Trend5HLine.Points.Clear()
+        $Trend5HArea.Points.Clear()
         $Trend7Line.Points.Clear()
         $Trend7Area.Points.Clear()
-        $Trend24StartMarker.Visibility = 'Collapsed'
-        $Trend24EndMarker.Visibility = 'Collapsed'
+        $Trend5HStartMarker.Visibility = 'Collapsed'
+        $Trend5HEndMarker.Visibility = 'Collapsed'
         $Trend7StartMarker.Visibility = 'Collapsed'
         $Trend7EndMarker.Visibility = 'Collapsed'
         $PredictionText.Text = '趋势暂不可用'

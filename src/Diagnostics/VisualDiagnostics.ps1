@@ -454,20 +454,20 @@ if ($CheckTransitions) {
         $LastTurnTokens.FontWeight.ToString()
         $CacheHit.FontWeight.ToString()
     )
-    $trend24PointCount = $Trend24Line.Points.Count
+    $trend5HPointCount = $Trend5HLine.Points.Count
     $trend7PointCount = $Trend7Line.Points.Count
-    $trend24MetaTextValue = $Trend24MetaText.Text
+    $trend5HMetaTextValue = $Trend5HMetaText.Text
     $trend7MetaTextValue = $Trend7MetaText.Text
     $rapidDropStatusTextValue = $RapidDropText.Text
 
     $timeAxisSamples = @(
         [pscustomobject]@{
-            ObservedAtUtc = $diagnosticNow.AddHours(-24)
+            ObservedAtUtc = $diagnosticNow.AddHours(-2)
             RemainingValue = 90
             MetricType = 'Percent'
         },
         [pscustomobject]@{
-            ObservedAtUtc = $diagnosticNow.AddHours(-18)
+            ObservedAtUtc = $diagnosticNow.AddHours(-1)
             RemainingValue = 80
             MetricType = 'Percent'
         },
@@ -478,25 +478,27 @@ if ($CheckTransitions) {
         }
     )
     Set-TrendChart `
-        -Canvas $Trend24Canvas `
-        -Polyline $Trend24Line `
-        -Area $Trend24Area `
-        -StartMarker $Trend24StartMarker `
-        -EndMarker $Trend24EndMarker `
+        -Canvas $Trend5HCanvas `
+        -Polyline $Trend5HLine `
+        -Area $Trend5HArea `
+        -StartMarker $Trend5HStartMarker `
+        -EndMarker $Trend5HEndMarker `
         -Samples $timeAxisSamples `
-        -Hours 24 `
+        -AxisStartUtc $diagnosticNow.AddHours(-2) `
+        -AxisEndUtc $diagnosticNow `
+        -Hours 5 `
         -Now $diagnosticNow
-    $timeAxisWidth = if ($Trend24Canvas.ActualWidth -gt 10) {
-        [double]$Trend24Canvas.ActualWidth
-    } else { [double]$Trend24Canvas.Width }
+    $timeAxisWidth = if ($Trend5HCanvas.ActualWidth -gt 10) {
+        [double]$Trend5HCanvas.ActualWidth
+    } else { [double]$Trend5HCanvas.Width }
     $trendTimeAxisAligned = (
-        $Trend24Line.Points.Count -eq 3 -and
-        [Math]::Abs([double]$Trend24Line.Points[0].X) -lt 0.1 -and
+        $Trend5HLine.Points.Count -eq 3 -and
+        [Math]::Abs([double]$Trend5HLine.Points[0].X) -lt 0.1 -and
         [Math]::Abs(
-            [double]$Trend24Line.Points[1].X - ($timeAxisWidth * 0.25)
+            [double]$Trend5HLine.Points[1].X - ($timeAxisWidth * 0.5)
         ) -lt 0.5 -and
         [Math]::Abs(
-            [double]$Trend24Line.Points[2].X - $timeAxisWidth
+            [double]$Trend5HLine.Points[2].X - $timeAxisWidth
         ) -lt 0.5
     )
 
@@ -513,15 +515,15 @@ if ($CheckTransitions) {
         -Now $diagnosticNow
     Update-UsageInsightView -Insights $resetUiInsights
     $resetTrendUiStartsAccumulating = (
-        $Trend24Text.Text -eq (([string][char]0x2193) + ' 1pp') -and
+        $Trend5HText.Text -eq (([string][char]0x2193) + ' 1pp') -and
         $Trend7Text.Text -eq (([string][char]0x2193) + ' 1pp') -and
-        $Trend24MetaText.Text -match '^4 .*98.*97' -and
+        $Trend5HMetaText.Text -match '^4 .*98.*97' -and
         $Trend7MetaText.Text -match '^4 .*98.*97' -and
-        $Trend24Text.Text -notmatch ([string][char]0x2191) -and
+        $Trend5HText.Text -notmatch ([string][char]0x2191) -and
         $Trend7Text.Text -notmatch ([string][char]0x2191) -and
-        $Trend24Line.Points.Count -eq 2 -and
+        $Trend5HLine.Points.Count -gt 2 -and
         $Trend7Line.Points.Count -gt $resetUiSamples.Count -and
-        @($Trend24Canvas.Children | Where-Object {
+        @($Trend5HCanvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 1 -and
         @($Trend7Canvas.Children | Where-Object {
@@ -544,15 +546,15 @@ if ($CheckTransitions) {
         -Now $diagnosticNow
     Update-UsageInsightView -Insights $multipleResetUiInsights
     $multipleResetTrendSegmentsRendered = (
-        $Trend24Line.Points.Count -eq 2 -and
+        $Trend5HLine.Points.Count -gt 2 -and
         $Trend7Line.Points.Count -gt $multipleResetUiSamples.Count -and
-        @($Trend24Canvas.Children | Where-Object {
+        @($Trend5HCanvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 2 -and
         @($Trend7Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 0 -and
-        @($Trend24Canvas.Children | Where-Object {
+        @($Trend5HCanvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicArea'
         }).Count -eq 2 -and
         @($Trend7Canvas.Children | Where-Object {
@@ -560,7 +562,7 @@ if ($CheckTransitions) {
         }).Count -eq 0
     )
     if (-not $multipleResetTrendSegmentsRendered) {
-        throw '24-hour resets were not segmented or the 7-day trend was not connected smoothly.'
+        throw '5-hour resets were not segmented or the 7-day trend was not connected smoothly.'
     }
 
     $singlePointSegmentSamples = @(
@@ -575,38 +577,66 @@ if ($CheckTransitions) {
         -Now $diagnosticNow
     Update-UsageInsightView -Insights $singlePointSegmentInsights
     $singlePointSegmentRendered = (
-        $Trend24Line.Points.Count -eq 2 -and
-        @($Trend24Canvas.Children | Where-Object {
+        $Trend5HLine.Points.Count -gt 2 -and
+        @($Trend5HCanvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 1 -and
         $Trend7Line.Points.Count -gt $singlePointSegmentSamples.Count -and
         @($Trend7Canvas.Children | Where-Object {
             [string]$_.Tag -eq 'UsageTrendDynamicLine'
         }).Count -eq 0 -and
-        $Trend24MetaText.Text -eq '等待更多样本' -and
+        $Trend5HMetaText.Text -eq '等待更多样本' -and
         $Trend7MetaText.Text -eq '等待更多样本'
     )
     if (-not $singlePointSegmentRendered) {
         throw 'A reset segment with exactly one sample was not rendered.'
     }
 
+    $staleAnchorSamples = @(
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-9); MetricType = 'Percent'; RemainingValue = 64; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-7); MetricType = 'Percent'; RemainingValue = 62; Unit = '%'; ResetAtUtc = '' }
+    )
+    $staleAnchorInsights = Measure-UsageInsights `
+        -Samples $staleAnchorSamples `
+        -CurrentSample $staleAnchorSamples[-1] `
+        -PreviousSample $staleAnchorSamples[0] `
+        -Now $diagnosticNow
+    Update-UsageInsightView -Insights $staleAnchorInsights
+    $staleAnchorRendered = (
+        $Trend5HLine.Points.Count -gt 2 -and
+        [Math]::Abs([double]$Trend5HLine.Points[0].X) -lt 0.1 -and
+        [Math]::Abs(
+            [double]$Trend5HLine.Points[$Trend5HLine.Points.Count - 1].X -
+                $timeAxisWidth
+        ) -lt 0.5 -and
+        $Trend5HMetaText.Text -match '^0 .*62.*62' -and
+        $Trend5HText.Text -eq ([string][char]0x2014 + ' 持平') -and
+        [string]$Trend5HEndMarker.Visibility -eq 'Visible' -and
+        @($Trend5HCanvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 0
+    )
+    if (-not $staleAnchorRendered) {
+        throw 'A stale anchor sample was not stretched across the 5-hour trend.'
+    }
+
     Update-UsageInsightView -Insights $null
     $dynamicTrendVisualsCleared = (
-        $Trend24Line.Points.Count -eq 0 -and
+        $Trend5HLine.Points.Count -eq 0 -and
         $Trend7Line.Points.Count -eq 0 -and
-        $Trend24Area.Points.Count -eq 0 -and
+        $Trend5HArea.Points.Count -eq 0 -and
         $Trend7Area.Points.Count -eq 0 -and
-        @($Trend24Canvas.Children | Where-Object {
+        @($Trend5HCanvas.Children | Where-Object {
             [string]$_.Tag -like 'UsageTrendDynamic*'
         }).Count -eq 0 -and
         @($Trend7Canvas.Children | Where-Object {
             [string]$_.Tag -like 'UsageTrendDynamic*'
         }).Count -eq 0 -and
-        [string]$Trend24StartMarker.Visibility -eq 'Collapsed' -and
-        [string]$Trend24EndMarker.Visibility -eq 'Collapsed' -and
+        [string]$Trend5HStartMarker.Visibility -eq 'Collapsed' -and
+        [string]$Trend5HEndMarker.Visibility -eq 'Collapsed' -and
         [string]$Trend7StartMarker.Visibility -eq 'Collapsed' -and
         [string]$Trend7EndMarker.Visibility -eq 'Collapsed' -and
-        $Trend24Text.Text -eq '暂无数据' -and
+        $Trend5HText.Text -eq '暂无数据' -and
         $Trend7Text.Text -eq '暂无数据'
     )
     if (-not $dynamicTrendVisualsCleared) {
@@ -618,7 +648,7 @@ if ($CheckTransitions) {
         [Windows.Media.SolidColorBrush]$window.Resources['SageSoft']
     ).Color.ToString()
     $trendHealthyBackgroundColor = (
-        [Windows.Media.SolidColorBrush]$Trend24Card.Background
+        [Windows.Media.SolidColorBrush]$Trend5HCard.Background
     ).Color.ToString()
     $trendHealthyBackgroundsMatch = (
         $trendHealthyBackgroundColor -eq $trendHealthyPaletteColor -and
@@ -631,7 +661,7 @@ if ($CheckTransitions) {
         [Windows.Media.SolidColorBrush]$window.Resources['SageSoft']
     ).Color.ToString()
     $trendLowBackgroundColor = (
-        [Windows.Media.SolidColorBrush]$Trend24Card.Background
+        [Windows.Media.SolidColorBrush]$Trend5HCard.Background
     ).Color.ToString()
     $trendLowBackgroundsMatch = (
         $trendLowBackgroundColor -eq $trendLowPaletteColor -and
@@ -1004,16 +1034,16 @@ if ($CheckTransitions) {
     )
     $trendContentBottom = (
         @(
-            $Trend24Canvas.TranslatePoint(
-                (New-Object Windows.Point(0, $Trend24Canvas.ActualHeight)),
+            $Trend5HCanvas.TranslatePoint(
+                (New-Object Windows.Point(0, $Trend5HCanvas.ActualHeight)),
                 $DetailsPanel
             ).Y,
             $Trend7Canvas.TranslatePoint(
                 (New-Object Windows.Point(0, $Trend7Canvas.ActualHeight)),
                 $DetailsPanel
             ).Y,
-            $Trend24MetaText.TranslatePoint(
-                (New-Object Windows.Point(0, $Trend24MetaText.ActualHeight)),
+            $Trend5HMetaText.TranslatePoint(
+                (New-Object Windows.Point(0, $Trend5HMetaText.ActualHeight)),
                 $DetailsPanel
             ).Y,
             $Trend7MetaText.TranslatePoint(
@@ -1535,15 +1565,15 @@ if ($CheckTransitions) {
         EdgeGapStableAcrossCycles = $edgeGapStableAcrossCycles
         EdgeDockAnchorStable = $edgeDockAnchorStable
         HiddenSurfaceAlpha = $hiddenSurfaceAlpha
-        Trend24Text = $Trend24Text.Text
+        Trend5HText = $Trend5HText.Text
         CompactHeaderRestored = $compactHeaderRestored
         ExpandedHeaderHierarchy = $expandedHeaderHierarchy
         TokenSummaryVisualReady = $tokenSummaryVisualReady
         AlertKeysIsolateQuotaPeriods = $alertKeysIsolateQuotaPeriods
         Trend7Text = $Trend7Text.Text
-        Trend24PointCount = $trend24PointCount
+        Trend5HPointCount = $trend5HPointCount
         Trend7PointCount = $trend7PointCount
-        Trend24MetaText = $trend24MetaTextValue
+        Trend5HMetaText = $trend5HMetaTextValue
         Trend7MetaText = $trend7MetaTextValue
         TrendTimeAxisAligned = $trendTimeAxisAligned
         ResetTrendUiStartsAccumulating = $resetTrendUiStartsAccumulating

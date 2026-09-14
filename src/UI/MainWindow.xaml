@@ -640,7 +640,7 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
-                            <Border x:Name="Trend24Card"
+                            <Border x:Name="Trend5HCard"
                                     Grid.Column="0"
                                     Background="{DynamicResource SageSoft}"
                                     CornerRadius="9"
@@ -652,12 +652,12 @@
                                         <RowDefinition Height="13"/>
                                     </Grid.RowDefinitions>
                                     <Grid>
-                                        <TextBlock Text="24 小时"
+                                        <TextBlock Text="近 5 小时"
                                                    Foreground="{StaticResource TextSecondary}"
                                                    FontFamily="Microsoft YaHei UI"
                                                    FontSize="9.5"
                                                    FontWeight="SemiBold"/>
-                                        <TextBlock x:Name="Trend24Text"
+                                        <TextBlock x:Name="Trend5HText"
                                                    HorizontalAlignment="Right"
                                                    Text="积累中"
                                                    Foreground="{DynamicResource StatusStrong}"
@@ -665,7 +665,7 @@
                                                    FontSize="10.5"
                                                    FontWeight="SemiBold"/>
                                     </Grid>
-                                    <Canvas x:Name="Trend24Canvas"
+                                    <Canvas x:Name="Trend5HCanvas"
                                             Grid.Row="1"
                                             Width="150"
                                             Height="43"
@@ -674,22 +674,22 @@
                                         <Border Width="150" Height="1"
                                                 Canvas.Top="21"
                                                 Background="#DDE2DC"/>
-                                        <Polygon x:Name="Trend24Area"
+                                        <Polygon x:Name="Trend5HArea"
                                                  Fill="#244F6B58"/>
-                                        <Polyline x:Name="Trend24Line"
+                                        <Polyline x:Name="Trend5HLine"
                                                   Stroke="{DynamicResource StatusStrong}"
                                                   StrokeThickness="2"
                                                   StrokeLineJoin="Round"/>
-                                        <Ellipse x:Name="Trend24StartMarker"
+                                        <Ellipse x:Name="Trend5HStartMarker"
                                                  Width="4" Height="4"
                                                  Fill="#FFFFFF"
                                                  Stroke="{DynamicResource StatusStrong}"
                                                  StrokeThickness="1.5"/>
-                                        <Ellipse x:Name="Trend24EndMarker"
+                                        <Ellipse x:Name="Trend5HEndMarker"
                                                  Width="5" Height="5"
                                                  Fill="{DynamicResource StatusStrong}"/>
                                     </Canvas>
-                                    <TextBlock x:Name="Trend24MetaText"
+                                    <TextBlock x:Name="Trend5HMetaText"
                                                Grid.Row="2"
                                                Text="等待更多样本"
                                                Style="{StaticResource ChartMetaText}"
