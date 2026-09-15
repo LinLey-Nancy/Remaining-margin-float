@@ -10,6 +10,7 @@
         'Core\StateHistory.ps1'
         'Infrastructure\Update.ps1'
         'Core\UsageHistory.ps1'
+        'Core\SpendLedger.ps1'
         'App\UsageHistoryRepair.ps1'
         'Diagnostics\RuntimeDiagnostics.ps1'
         'Providers\DeepSeekProvider.ps1'

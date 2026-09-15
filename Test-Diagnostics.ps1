@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ScriptPath = (Join-Path $PSScriptRoot 'src\RemainingMarginFloat.ps1')
 )
 
@@ -9,6 +9,14 @@ $resolvedScriptPath = [IO.Path]::GetFullPath($ScriptPath)
 if (-not (Test-Path -LiteralPath $resolvedScriptPath -PathType Leaf)) {
     throw "Application script is missing: $resolvedScriptPath"
 }
+
+# Read the shipped version instead of hard-coding it, so a release bump cannot
+# silently invalidate the version label check.
+$versionFile = Join-Path $PSScriptRoot 'VERSION'
+if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
+    throw "VERSION file is missing: $versionFile"
+}
+$expectedVersionLabel = 'v' + (Get-Content -LiteralPath $versionFile -Raw).Trim()
 
 function Invoke-JsonDiagnostic {
     param([string]$Name)
@@ -158,6 +166,16 @@ Assert-Diagnostic -Condition (
 Assert-Diagnostic -Condition (
     [bool]$contracts.KimiCacheDropsExpiredWindows
 ) -Message 'Kimi cached usage is discarded after quota windows expire'
+
+Assert-Diagnostic -Condition (
+    [bool]$contracts.KimiUsagesSummaryFallback -and
+    [bool]$contracts.KimiUsagesWeeklyFallback
+) -Message 'Kimi usages summary keeps quota windows when limits are absent'
+
+Assert-Diagnostic -Condition (
+    [bool]$contracts.KimiLimitsPreferredOverUsagesSummary -and
+    [bool]$contracts.KimiMalformedUsagesSummaryRejected
+) -Message 'Kimi limits precedence and malformed usages summary rejection'
 Assert-Diagnostic -Condition (
     $contracts.KimiWireEventCount -eq 2 -and
     $contracts.KimiWireLatestTokens -eq 108010 -and
@@ -274,6 +292,11 @@ Assert-Diagnostic -Condition (
     [bool]$history.MultipleResetUsesLatestBaseline -and
     [bool]$history.SubThresholdNoiseIgnored
 ) -Message 'Trend reset and rolling-window semantics'
+Assert-Diagnostic -Condition (
+    [bool]$history.GapResetRestartsAtCurrentValue -and
+    [bool]$history.GapWithoutResetKeepsHistory -and
+    [bool]$history.RecentResetKeepsSplitSegments
+) -Message 'Stretched trend gap and reset anchoring'
 Assert-Diagnostic -Condition (
     [bool]$history.MinuteSamplesRetained -and
     [bool]$history.ManualRefreshSampleRetained
@@ -409,7 +432,7 @@ Assert-Diagnostic -Condition ($updates.Version -eq '1.8.0') `
     -Message 'Update release version'
 
 $transitions = Invoke-JsonDiagnostic -Name 'CheckTransitions'
-Assert-Diagnostic -Condition ($transitions.VersionText -eq 'v1.10.2') `
+Assert-Diagnostic -Condition ($transitions.VersionText -eq $expectedVersionLabel) `
     -Message 'Expanded details version label'
 Assert-Diagnostic -Condition ([bool]$transitions.SingleInstanceUserScoped) `
     -Message 'Per-user single-instance object names'
@@ -475,9 +498,13 @@ Assert-Diagnostic -Condition (
     $transitions.DeepSeekCompactValue -eq '72' -and
     $transitions.DeepSeekCompactSuffix -eq '%' -and
     -not [string]::IsNullOrWhiteSpace([string]$transitions.DeepSeekLabel) -and
-    [string]$transitions.DeepSeekBalanceText -match '86\.40$' -and
-    -not [string]::IsNullOrWhiteSpace([string]$transitions.DeepSeekMetricTitle) -and
-    [string]$transitions.DeepSeekMonthlyCostValue -match '2\.36$' -and
+    [string]$transitions.DeepSeekMetricTitle -eq '今日花费' -and
+    [string]$transitions.DeepSeekTodaySpendText -match '0\.58$' -and
+    [string]$transitions.DeepSeekTodaySpendHint -eq '按余额变化统计' -and
+    # The stub puts 1.78 on the first day of the month and 0.58 on today; on the
+    # first of a month those collapse into one bucket holding only 0.58.
+    [string]$transitions.DeepSeekMonthSpendText -match '(2\.36|0\.58)$' -and
+    [string]$transitions.DeepSeekMonthSpendHint -eq '本月 1 日以来' -and
     $transitions.DeepSeekTodayTokenValue -eq '382.6K' -and
     $transitions.DeepSeekMonthlyTokenValue -eq '2.8M' -and
     $transitions.DeepSeekProgressRemaining -eq 72 -and

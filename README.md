@@ -45,11 +45,11 @@
 - 官方接口在后台异步刷新，不会阻塞悬浮窗；Plus 的 5 小时窗口缺失时明确显示“5 小时余量未知”，Pro 则直接使用每周窗口
 - 接口失败时明确显示上次成功数据的采样年龄与失败原因，不把回退数据重复写入历史或用于提醒判断
 - Codex、DeepSeek 与 Kimi Code 对限流、超时和服务端暂时错误使用一致的有界退避重试（上限 30 秒，尊重 `Retry-After`）
-- Kimi Code 与 Codex 共用双周期额度布局：5 小时窗口为主额度、每周配额为补充；官方接口失败时沿用上次成功数据，过期后显示“余量未知”，不伪装 0%
+- Kimi Code 与 Codex 共用双周期额度布局：5 小时窗口为主额度、每周配额为补充；5 小时窗口在空闲或刚重置时从 `usages.limit_5h` 摘要继续显示，不会退化为未知；官方接口失败时沿用上次成功数据，过期后显示“余量未知”，不伪装 0%
 - 从 Kimi Code 本地会话日志汇总今日 Token、最近一轮用量与缓存命中率；401 时提示重新登录 Kimi Code CLI
 - 读取 DeepSeek 官方余额、赠金和充值余额
 - 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token；未变化的日志直接复用聚合缓存
-- 按 DeepSeek V4 官方人民币价格估算本机本月累计花费
+- 按 DeepSeek 官方余额的真实变化统计今日花费与本月花费：充值只抬高基线、不计入也不冲抵花费，应用未运行时跨日的余额变化会标注“含断档”
 - DeepSeek API Key 使用 Windows DPAPI 当前用户加密
 - 位置、贴边状态、置顶偏好、当前数据源和全部提醒设置自动保存在本机
 - 本地记录脱敏余量样本；Codex 的趋势、低额度提醒和快速下降提醒跟随套餐主额度，并按 5 小时/每周周期隔离样本；Kimi Code 同样支持趋势与两类提醒
@@ -124,13 +124,13 @@ Setup 官方不可变 GitHub Release 获取编译器，并在使用前验证其 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.10.2-Setup.exe
-Remaining-Margin-Float-v1.10.2-Setup.exe.sha256
+Remaining-Margin-Float-v1.11.0-Setup.exe
+Remaining-Margin-Float-v1.11.0-Setup.exe.sha256
 ```
 
 本版本的用户可见更新内容见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
-推送与 `VERSION` 一致的标签（例如 `v1.10.2`）后，`Windows 发布`工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.11.0`）后，`Windows 发布`工作流会
 在 Windows Runner 上测试、构建，并真实执行静默安装与卸载验证，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 
@@ -216,7 +216,7 @@ Kimi Code 模式每 1 分钟最多请求一次官方配额接口 `{base_url}/usa
 
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
-DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命中、缓存未命中和输出 Token 按当前官方人民币价格估算，仅代表本机可见调用，不等同于 DeepSeek 账户账单。账户级精确用量请在 DeepSeek Platform 的 Usage 页面按月导出。
+DeepSeek 的“今日花费”和“本月花费”来自官方余额接口的真实余额变化，不再使用本地日志价格估算。充值或赠送额度只会抬高计算基线，不计入花费、也不会冲抵已花费金额。统计只覆盖应用实际运行期间观测到的余额变化；应用未运行时发生的下降如果跨过了本地午夜，无法判断属于哪一天，会被计入当月但不会计入“今日花费”，此时卡片会标注“含断档”。首次启用该功能时会用现有 7 天趋势历史回填，因此“本月花费”的起始日期以卡片副标题标注的覆盖起点为准。账户级精确账单仍请在 DeepSeek Platform 的 Usage 页面按月导出。
 
 每次手动或自动刷新成功后，应用还会把完整页面快照保存到
 `%LOCALAPPDATA%\RemainingMarginFloat\state-history`；退出时会补存最近一次
@@ -226,6 +226,13 @@ DeepSeek 的“本月累计花费”由本机 Claude Code 日志中的缓存命�
 时间、数据源、应用版本和内容哈希。状态仓库不保存 API Key、访问令牌、刷新
 令牌、Authorization 或密码字段，也不会通过“数据与诊断”导出。时间节点按天追加到
 小型 JSONL 分片，最新状态使用独立的小索引；刷新和退出不再重写整个 168 小时历史。
+
+花费台账保存在
+`%LOCALAPPDATA%\RemainingMarginFloat\spend-ledger.json`，按数据源保存最近一次
+观测到的余额、最近的观测时间，以及按本地日期分桶的已花费金额、充值金额、样本数、
+最大观测间隔与两类断档金额，只保留当前月与上一个月。它不包含账号名称、邮箱、
+Token、API Key 或访问令牌，也不会通过“数据与诊断”导出。趋势历史只保留 7 天，
+不足以回答“本月花了多少”，因此月份统计来自这份台账而不是趋势历史。
 
 趋势历史保存在
 `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`，只包含数据源、

@@ -411,7 +411,8 @@ function Read-UsageHistory {
         if ($ForAnalysis) {
             $history = @(
                 [UsageHistoryLogScanner]::SelectForAnalysis(
-                    [UsageHistoryRecordData[]]$history
+                    [UsageHistoryRecordData[]]$history,
+                    $Now
                 )
             )
         }
@@ -1092,6 +1093,7 @@ function Add-UsageHistorySample {
     if (-not $currentSample) {
         return [pscustomobject]@{
             Samples = $history
+            CurrentSamples = $currentSamples
             CurrentSample = $null
             PreviousSample = $null
             Changed = $false
@@ -1104,6 +1106,7 @@ function Add-UsageHistorySample {
     if ($SkipPersistence -or ($isDiagnosticRun -and -not $AllowDiagnosticWrite)) {
         return [pscustomobject]@{
             Samples = @($history + $currentSamples)
+            CurrentSamples = $currentSamples
             CurrentSample = $currentSample
             PreviousSample = $previousSample
             Changed = $false
@@ -1123,7 +1126,7 @@ function Add-UsageHistorySample {
         $changed = $true
     }
 
-    if ($usesDefaultPath -and $history.Count -gt 720) {
+    if ($usesDefaultPath -and $history.Count -gt 4320) {
         $history = @(
             Select-UsageHistoryAnalysisSamples `
                 -Samples $history `
@@ -1205,6 +1208,7 @@ function Add-UsageHistorySample {
 
     return [pscustomobject]@{
         Samples = $history
+        CurrentSamples = $currentSamples
         CurrentSample = $currentSample
         PreviousSample = $previousSample
         Changed = $changed
@@ -1302,6 +1306,50 @@ function Get-UsageTrend {
                 ResetAtUtc = ''
             }
             $series = @($series) + @($nowPoint)
+        }
+        $previousSample = $null
+        $currentObservedAt = (
+            [DateTimeOffset]$CurrentSample.ObservedAtUtc
+        ).ToUniversalTime()
+        foreach ($candidate in $series) {
+            if ([object]::ReferenceEquals($candidate, $CurrentSample)) { continue }
+            if (
+                ([DateTimeOffset]$candidate.ObservedAtUtc).ToUniversalTime() -ge
+                $currentObservedAt
+            ) { continue }
+            $previousSample = $candidate
+        }
+        $resetAcrossGap = (
+            $null -ne $previousSample -and
+            (
+                $nowUtc -
+                ([DateTimeOffset]$previousSample.ObservedAtUtc).ToUniversalTime()
+            ).TotalMinutes -gt 10 -and
+            (
+                [double]$CurrentSample.RemainingValue -
+                [double]$previousSample.RemainingValue
+            ) -gt 0.0001
+        )
+        if ($resetAcrossGap) {
+            # The app was offline long enough that a quota reset happened in
+            # the gap. The pre-reset points belong to an exhausted window, so
+            # restart the stretched chart at the current value instead of
+            # anchoring its left edge on the stale pre-reset reading.
+            $anchorAtUtc = (
+                [DateTimeOffset]$previousSample.ObservedAtUtc
+            ).ToUniversalTime()
+            if ($anchorAtUtc -lt $cutoff) { $anchorAtUtc = $cutoff }
+            $anchorPoint = [pscustomobject]@{
+                Version = 3
+                ProviderId = $CurrentSample.ProviderId
+                ObservedAtUtc = $anchorAtUtc
+                MetricType = $CurrentSample.MetricType
+                RemainingValue = [double]$CurrentSample.RemainingValue
+                Unit = $CurrentSample.Unit
+                ResetAtUtc = ''
+            }
+            $series = @($anchorPoint) + @($series[-1])
+            $sampleCount = 1
         }
         $axisStartUtc = if ($series.Count -gt 0) {
             [DateTimeOffset]$series[0].ObservedAtUtc
@@ -1789,19 +1837,24 @@ function Select-UsageHistoryAnalysisSamples {
             $_.ObservedAtUtc -le $futureLimit
         } | Sort-Object ObservedAtUtc
     )
-    if ($matching.Count -le 720) { return $matching }
+    if ($matching.Count -le 2880) { return $matching }
 
     $selected = New-Object Collections.Generic.List[object]
     $previous = $null
     $bucketFirst = $null
     $bucketLast = $null
     $bucketKey = [long]::MinValue
+    $recentCutoffTicks = $Now.ToUniversalTime().AddHours(-26).Ticks
+    $ticksPerRecentBucket = [TimeSpan]::FromMinutes(5).Ticks
+    $ticksPerOlderBucket = [TimeSpan]::FromMinutes(30).Ticks
     foreach ($sample in $matching) {
         $observedAt = ([DateTimeOffset]$sample.ObservedAtUtc).ToUniversalTime()
-        $sampleBucket = [long][Math]::Floor(
-            $observedAt.UtcDateTime.Ticks /
-                [TimeSpan]::FromHours(1).Ticks
-        )
+        $ticksPerBucket = if ($observedAt.Ticks -ge $recentCutoffTicks) {
+            $ticksPerRecentBucket
+        } else {
+            $ticksPerOlderBucket
+        }
+        $sampleBucket = [long][Math]::Floor($observedAt.UtcDateTime.Ticks / $ticksPerBucket)
         if ($sampleBucket -ne $bucketKey) {
             if ($bucketFirst) { [void]$selected.Add($bucketFirst) }
             if (
@@ -1977,6 +2030,14 @@ function Update-UsageHistory {
         -Snapshot $Snapshot `
         -ObservedAt $ObservedAt `
         -SkipPersistence:$SkipPersistence
+    if (
+        -not $SkipPersistence -and
+        (Get-Command Update-SpendLedger -ErrorAction SilentlyContinue)
+    ) {
+        [void](Update-SpendLedger `
+            -Samples @($record.CurrentSamples) `
+            -ObservedAt $ObservedAt)
+    }
     return Measure-UsageInsights `
         -Samples $record.Samples `
         -CurrentSample $record.CurrentSample `

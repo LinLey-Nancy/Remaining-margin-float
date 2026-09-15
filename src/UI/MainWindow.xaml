@@ -502,24 +502,26 @@
                                     </Grid.ColumnDefinitions>
 
                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                        <TextBlock x:Name="MetricOneTitle" Text="已用额度" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="MetricOneTitle" Text="今日花费" Style="{StaticResource MetricTitleText}"/>
                                         <TextBlock x:Name="PrimaryMetricValue"
                                                    Text="--"
                                                    Style="{StaticResource MetricValueText}"
                                                    Foreground="{DynamicResource StatusStrong}"/>
                                         <TextBlock x:Name="PrimaryMetricHint"
-                                                   Text="剩余 --"
+                                                   Text="等待余额采样"
                                                    Style="{StaticResource MetricHintText}"
-                                                   TextTrimming="CharacterEllipsis"/>
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                        <TextBlock x:Name="MetricTwoTitle" Text="今日 TOKEN" Style="{StaticResource MetricTitleText}"/>
+                                        <TextBlock x:Name="MetricTwoTitle" Text="本月花费" Style="{StaticResource MetricTitleText}"/>
                                         <TextBlock x:Name="TodayTokens" Text="--" Style="{StaticResource MetricValueText}"/>
                                         <TextBlock x:Name="MetricTwoHint"
-                                                   Text="本机任务累计"
+                                                   Text="等待余额采样"
                                                    Style="{StaticResource MetricHintText}"
-                                                   TextTrimming="CharacterEllipsis"/>
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                                     </StackPanel>
                                 </Grid>
 

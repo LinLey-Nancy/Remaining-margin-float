@@ -49,6 +49,35 @@
             }
         }
         $script:UsageHistoryCache = $history.ToArray()
+
+        # Screenshots must not show the empty placeholder, so the spend ledger
+        # gets a fixed today/this-month pair as well.
+        $captureLocalNow = [DateTimeOffset]::Now
+        $captureToday = $captureLocalNow.ToString(
+            'yyyy-MM-dd',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $captureMonthStart = $captureLocalNow.ToString(
+            'yyyy-MM-01',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $captureLedgerDays = New-Object Collections.Generic.List[object]
+        if ($captureMonthStart -ne $captureToday) {
+            $captureMonthDay = New-SpendLedgerDay -Date $captureMonthStart
+            $captureMonthDay.Spent = 1.78
+            $captureLedgerDays.Add($captureMonthDay)
+        }
+        $captureTodayDay = New-SpendLedgerDay -Date $captureToday
+        $captureTodayDay.Spent = 0.58
+        $captureLedgerDays.Add($captureTodayDay)
+        $captureLedgerProvider = New-SpendLedgerProvider `
+            -ProviderId 'DeepSeek' `
+            -Unit 'CNY'
+        $captureLedgerProvider.Days = $captureLedgerDays.ToArray()
+        $captureLedger = Get-EmptySpendLedger
+        $captureLedger.Providers = @($captureLedgerProvider)
+        $script:SpendLedgerCache = $captureLedger
+        $script:SpendLedgerLoaded = $true
     }
 
     $captureRoot = [IO.Path]::GetFullPath($CaptureDirectory)
@@ -417,13 +446,46 @@ if ($CheckTransitions) {
         }
     )
     $deepSeekCheckSnapshot = Get-DeepSeekDemoSnapshot
+    # Deterministic spend ledger stub: today's and this month's spend are read
+    # from it, so the two cards render known values. The baseline mirrors the
+    # demo snapshot balance, which keeps any ledger update a no-op.
+    $ledgerStubNow = [DateTimeOffset]::Now
+    $ledgerStubToday = $ledgerStubNow.ToString(
+        'yyyy-MM-dd',
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $ledgerStubMonthStart = $ledgerStubNow.ToString(
+        'yyyy-MM-01',
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $ledgerStubDays = New-Object Collections.Generic.List[object]
+    if ($ledgerStubMonthStart -ne $ledgerStubToday) {
+        $ledgerStubMonthDay = New-SpendLedgerDay -Date $ledgerStubMonthStart
+        $ledgerStubMonthDay.Spent = 1.78
+        $ledgerStubDays.Add($ledgerStubMonthDay)
+    }
+    $ledgerStubTodayDay = New-SpendLedgerDay -Date $ledgerStubToday
+    $ledgerStubTodayDay.Spent = 0.58
+    $ledgerStubDays.Add($ledgerStubTodayDay)
+    $ledgerStubProvider = New-SpendLedgerProvider `
+        -ProviderId 'DeepSeek' `
+        -Unit 'CNY'
+    $ledgerStubProvider.Days = $ledgerStubDays.ToArray()
+    $ledgerStubProvider.LastBalance = [double]$deepSeekCheckSnapshot.TotalBalance
+    $ledgerStub = Get-EmptySpendLedger
+    $ledgerStub.Providers = @($ledgerStubProvider)
+    $script:SpendLedgerCache = $ledgerStub
+    $script:SpendLedgerLoaded = $true
+
     Update-UsageView -Snapshot $deepSeekCheckSnapshot
     $deepSeekCompactValue = $RemainingValue.Text
     $deepSeekCompactSuffix = $CompactSuffix.Text
     $deepSeekLabel = $WindowLabel.Text
-    $deepSeekBalanceText = $PrimaryMetricValue.Text
+    $deepSeekTodaySpendText = $PrimaryMetricValue.Text
+    $deepSeekTodaySpendHint = $PrimaryMetricHint.Text
     $deepSeekMetricTitle = $MetricOneTitle.Text
-    $deepSeekMonthlyCostValue = $TodayTokens.Text
+    $deepSeekMonthSpendText = $TodayTokens.Text
+    $deepSeekMonthSpendHint = $MetricTwoHint.Text
     $deepSeekTodayTokenValue = $LastTurnTokens.Text
     $deepSeekMonthlyTokenValue = $CacheHit.Text
     $deepSeekProgressRemaining = $RemainingProgressColumn.Width.Value
@@ -566,8 +628,8 @@ if ($CheckTransitions) {
     }
 
     $singlePointSegmentSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 35; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddMinutes(-20); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddMinutes(-2); MetricType = 'Percent'; RemainingValue = 35; Unit = '%'; ResetAtUtc = '' },
         [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' }
     )
     $singlePointSegmentInsights = Measure-UsageInsights `
@@ -590,6 +652,36 @@ if ($CheckTransitions) {
     )
     if (-not $singlePointSegmentRendered) {
         throw 'A reset segment with exactly one sample was not rendered.'
+    }
+
+    $gapResetUiSamples = @(
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 30; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 95; Unit = '%'; ResetAtUtc = '' }
+    )
+    $gapResetUiInsights = Measure-UsageInsights `
+        -Samples $gapResetUiSamples `
+        -CurrentSample $gapResetUiSamples[-1] `
+        -PreviousSample $gapResetUiSamples[-2] `
+        -Now $diagnosticNow
+    Update-UsageInsightView -Insights $gapResetUiInsights
+    $gapResetTrendRestartedAtCurrent = (
+        $Trend5HLine.Points.Count -gt 2 -and
+        @($Trend5HCanvas.Children | Where-Object {
+            [string]$_.Tag -eq 'UsageTrendDynamicLine'
+        }).Count -eq 0 -and
+        [Math]::Abs([double]$Trend5HLine.Points[0].X) -lt 0.1 -and
+        [Math]::Abs(
+            [double]$Trend5HLine.Points[$Trend5HLine.Points.Count - 1].X -
+            $timeAxisWidth
+        ) -lt 0.5 -and
+        [Math]::Abs(
+            [double]$Trend5HLine.Points[0].Y -
+            [double]$Trend5HLine.Points[$Trend5HLine.Points.Count - 1].Y
+        ) -lt 0.001 -and
+        $Trend5HMetaText.Text -match '^1 .*95.*95'
+    )
+    if (-not $gapResetTrendRestartedAtCurrent) {
+        throw 'Gap reset trend did not restart at the current value.'
     }
 
     $staleAnchorSamples = @(
@@ -679,6 +771,8 @@ if ($CheckTransitions) {
     Set-UsageStatusPalette -Percent 0 -Available $false
 
     $script:RapidDropAlertsEnabled = $true
+    $script:RapidDropWindowMinutes = 30
+    $script:CodexRapidDropPercent = 10.0
     $script:UsageSyncSession.RapidSamples = @()
     $script:UsageSyncSession.RapidChannels = @{}
     $startupLocalSnapshot = $deepSeekCheckSnapshot.PSObject.Copy()
@@ -1493,9 +1587,11 @@ if ($CheckTransitions) {
         DeepSeekCompactValue = $deepSeekCompactValue
         DeepSeekCompactSuffix = $deepSeekCompactSuffix
         DeepSeekLabel = $deepSeekLabel
-        DeepSeekBalanceText = $deepSeekBalanceText
+        DeepSeekTodaySpendText = $deepSeekTodaySpendText
+        DeepSeekMonthSpendText = $deepSeekMonthSpendText
+        DeepSeekTodaySpendHint = $deepSeekTodaySpendHint
+        DeepSeekMonthSpendHint = $deepSeekMonthSpendHint
         DeepSeekMetricTitle = $deepSeekMetricTitle
-        DeepSeekMonthlyCostValue = $deepSeekMonthlyCostValue
         DeepSeekTodayTokenValue = $deepSeekTodayTokenValue
         DeepSeekMonthlyTokenValue = $deepSeekMonthlyTokenValue
         DeepSeekProgressRemaining = $deepSeekProgressRemaining

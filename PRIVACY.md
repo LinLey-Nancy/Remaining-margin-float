@@ -20,6 +20,9 @@ Remaining Margin Float 是本地运行的开源桌面工具，不包含广告、
 - `%LOCALAPPDATA%\RemainingMarginFloat\usage-history.jsonl`：保存最近 8 个
   本地日历日的脱敏趋势样本，只包含数据源、UTC 采样时间、本地日期、时区与
   UTC 偏移、百分比或余额、币种和可选重置时间。
+- `%LOCALAPPDATA%\RemainingMarginFloat\spend-ledger.json`：保存账户余额的真实
+  变化推导出的每日花费与充值金额，只保留当前月和上一个月。内容仅包含金额、
+  本地日期、采样计数和观测间隔，不含账号名称、邮箱、凭据或调用详情。
 - `%LOCALAPPDATA%\RemainingMarginFloat\state-history`：保存最近 168 小时的
   完整页面状态和独立采集时间节点，用于重启及版本更新后继续显示。相同内容按
   SHA-256 去重，快照正文使用 Windows DPAPI `CurrentUser` 加密；索引只保存

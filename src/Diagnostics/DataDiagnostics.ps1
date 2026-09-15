@@ -384,6 +384,78 @@ if ($CheckProviderContracts) {
     $kimiWireLatest = $kimiWireEvents |
         Sort-Object Timestamp -Descending |
         Select-Object -First 1
+    $kimiUsagesOnlyPayload = [pscustomobject]@{
+        usage = [pscustomobject]@{
+            limit = '100'
+            used = '2'
+            remaining = '98'
+            resetTime = '2030-01-08T12:00:00.000000Z'
+        }
+        limits = @()
+        usages = [pscustomobject]@{
+            limit_5h = [pscustomobject]@{
+                used_ratio = 0.25
+                reset_time = '2030-01-01T17:00:00.000000Z'
+            }
+        }
+    }
+    $kimiUsagesFallbackUsage = ConvertTo-KimiOfficialUsage `
+        -Payload $kimiUsagesOnlyPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $kimiUsagesFallbackSnapshot = Get-KimiUsageSnapshot `
+        -OfficialUsageOverride $kimiUsagesFallbackUsage `
+        -SkipOfficialRequest
+    $kimiUsagesWeeklyOnlyPayload = [pscustomobject]@{
+        usages = [pscustomobject]@{
+            limit_7d = [pscustomobject]@{
+                used_ratio = 0.4
+                reset_time = '2030-01-08T12:00:00.000000Z'
+            }
+        }
+    }
+    $kimiUsagesWeeklyFallbackUsage = ConvertTo-KimiOfficialUsage `
+        -Payload $kimiUsagesWeeklyOnlyPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $kimiLimitsPrecedencePayload = [pscustomobject]@{
+        limits = @(
+            [pscustomobject]@{
+                window = [pscustomobject]@{
+                    duration = 300
+                    timeUnit = 'TIME_UNIT_MINUTE'
+                }
+                detail = [pscustomobject]@{
+                    limit = '100'
+                    used = '10'
+                    remaining = '90'
+                    resetTime = '2030-01-01T17:00:00.000000Z'
+                }
+            }
+        )
+        usages = [pscustomobject]@{
+            limit_5h = [pscustomobject]@{
+                used_ratio = 0.5
+                reset_time = '2030-01-01T16:00:00.000000Z'
+            }
+        }
+    }
+    $kimiLimitsPrecedenceUsage = ConvertTo-KimiOfficialUsage `
+        -Payload $kimiLimitsPrecedencePayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    $kimiMalformedUsagesPayload = [pscustomobject]@{
+        usages = [pscustomobject]@{
+            limit_5h = [pscustomobject]@{
+                used_ratio = 'NaN'
+                reset_time = '2030-01-01T17:00:00.000000Z'
+            }
+            limit_7d = [pscustomobject]@{
+                used_ratio = 0.4
+                reset_time = 'not-a-time'
+            }
+        }
+    }
+    $kimiMalformedUsagesUsage = ConvertTo-KimiOfficialUsage `
+        -Payload $kimiMalformedUsagesPayload `
+        -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
     $currentOfficialUsage = Get-CodexCurrentUsageOverride `
         -OfficialUsage $codexUsage `
         -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
@@ -522,6 +594,37 @@ if ($CheckProviderContracts) {
             $kimiCurrentUsage.FiveHourWindow.UsedPercent -eq 10 -and
             $kimiCurrentUsage.WeeklyWindow.UsedPercent -eq 2 -and
             [bool]$kimiCurrentUsage.IsCached
+        )
+        KimiUsagesSummaryFallback = (
+            $null -ne $kimiUsagesFallbackUsage -and
+            [Math]::Abs(
+                [double]$kimiUsagesFallbackUsage.FiveHourWindow.UsedPercent - 25
+            ) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$kimiUsagesFallbackUsage.WeeklyWindow.UsedPercent - 2
+            ) -lt 0.0001 -and
+            $kimiUsagesFallbackSnapshot.PrimaryQuotaPeriod -eq 'FiveHour' -and
+            $kimiUsagesFallbackSnapshot.FiveHourRemainingPercent -eq 75 -and
+            [bool]$kimiUsagesFallbackSnapshot.FiveHourAvailable
+        )
+        KimiUsagesWeeklyFallback = (
+            $null -ne $kimiUsagesWeeklyFallbackUsage -and
+            $null -eq $kimiUsagesWeeklyFallbackUsage.FiveHourWindow -and
+            [Math]::Abs(
+                [double]$kimiUsagesWeeklyFallbackUsage.WeeklyWindow.UsedPercent - 40
+            ) -lt 0.0001
+        )
+        KimiLimitsPreferredOverUsagesSummary = (
+            $null -ne $kimiLimitsPrecedenceUsage -and
+            [Math]::Abs(
+                [double]$kimiLimitsPrecedenceUsage.FiveHourWindow.UsedPercent - 10
+            ) -lt 0.0001 -and
+            $kimiLimitsPrecedenceUsage.FiveHourWindow.ResetsAt -eq (
+                [DateTimeOffset]'2030-01-01T17:00:00Z'
+            ).ToUnixTimeSeconds()
+        )
+        KimiMalformedUsagesSummaryRejected = (
+            $null -eq $kimiMalformedUsagesUsage
         )
         KimiWireEventCount = $kimiWireEvents.Count
         KimiWireLatestTokens = (
@@ -1597,6 +1700,75 @@ if ($CheckUsageHistory) {
         -Hours 24 `
         -Now $now
 
+    $gapResetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 3 -Value 30),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 95)
+    )
+    $gapResetTrend = Get-UsageTrend `
+        -Samples $gapResetSamples `
+        -CurrentSample $gapResetSamples[-1] `
+        -Hours 5 `
+        -StretchToFit `
+        -Now $now
+    $gapNoResetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 3 -Value 30),
+        (New-HistoryCheckSample -HoursAgo 2 -Value 28),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 27)
+    )
+    $gapNoResetTrend = Get-UsageTrend `
+        -Samples $gapNoResetSamples `
+        -CurrentSample $gapNoResetSamples[-1] `
+        -Hours 5 `
+        -StretchToFit `
+        -Now $now
+    $recentResetSamples = @(
+        (New-HistoryCheckSample -HoursAgo 0.0833 -Value 30),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 95)
+    )
+    $recentResetTrend = Get-UsageTrend `
+        -Samples $recentResetSamples `
+        -CurrentSample $recentResetSamples[-1] `
+        -Hours 5 `
+        -StretchToFit `
+        -Now $now
+
+    $gapResetRestartsAtCurrentValue = (
+        [bool]$gapResetTrend.ComparisonAvailable -and
+        $gapResetTrend.Samples.Count -eq 2 -and
+        $gapResetTrend.Segments.Count -eq 1 -and
+        $gapResetTrend.SampleCount -eq 1 -and
+        $gapResetTrend.StartValue -eq 95 -and
+        $gapResetTrend.EndValue -eq 95 -and
+        $gapResetTrend.Change -eq 0 -and
+        [Math]::Abs((
+            $now.AddHours(-3).ToUniversalTime() -
+            ([DateTimeOffset]$gapResetTrend.AxisStartUtc).ToUniversalTime()
+        ).TotalMinutes) -lt 1
+    )
+    $gapWithoutResetKeepsHistory = (
+        [bool]$gapNoResetTrend.ComparisonAvailable -and
+        $gapNoResetTrend.Samples.Count -eq 3 -and
+        $gapNoResetTrend.SampleCount -eq 3 -and
+        $gapNoResetTrend.StartValue -eq 30 -and
+        $gapNoResetTrend.EndValue -eq 27
+    )
+    $recentResetKeepsSplitSegments = (
+        -not [bool]$recentResetTrend.ComparisonAvailable -and
+        $recentResetTrend.Samples.Count -eq 2 -and
+        $recentResetTrend.Segments.Count -eq 2 -and
+        $recentResetTrend.StartValue -eq 95 -and
+        $recentResetTrend.EndValue -eq 95
+    )
+    if (-not $gapResetRestartsAtCurrentValue) {
+        throw 'Stretched trend did not restart at the current value after a gap reset.'
+    }
+    if (-not $gapWithoutResetKeepsHistory) {
+        throw 'Stretched trend dropped in-window history without a gap reset.'
+    }
+    if (-not $recentResetKeepsSplitSegments) {
+        throw 'In-session reset no longer splits the stretched trend segments.'
+    }
+
 
     $lowSnapshot = [pscustomobject]@{
         Available = $true
@@ -2092,7 +2264,8 @@ if ($CheckUsageHistory) {
         $largeHistoryAnalysisSampleCount = $largeAnalysisHistory.Count
         $largeHistoryInsightsFast = (
             $largeHistoryInsights.Trend7Days.SampleCount -gt 0 -and
-            $largeHistoryAnalysisSampleCount -le 240 -and
+            $largeHistoryAnalysisSampleCount -ge 400 -and
+            $largeHistoryAnalysisSampleCount -le 800 -and
             $largeHistoryInsightsMs -lt 1500
         )
 
@@ -2182,6 +2355,187 @@ if ($CheckUsageHistory) {
         throw 'Manual refresh sample was not appended.'
     }
 
+    # Spend ledger: money consumed is derived from real balance movements, so the
+    # attribution rules below are asserted with a fixed UTC+8 time zone to stay
+    # independent of the machine's own zone.
+    $spendLedgerTimeZone = [TimeZoneInfo]::CreateCustomTimeZone(
+        'RMF Diagnostic Ledger UTC+08',
+        [TimeSpan]::FromHours(8),
+        'RMF Diagnostic Ledger UTC+08',
+        'RMF Diagnostic Ledger UTC+08'
+    )
+    function New-SpendLedgerCheckSample {
+        param(
+            [double]$MinutesAgo,
+            [double]$Balance,
+            [string]$Unit = 'CNY'
+        )
+
+        return [pscustomobject]@{
+            ProviderId = 'DeepSeek'
+            ObservedAtUtc = $now.AddMinutes(-$MinutesAgo)
+            MetricType = 'Balance'
+            RemainingValue = $Balance
+            Unit = $Unit
+        }
+    }
+    function Add-SpendLedgerCheckObservation {
+        param($Ledger, [double]$MinutesAgo, [double]$Balance)
+
+        return Add-SpendLedgerObservation `
+            -Ledger $Ledger `
+            -ProviderId 'DeepSeek' `
+            -Unit 'CNY' `
+            -Balance $Balance `
+            -ObservedAt $now.AddMinutes(-$MinutesAgo) `
+            -TimeZone $spendLedgerTimeZone
+    }
+
+    $ledgerSpendLedger = Get-EmptySpendLedger
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerSpendLedger -MinutesAgo 30 -Balance 100.0)
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerSpendLedger -MinutesAgo 20 -Balance 98.5)
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerSpendLedger -MinutesAgo 10 -Balance 97.0)
+    # A top-up raises the baseline but must not cancel what was already spent.
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerSpendLedger -MinutesAgo 5 -Balance 197.0)
+    $spendSummaryAfterTopUp = Get-SpendSummary `
+        -Ledger $ledgerSpendLedger `
+        -ProviderId 'DeepSeek' `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+
+    # A long outage inside one local day is still that day's spend.
+    $ledgerSameDayGap = Get-EmptySpendLedger
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerSameDayGap -MinutesAgo 360 -Balance 100.0)
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerSameDayGap -MinutesAgo 60 -Balance 90.0)
+    $spendSummarySameDayGap = Get-SpendSummary `
+        -Ledger $ledgerSameDayGap `
+        -ProviderId 'DeepSeek' `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+
+    # An outage that crossed a local midnight cannot be pinned to a day. With the
+    # zone fixed at UTC+8 the first sample below lands on the previous local day,
+    # and because that day is in the previous month the drop belongs to no month
+    # either.
+    $ledgerCrossMonthGap = Get-EmptySpendLedger
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerCrossMonthGap -MinutesAgo 1500 -Balance 100.0)
+    [void](Add-SpendLedgerCheckObservation -Ledger $ledgerCrossMonthGap -MinutesAgo 60 -Balance 80.0)
+    $spendSummaryCrossMonthGap = Get-SpendSummary `
+        -Ledger $ledgerCrossMonthGap `
+        -ProviderId 'DeepSeek' `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+
+    # The same outage inside one month still leaves the month figure complete: it
+    # is that month's money even though no single day can claim it.
+    $ledgerSameMonthGap = Get-EmptySpendLedger
+    [void](Add-SpendLedgerObservation `
+        -Ledger $ledgerSameMonthGap `
+        -ProviderId 'DeepSeek' `
+        -Unit 'CNY' `
+        -Balance 200.0 `
+        -ObservedAt ([DateTimeOffset]'2030-01-04T04:00:00Z') `
+        -TimeZone $spendLedgerTimeZone)
+    [void](Add-SpendLedgerObservation `
+        -Ledger $ledgerSameMonthGap `
+        -ProviderId 'DeepSeek' `
+        -Unit 'CNY' `
+        -Balance 170.0 `
+        -ObservedAt ([DateTimeOffset]'2030-01-05T04:00:00Z') `
+        -TimeZone $spendLedgerTimeZone)
+    $spendSummarySameMonthGap = Get-SpendSummary `
+        -Ledger $ledgerSameMonthGap `
+        -ProviderId 'DeepSeek' `
+        -Now ([DateTimeOffset]'2030-01-05T12:00:00Z') `
+        -TimeZone $spendLedgerTimeZone
+
+    $ledgerRetention = Get-EmptySpendLedger
+    [void](Add-SpendLedgerObservation `
+        -Ledger $ledgerRetention `
+        -ProviderId 'DeepSeek' `
+        -Unit 'CNY' `
+        -Balance 10.0 `
+        -ObservedAt $now.AddDays(-30) `
+        -LocalDate '2029-11-20' `
+        -TimeZone $spendLedgerTimeZone)
+    [void](Add-SpendLedgerObservation `
+        -Ledger $ledgerRetention `
+        -ProviderId 'DeepSeek' `
+        -Unit 'CNY' `
+        -Balance 10.0 `
+        -ObservedAt $now.AddDays(-10) `
+        -LocalDate '2029-12-20' `
+        -TimeZone $spendLedgerTimeZone)
+    [void](Add-SpendLedgerObservation `
+        -Ledger $ledgerRetention `
+        -ProviderId 'DeepSeek' `
+        -Unit 'CNY' `
+        -Balance 10.0 `
+        -ObservedAt $now.AddDays(4) `
+        -LocalDate '2030-01-05' `
+        -TimeZone $spendLedgerTimeZone)
+    Prune-SpendLedger `
+        -Ledger $ledgerRetention `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+    $ledgerRetentionDates = @(
+        $ledgerRetention.Providers[0].Days | ForEach-Object { [string]$_.Date }
+    )
+
+    $seedHistorySamples = @(
+        (New-SpendLedgerCheckSample -MinutesAgo 360 -Balance 120.0),
+        (New-SpendLedgerCheckSample -MinutesAgo 30 -Balance 118.0)
+    )
+    $ledgerSeeded = Get-EmptySpendLedger
+    $seedFirstCount = Initialize-SpendLedgerFromHistory `
+        -Ledger $ledgerSeeded `
+        -TimeZone $spendLedgerTimeZone `
+        -HistorySamples $seedHistorySamples
+    $seedSummary = Get-SpendSummary `
+        -Ledger $ledgerSeeded `
+        -ProviderId 'DeepSeek' `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+    $seedSecondCount = Initialize-SpendLedgerFromHistory `
+        -Ledger $ledgerSeeded `
+        -TimeZone $spendLedgerTimeZone `
+        -HistorySamples $seedHistorySamples
+    $seedResummary = Get-SpendSummary `
+        -Ledger $ledgerSeeded `
+        -ProviderId 'DeepSeek' `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+
+    $spendLedgerTestPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.SpendLedgerDiagnostic.{0}.json' -f $PID
+    )
+    $corruptSpendLedgerPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.SpendLedgerCorruptDiagnostic.{0}.json' -f $PID
+    )
+    $spendLedgerSaved = Save-SpendLedger `
+        -Ledger $ledgerSpendLedger `
+        -Path $spendLedgerTestPath `
+        -AllowDiagnosticWrite
+    $reloadedSpendLedger = Read-SpendLedger `
+        -Path $spendLedgerTestPath `
+        -BypassCache
+    $reloadedSpendSummary = Get-SpendSummary `
+        -Ledger $reloadedSpendLedger `
+        -ProviderId 'DeepSeek' `
+        -Now $now `
+        -TimeZone $spendLedgerTimeZone
+    $reloadedSpendDocument = Get-Content `
+        -LiteralPath $spendLedgerTestPath `
+        -Raw `
+        -Encoding UTF8
+    Set-Content `
+        -LiteralPath $corruptSpendLedgerPath `
+        -Value '{ not a ledger' `
+        -Encoding UTF8
+    $corruptSpendLedger = Read-SpendLedger `
+        -Path $corruptSpendLedgerPath `
+        -BypassCache
+
     [pscustomobject]@{
         Trend5HChange = $depletingInsights.Trend5Hours.Change
         Trend7Change = $depletingInsights.Trend7Days.Change
@@ -2200,6 +2554,9 @@ if ($CheckUsageHistory) {
         RollingWindowCarriesBoundary = $rollingWindowCarriesBoundary
         MultipleResetUsesLatestBaseline = $multipleResetUsesLatestBaseline
         SubThresholdNoiseIgnored = $subThresholdNoiseIgnored
+        GapResetRestartsAtCurrentValue = $gapResetRestartsAtCurrentValue
+        GapWithoutResetKeepsHistory = $gapWithoutResetKeepsHistory
+        RecentResetKeepsSplitSegments = $recentResetKeepsSplitSegments
         MinuteSamplesRetained = $minuteSamplesRetained
         ManualRefreshSampleRetained = $manualRefreshSampleRetained
         LargeHistoryReadFast = $largeHistoryReadFast
@@ -2309,6 +2666,79 @@ if ($CheckUsageHistory) {
         OversizedImportRejected = $oversizedImportRejected
         FutureSampleExcluded = $futureSampleExcluded
         DiagnosticRedaction = $diagnosticRedaction
+        LedgerDropAttributed = (
+            [bool]$spendSummaryAfterTopUp.HasToday -and
+            [Math]::Abs(
+                [double]$spendSummaryAfterTopUp.TodaySpent - 3.0
+            ) -lt 0.0001 -and
+            [bool]$spendSummaryAfterTopUp.TodayComplete
+        )
+        LedgerTopUpDoesNotReduceSpend = (
+            [Math]::Abs(
+                [double]$spendSummaryAfterTopUp.MonthCredit - 100.0
+            ) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$spendSummaryAfterTopUp.TodaySpent - 3.0
+            ) -lt 0.0001
+        )
+        LedgerSameDayGapAttributed = (
+            [Math]::Abs(
+                [double]$spendSummarySameDayGap.TodaySpent - 10.0
+            ) -lt 0.0001 -and
+            [bool]$spendSummarySameDayGap.TodayComplete
+        )
+        LedgerCrossDayGapExcludedFromDay = (
+            [Math]::Abs(
+                [double]$spendSummarySameMonthGap.TodaySpent
+            ) -lt 0.0001 -and
+            -not [bool]$spendSummarySameMonthGap.TodayComplete
+        )
+        LedgerCrossDayGapCountsInMonth = (
+            [Math]::Abs(
+                [double]$spendSummarySameMonthGap.MonthSpent - 30.0
+            ) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$spendSummarySameMonthGap.MonthGapDrop - 30.0
+            ) -lt 0.0001 -and
+            [bool]$spendSummarySameMonthGap.MonthComplete
+        )
+        LedgerCrossMonthGapUnattributed = (
+            [Math]::Abs(
+                [double]$spendSummaryCrossMonthGap.TodaySpent
+            ) -lt 0.0001 -and
+            -not [bool]$spendSummaryCrossMonthGap.TodayComplete -and
+            [Math]::Abs(
+                [double]$spendSummaryCrossMonthGap.MonthSpent
+            ) -lt 0.0001 -and
+            -not [bool]$spendSummaryCrossMonthGap.MonthComplete -and
+            [int]$spendSummaryCrossMonthGap.GapDropCount -eq 1
+        )
+        LedgerPruneKeepsTwoMonths = (
+            $ledgerRetentionDates.Count -eq 2 -and
+            $ledgerRetentionDates -contains '2029-12-20' -and
+            $ledgerRetentionDates -contains '2030-01-05'
+        )
+        LedgerRoundTrip = (
+            [bool]$spendLedgerSaved -and
+            [Math]::Abs(
+                [double]$reloadedSpendSummary.MonthSpent - 3.0
+            ) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$reloadedSpendSummary.MonthCredit - 100.0
+            ) -lt 0.0001 -and
+            $reloadedSpendDocument -notmatch '(?i)(ApiKey|AccessToken|AccountEmail)'
+        )
+        LedgerCorruptFileFallsBackEmpty = (
+            @($corruptSpendLedger.Providers).Count -eq 0
+        )
+        LedgerSeedIsOneShot = (
+            $seedFirstCount -eq 2 -and
+            $seedSecondCount -eq 0 -and
+            [Math]::Abs([double]$seedSummary.TodaySpent - 2.0) -lt 0.0001 -and
+            [Math]::Abs(
+                [double]$seedResummary.TodaySpent - 2.0
+            ) -lt 0.0001
+        )
         HistorySampleContainsNoAccountData = (
             $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountName' -and
             $depletingSamples[-1].PSObject.Properties.Name -notcontains 'AccountEmail' -and

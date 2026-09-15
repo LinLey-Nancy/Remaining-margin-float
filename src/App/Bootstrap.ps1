@@ -402,7 +402,8 @@ public static class UsageHistoryLogScanner
     }
 
     public static UsageHistoryRecordData[] SelectForAnalysis(
-        UsageHistoryRecordData[] samples
+        UsageHistoryRecordData[] samples,
+        DateTimeOffset now
     ) {
         if (samples == null || samples.Length <= 720) {
             return samples ?? new UsageHistoryRecordData[0];
@@ -427,7 +428,9 @@ public static class UsageHistoryLogScanner
 
         HashSet<UsageHistoryRecordData> selected =
             new HashSet<UsageHistoryRecordData>();
-        long ticksPerBucket = TimeSpan.FromHours(1).Ticks;
+        long recentCutoffTicks = now.ToUniversalTime().AddHours(-26).Ticks;
+        long ticksPerRecentBucket = TimeSpan.FromMinutes(5).Ticks;
+        long ticksPerOlderBucket = TimeSpan.FromMinutes(30).Ticks;
         foreach (List<UsageHistoryRecordData> group in series.Values)
         {
             UsageHistoryRecordData previous = null;
@@ -435,8 +438,11 @@ public static class UsageHistoryLogScanner
             long bucket = Int64.MinValue;
             foreach (UsageHistoryRecordData sample in group)
             {
-                long sampleBucket = sample.ObservedAtUtc.UtcDateTime.Ticks /
-                    ticksPerBucket;
+                long sampleTicks = sample.ObservedAtUtc.UtcDateTime.Ticks;
+                long ticksPerBucket = sampleTicks >= recentCutoffTicks
+                    ? ticksPerRecentBucket
+                    : ticksPerOlderBucket;
+                long sampleBucket = sampleTicks / ticksPerBucket;
                 if (sampleBucket != bucket) {
                     if (bucketLast != null) {
                         selected.Add(bucketLast);
@@ -469,7 +475,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.10.2'
+$script:AppVersion = '1.11.0'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -543,6 +549,9 @@ $script:UpdateContext = [pscustomobject]@{
 $script:LastDeepSeekSnapshot = $null
 $script:LastKimiSnapshot = $null
 $script:UsageHistoryCache = $null
+$script:SpendLedgerCache = $null
+$script:SpendLedgerLoaded = $false
+$script:LastSpendLedgerError = ''
 $global:RmfUsageHistoryRepairProcess = $null
 $global:RmfUsageHistoryRepairStarted = $false
 $script:UsageStateMaintenanceDueByRoot = @{}

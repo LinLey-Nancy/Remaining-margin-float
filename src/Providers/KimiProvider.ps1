@@ -255,6 +255,65 @@ function ConvertTo-KimiQuotaWindow {
     }
 }
 
+function ConvertTo-KimiUsagesQuotaWindow {
+    param(
+        $Payload,
+        [string]$Name,
+        [int]$WindowMinutes
+    )
+
+    $usages = Get-ObjectPropertyValue -Object $Payload -Name 'usages'
+    $entry = Get-ObjectPropertyValue -Object $usages -Name $Name
+    if (-not $entry -or $WindowMinutes -le 0) { return $null }
+
+    $ratioValue = Get-ObjectPropertyValue -Object $entry -Name 'used_ratio'
+    $resetText = [string](Get-ObjectPropertyValue `
+        -Object $entry `
+        -Name 'reset_time' `
+        -Default '')
+    if ($null -eq $ratioValue -or [string]::IsNullOrWhiteSpace($resetText)) {
+        return $null
+    }
+
+    $usedRatio = 0.0
+    if ($ratioValue -is [string]) {
+        if (-not [double]::TryParse(
+            $ratioValue,
+            [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$usedRatio
+        )) {
+            return $null
+        }
+    }
+    else {
+        try { $usedRatio = [double]$ratioValue } catch { return $null }
+    }
+    $resetAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        $resetText,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$resetAt
+    )) {
+        return $null
+    }
+    if (
+        [double]::IsNaN($usedRatio) -or
+        [double]::IsInfinity($usedRatio) -or
+        $usedRatio -lt 0 -or
+        $resetAt -le [DateTimeOffset]::MinValue
+    ) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        UsedPercent = [Math]::Max(0.0, [Math]::Min(100.0, $usedRatio * 100))
+        WindowMinutes = $WindowMinutes
+        ResetsAt = $resetAt.ToUnixTimeSeconds()
+    }
+}
+
 function ConvertTo-KimiOfficialUsage {
     param(
         $Payload,
@@ -277,12 +336,27 @@ function ConvertTo-KimiOfficialUsage {
                 -WindowMinutes 300
         }
     }
+    if (-not $fiveHourWindow) {
+        # limits[] only appears while a five-hour window has active usage;
+        # the summary usages.limit_5h entry stays present across idle gaps
+        # and resets, so fall back to it before giving up on the window.
+        $fiveHourWindow = ConvertTo-KimiUsagesQuotaWindow `
+            -Payload $Payload `
+            -Name 'limit_5h' `
+            -WindowMinutes 300
+    }
 
     $weeklyWindow = $null
     $usageDetail = Get-ObjectPropertyValue -Object $Payload -Name 'usage'
     if ($usageDetail) {
         $weeklyWindow = ConvertTo-KimiQuotaWindow `
             -Detail $usageDetail `
+            -WindowMinutes 10080
+    }
+    if (-not $weeklyWindow) {
+        $weeklyWindow = ConvertTo-KimiUsagesQuotaWindow `
+            -Payload $Payload `
+            -Name 'limit_7d' `
             -WindowMinutes 10080
     }
     if (-not $fiveHourWindow -and -not $weeklyWindow) { return $null }

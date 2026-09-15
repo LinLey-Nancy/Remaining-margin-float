@@ -77,7 +77,10 @@ KimiProvider（`Providers\KimiProvider.ps1`）从 Kimi Code CLI 本地配置解�
 （Kimi Code CLI（OAuth 登录）/ Kimi Code CLI（config.toml）/ 手动配置）。
 官方配额接口为 GET `{base_url}/usages`（Bearer
 认证，默认 `https://api.kimi.com/coding/v1`），返回每周配额（已用百分比与
-重置时间）和 300 分钟的 5 小时滚动窗口。快照契约字段与 Codex 对齐：复用
+重置时间）和 300 分钟的 5 小时滚动窗口。`limits[]` 只在 5 小时窗口有活跃
+使用时返回；空闲或刚重置时须回退到摘要字段 `usages.limit_5h`（`used_ratio`
+与 `reset_time`），每周配额同理回退到 `usages.limit_7d`，避免主额度在窗口
+间隙退化为“未知”。快照契约字段与 Codex 对齐：复用
 `FiveHour*` / `Weekly*` 两组周期字段，5 小时窗口为主额度，每周为补充；本地
 Token 统计解析 `sessions\**\agents\main\wire.jsonl` 的 `usage.record` 记录
 （inputOther/output/inputCacheRead/inputCacheCreation），汇总今日 Token、
@@ -133,8 +136,26 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   过期后移除。读取最新对象失败时必须向前回退到最近的有效对象。
 - `usage-history.jsonl` 通过已编译的有界扫描器读取，在进入 PowerShell/UI 分析前完成
   格式校验、8 日保留窗口和去重，避免逐行 `ConvertFrom-Json` 阻塞主线程。
-  磁盘仍保留每个采样；UI 分析对长时间平坦区间使用每小时代表点，并额外保留所有
+  磁盘仍保留每个采样；UI 分析对长时间平坦区间使用每 5 分钟代表点，并额外保留所有
   值变化前后的边界点，确保重置、快速下降和趋势拐点不丢失。
+- 花费台账（`Core\SpendLedger.ps1`，`%LOCALAPPDATA%\RemainingMarginFloat\`
+  `spend-ledger.json`）保存从真实余额变化推导的每日花费，只保留当前月与上一个月；
+  7 天保留期的 `usage-history.jsonl` 不足以回答“本月花了多少”，月级统计只能来自
+  该台账。台账由 `Update-UsageHistory` 在写入趋势样本后喂入，且必须喂
+  `Add-UsageHistorySample` 返回的 `CurrentSamples`：不可用快照会把余额报成 0，
+  而完整样本列表是整段历史，两者都会算错。只有 `MetricType = 'Balance'` 的归一化
+  样本可以进入台账。
+- 归属规则：相邻两次观测间隔 ≤ 20 分钟，或间隔更长但落在同一本地日，下降全额计入
+  后一次观测的本地日期；间隔 > 20 分钟且跨本地日时，不猜测具体日期——同月内计入
+  当月 `GapDrop`（当日不计，卡片标注“含断档”），跨月则不计入任何月
+  （`UnattributedDrop`，月卡片标注“含断档”）。余额上升（充值、赠金）只抬高基线并
+  记入当日 `Credit`，不得冲减 `Spent`。
+- 台账读取必须纯内存：`Read-SpendLedger` 用 `$script:SpendLedgerCache` 缓存，
+  `Get-SpendSummary` 不读盘、不抛异常。`Update-UsageView` 每分钟执行，且
+  `-DisplayOnly` 恢复路径同样会走到卡片赋值区，任何一次读盘都会打在主线程上。
+  写入使用 `Write-UsageStateAtomicText` 加独立命名互斥体，余额未变化时跳过写盘；
+  台账损坏或超限时回退空台账并记入运行日志，不得阻断启动或刷新。
+  台账不含账号名称、邮箱与凭据字段，不进入“数据与诊断”导出。
 - 启动时可以从全量状态补录 `usage-history.jsonl` 缺失的归一化余量样本，但只
   能由当前 Windows 用户在本机解密，并且不得把账户显示名、邮箱或其他页面字段
   写入趋势历史。补录按 Provider、指标、单位和 UTC 采样时间去重；

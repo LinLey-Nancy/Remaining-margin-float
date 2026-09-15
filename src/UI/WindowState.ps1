@@ -2698,21 +2698,61 @@ function Update-UsageView {
             $CompactSuffix.Text = ''
         }
 
-        $MetricOneTitle.Text = '当前余额'
-        $PrimaryMetricValue.Text = $Snapshot.ResetDate
-        $PrimaryMetricHint.Text = $Snapshot.ResetCountdown
-        $MetricTwoTitle.Text = '本月累计花费'
-        $TodayTokens.Text = Format-CurrencyAmount `
-            -Amount $Snapshot.MonthlyEstimatedCostCny `
-            -Currency 'CNY'
-        $MetricTwoHint.Text = '本机日志估算'
+        # The top two cards report money actually consumed, derived from real
+        # balance movements in Core\SpendLedger.ps1, instead of the local-log
+        # estimate. Element names below are historical: PrimaryMetricValue holds
+        # today's spend and TodayTokens holds this month's.
+        $spendSummary = Get-SpendSummary `
+            -Ledger (Read-SpendLedger) `
+            -ProviderId 'DeepSeek' `
+            -Now $observedAt
+        $spendCurrency = $spendSummary.Unit
+        $todaySpendText = '--'
+        $todaySpendHint = '等待余额采样'
+        if ($spendSummary.HasToday) {
+            $todaySpendText = Format-CurrencyAmount `
+                -Amount $spendSummary.TodaySpent `
+                -Currency $spendCurrency
+            $todaySpendHint = if ($spendSummary.TodayComplete) {
+                '按余额变化统计'
+            } else { '按余额变化 · 含断档' }
+        }
+        $monthSpendText = '--'
+        $monthSpendHint = '等待余额采样'
+        if ($spendSummary.CoverageDays -gt 0) {
+            $monthSpendText = Format-CurrencyAmount `
+                -Amount $spendSummary.MonthSpent `
+                -Currency $spendCurrency
+            $coverageText = if ($spendSummary.CoverageComplete) {
+                '本月 1 日以来'
+            } else {
+                '自 {0} 起统计' -f (
+                    Format-SpendLedgerDateLabel `
+                        -Date $spendSummary.CoverageStartDate
+                )
+            }
+            $monthSpendHint = if ($spendSummary.MonthComplete) {
+                $coverageText
+            } else { '{0} · 含断档' -f $coverageText }
+        }
+
+        $MetricOneTitle.Text = '今日花费'
+        $PrimaryMetricValue.Text = $todaySpendText
+        $PrimaryMetricHint.Text = $todaySpendHint
+        $MetricTwoTitle.Text = '本月花费'
+        $TodayTokens.Text = $monthSpendText
+        $MetricTwoHint.Text = $monthSpendHint
         $MetricThreeTitle.Text = '今日 TOKEN'
         $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
         $ContextText.Text = 'Claude Code 本机累计'
         $MetricFourTitle.Text = '本月累计 TOKEN'
         $CacheHit.Text = Format-CompactNumber $Snapshot.MonthlyTokens
         $CacheTokenText.Text = '当月本机去重累计'
-        $BreakdownTitle.Text = '余额构成'
+        # The exact balance used to live in the first card; keep it visible here
+        # rather than losing it, since the header only shows one decimal.
+        $BreakdownTitle.Text = if ($Snapshot.Available) {
+            '余额 {0}' -f $Snapshot.ResetDate
+        } else { '余额构成' }
         $SecondaryMetricTitle.Text = '预算基准'
         $ResetCount.Text = $Snapshot.ResetCount
         $TokenBreakdown.Text = '赠金 {0}  ·  充值 {1}' -f `
