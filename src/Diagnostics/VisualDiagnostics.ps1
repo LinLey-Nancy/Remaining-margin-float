@@ -1461,12 +1461,20 @@ if ($CheckTransitions) {
     ) {
         throw (
             (
-                'Edge rail unstable: hit={0}, alpha={1}, width={2}, ' +
-                'insets={3}/{4}, spacing={5}, cycles={6}, anchor={7}, ' +
-                'pixels={8}, animated={9}, reveal={10}, hover={11}, ' +
-                'outline={12}, watchdogIdle={13}, watchdogReanchor={14}, ' +
-                'alignBound={15}, outsideProbe={16}, flightGuard={17}.'
+                'Edge rail unstable: px={0},anim={1},rev={2},hov={3},' +
+                'wgI={4},wgR={5},ab={6},op={7},fg={8},hit={9},alpha={10},' +
+                'width={11},insets={12}/{13},spacing={14},cycles={15},' +
+                'anchor={16},outline={17}.'
             ) -f
+            $edgePixelAlignedAcrossCycles,
+            $animatedEdgePixelAligned,
+            $animatedRevealPixelAligned,
+            $hoverRevealPixelAligned,
+            $watchdogIdleRepair,
+            $watchdogReanchored,
+            $alignCorrectionBoundHonored,
+            $placementOutsideProbe,
+            $alignFlightGuarded,
             $hiddenRailHitTest,
             $hiddenRailAlpha,
             $edgeRevealHitWidth,
@@ -1475,16 +1483,7 @@ if ($CheckTransitions) {
             $edgeSpacingStable,
             $edgeGapStableAcrossCycles,
             $edgeDockAnchorStable,
-            $edgePixelAlignedAcrossCycles,
-            $animatedEdgePixelAligned,
-            $animatedRevealPixelAligned,
-            $hoverRevealPixelAligned,
-            $energyContainedByOutline,
-            $watchdogIdleRepair,
-            $watchdogReanchored,
-            $alignCorrectionBoundHonored,
-            $placementOutsideProbe,
-            $alignFlightGuarded
+            $energyContainedByOutline
         )
     }
     Set-EdgeDockReveal -Revealed $false
