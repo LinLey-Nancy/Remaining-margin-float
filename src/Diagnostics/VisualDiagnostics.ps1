@@ -1382,6 +1382,61 @@ if ($CheckTransitions) {
         $WindowRoot
     ).X
     $edgeSpacingStable = [Math]::Abs($hiddenTrackX - $revealedTrackX) -lt 0.01
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    $window.UpdateLayout()
+    $watchdogIdleRepair = Repair-WindowPlacementIfOffScreen -Force
+    $window.BeginAnimation([Windows.Window]::LeftProperty, $null)
+    $window.Left = $script:EdgeDockWorkArea.Right + 500
+    $window.UpdateLayout()
+    $watchdogOffScreenRepair = Repair-WindowPlacementIfOffScreen -Force
+    $window.UpdateLayout()
+    $watchdogExpectedLeft = Get-EdgeDockPlacement `
+        -Side 'Right' `
+        -Revealed $false `
+        -WindowWidth $script:CompactWidth `
+        -VisibleWidth $script:EdgeVisibleWidth `
+        -WorkLeft $script:EdgeDockWorkArea.Left `
+        -WorkRight $script:EdgeDockWorkArea.Right
+    $watchdogReanchored = (
+        $watchdogOffScreenRepair -and
+        [Math]::Abs($window.Left - $watchdogExpectedLeft) -lt 0.01
+    )
+    $alignCorrectionBoundHonored = (
+        (Test-EdgeAlignCorrectionValid `
+            -PixelCorrection 0 `
+            -MaxCorrectionPixels $script:EdgeAlignMaxCorrectionPixels) -and
+        (Test-EdgeAlignCorrectionValid `
+            -PixelCorrection $script:EdgeAlignMaxCorrectionPixels `
+            -MaxCorrectionPixels $script:EdgeAlignMaxCorrectionPixels) -and
+        (-not (Test-EdgeAlignCorrectionValid `
+            -PixelCorrection ($script:EdgeAlignMaxCorrectionPixels + 1) `
+            -MaxCorrectionPixels $script:EdgeAlignMaxCorrectionPixels)) -and
+        (-not (Test-EdgeAlignCorrectionValid `
+            -PixelCorrection -500 `
+            -MaxCorrectionPixels $script:EdgeAlignMaxCorrectionPixels))
+    )
+    $placementOutsideProbe = (
+        (Test-PlacementOutsideWorkArea `
+            -Left 3000 -Top 100 -Width 80 -Height 80 `
+            -WorkLeft 0 -WorkTop 0 -WorkRight 2560 -WorkBottom 1392) -and
+        (-not (Test-PlacementOutsideWorkArea `
+            -Left 2546 -Top 100 -Width 80 -Height 80 `
+            -WorkLeft 0 -WorkTop 0 -WorkRight 2560 -WorkBottom 1392)) -and
+        (Test-PlacementOutsideWorkArea `
+            -Left 100 -Top -500 -Width 80 -Height 80 `
+            -WorkLeft 0 -WorkTop 0 -WorkRight 2560 -WorkBottom 1392)
+    )
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    Set-EdgeDockReveal -Revealed $true
+    $alignDuringAnimation = Align-EdgeDockToPhysicalScreenEdge
+    Wait-ForUi -Milliseconds ($script:EdgeRevealDurationMs + 90)
+    $alignAfterAnimation = Align-EdgeDockToPhysicalScreenEdge
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    $alignFlightGuarded = (
+        $null -eq $alignDuringAnimation -and
+        $null -ne $alignAfterAnimation
+    )
     if (
         -not $hiddenRailHitTest -or
         $hiddenRailAlpha -lt 8 -or
@@ -1397,14 +1452,20 @@ if ($CheckTransitions) {
         -not $edgePixelAlignedAcrossCycles -or
         -not $animatedEdgePixelAligned -or
         -not $animatedRevealPixelAligned -or
-        -not $hoverRevealPixelAligned
+        -not $hoverRevealPixelAligned -or
+        $watchdogIdleRepair -or
+        -not $watchdogReanchored -or
+        -not $alignCorrectionBoundHonored -or
+        -not $placementOutsideProbe -or
+        -not $alignFlightGuarded
     ) {
         throw (
             (
                 'Edge rail unstable: hit={0}, alpha={1}, width={2}, ' +
                 'insets={3}/{4}, spacing={5}, cycles={6}, anchor={7}, ' +
                 'pixels={8}, animated={9}, reveal={10}, hover={11}, ' +
-                'outline={12}.'
+                'outline={12}, watchdogIdle={13}, watchdogReanchor={14}, ' +
+                'alignBound={15}, outsideProbe={16}, flightGuard={17}.'
             ) -f
             $hiddenRailHitTest,
             $hiddenRailAlpha,
@@ -1418,7 +1479,12 @@ if ($CheckTransitions) {
             $animatedEdgePixelAligned,
             $animatedRevealPixelAligned,
             $hoverRevealPixelAligned,
-            $energyContainedByOutline
+            $energyContainedByOutline,
+            $watchdogIdleRepair,
+            $watchdogReanchored,
+            $alignCorrectionBoundHonored,
+            $placementOutsideProbe,
+            $alignFlightGuarded
         )
     }
     Set-EdgeDockReveal -Revealed $false

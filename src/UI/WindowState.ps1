@@ -90,6 +90,11 @@ function Sync-EdgeDockEnvironment {
 
 function Align-EdgeDockToPhysicalScreenEdge {
     if (-not $script:EdgeDockSide -or $script:IsExpanded) { return $null }
+    # Never sample mid-animation: a reveal/hide that is still sliding makes
+    # PointToScreen return a transient edge, and applying that "correction"
+    # can throw the window far off the work area. The completion of the
+    # latest animation always schedules a fresh align.
+    if ($script:EdgeDockAnimating) { return $null }
 
     $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
     if ($helper.Handle -eq [IntPtr]::Zero) { return $null }
@@ -121,12 +126,48 @@ function Align-EdgeDockToPhysicalScreenEdge {
         [MidpointRounding]::AwayFromZero
     )
 
+    if (
+        -not (Test-EdgeAlignCorrectionValid `
+            -PixelCorrection $pixelCorrection `
+            -MaxCorrectionPixels $script:EdgeAlignMaxCorrectionPixels)
+    ) {
+        Write-RuntimeLog `
+            -Level Warning `
+            -Event 'Window.EdgeDock.AlignSkipped' `
+            -Message '屏幕边缘校准采样失真，已放弃本次校准' `
+            -Data ([ordered]@{
+                Side = $script:EdgeDockSide
+                Revealed = $script:IsEdgeRevealed
+                ScreenEdge = $screenEdge
+                VisualEdge = $visualPoint.X
+                CorrectionPixels = $pixelCorrection
+            })
+        return [pscustomobject]@{
+            Side = $script:EdgeDockSide
+            Revealed = $script:IsEdgeRevealed
+            ScreenEdge = $screenEdge
+            VisualEdge = $visualPoint.X
+            GapPixels = [Math]::Abs($screenEdge - $visualPoint.X)
+            CorrectionPixels = 0
+            Skipped = $true
+        }
+    }
+
     if ($pixelCorrection -ne 0) {
         $windowRect = New-Object RemainingMarginNativeWindow+RECT
         if (-not [RemainingMarginNativeWindow]::GetWindowRect(
             $helper.Handle,
             [ref]$windowRect
         )) {
+            Write-RuntimeLog `
+                -Level Warning `
+                -Event 'Window.EdgeDock.AlignFailed' `
+                -Message 'GetWindowRect 失败，本次屏幕边缘校准未执行' `
+                -Data ([ordered]@{
+                    Side = $script:EdgeDockSide
+                    Stage = 'GetWindowRect'
+                    CorrectionPixels = $pixelCorrection
+                })
             return $null
         }
         $positionOnly = 0x0001 -bor 0x0004 -bor 0x0010 -bor 0x0200
@@ -139,6 +180,15 @@ function Align-EdgeDockToPhysicalScreenEdge {
             0,
             $positionOnly
         )) {
+            Write-RuntimeLog `
+                -Level Warning `
+                -Event 'Window.EdgeDock.AlignFailed' `
+                -Message 'SetWindowPos 失败，本次屏幕边缘校准未执行' `
+                -Data ([ordered]@{
+                    Side = $script:EdgeDockSide
+                    Stage = 'SetWindowPos'
+                    CorrectionPixels = $pixelCorrection
+                })
             return $null
         }
         $window.UpdateLayout()
@@ -327,6 +377,7 @@ function Set-EdgeDockReveal {
         } else {
             $script:EdgeHideDurationMs
         }
+        $script:EdgeDockAnimating = $true
         $leftAnimation = New-DoubleAnimation `
             -To $targetLeft `
             -Milliseconds $duration `
@@ -335,6 +386,7 @@ function Set-EdgeDockReveal {
         $leftAnimation.From = $currentLeft
         $leftAnimation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
         $leftAnimation.Add_Completed((New-RmfEventHandler -Kind Event -Callback {
+            $script:EdgeDockAnimating = $false
             if ($script:EdgeDockSide -and -not $script:IsExpanded) {
                 $window.Dispatcher.BeginInvoke(
                     [Windows.Threading.DispatcherPriority]::ContextIdle,
@@ -351,6 +403,7 @@ function Set-EdgeDockReveal {
 
     Set-EdgeDockVisualState -Revealed $Revealed -Immediate:$Immediate
     if ($Immediate -or $script:ReducedMotion) {
+        $script:EdgeDockAnimating = $false
         [void](Align-EdgeDockToPhysicalScreenEdge)
     }
     $CompactHit.ToolTip = if ($Revealed) {
@@ -448,6 +501,65 @@ function Ensure-WindowVisible {
         -WorkBottom $workArea.Bottom
     $window.Left = $fitted.Left
     $window.Top = $fitted.Top
+}
+
+function Repair-WindowPlacementIfOffScreen {
+    param([switch]$Force)
+
+    if ($script:IsExpanded) { return $false }
+
+    $now = [DateTimeOffset]::Now
+    if (
+        -not $Force -and
+        $script:LastWindowPlacementWatchdogAt -and
+        ($now - $script:LastWindowPlacementWatchdogAt).TotalSeconds -lt
+            $script:WindowPlacementWatchdogSeconds
+    ) {
+        return $false
+    }
+    $script:LastWindowPlacementWatchdogAt = $now
+
+    $workArea = Get-WindowWorkArea
+    $outside = Test-PlacementOutsideWorkArea `
+        -Left $window.Left `
+        -Top $window.Top `
+        -Width $window.Width `
+        -Height $window.Height `
+        -WorkLeft $workArea.Left `
+        -WorkTop $workArea.Top `
+        -WorkRight $workArea.Right `
+        -WorkBottom $workArea.Bottom
+    if (-not $outside) { return $false }
+
+    if ($script:EdgeDockSide) {
+        Write-RuntimeLog `
+            -Level Warning `
+            -Event 'Window.EdgeDock.Reanchored' `
+            -Message '检测到贴边窗口完全移出工作区，已自动重锚' `
+            -Data ([ordered]@{
+                Side = $script:EdgeDockSide
+                Revealed = $script:IsEdgeRevealed
+                Left = [Math]::Round($window.Left, 2)
+                Top = [Math]::Round($window.Top, 2)
+                WorkLeft = $workArea.Left
+                WorkRight = $workArea.Right
+            })
+        [void](Sync-EdgeDockEnvironment -Force)
+    }
+    else {
+        Write-RuntimeLog `
+            -Level Warning `
+            -Event 'Window.Placement.Restored' `
+            -Message '检测到悬浮窗完全移出工作区，已自动移回可见区域' `
+            -Data ([ordered]@{
+                Left = [Math]::Round($window.Left, 2)
+                Top = [Math]::Round($window.Top, 2)
+                WorkLeft = $workArea.Left
+                WorkRight = $workArea.Right
+            })
+        Ensure-WindowVisible
+    }
+    return $true
 }
 
 function Show-ExistingWindow {

@@ -124,13 +124,13 @@ Setup 官方不可变 GitHub Release 获取编译器，并在使用前验证其 
 发布文件示例：
 
 ```text
-Remaining-Margin-Float-v1.11.0-Setup.exe
-Remaining-Margin-Float-v1.11.0-Setup.exe.sha256
+Remaining-Margin-Float-v1.11.1-Setup.exe
+Remaining-Margin-Float-v1.11.1-Setup.exe.sha256
 ```
 
 本版本的用户可见更新内容见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
-推送与 `VERSION` 一致的标签（例如 `v1.11.0`）后，`Windows 发布`工作流会
+推送与 `VERSION` 一致的标签（例如 `v1.11.1`）后，`Windows 发布`工作流会
 在 Windows Runner 上测试、构建，并真实执行静默安装与卸载验证，随后创建或更新
 GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创建 Release。
 

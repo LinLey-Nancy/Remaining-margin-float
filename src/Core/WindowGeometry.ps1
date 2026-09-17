@@ -108,3 +108,32 @@ function Get-EdgeDockPlacement {
     if ($Revealed) { return $WorkRight - $WindowWidth }
     return $WorkRight - $VisibleWidth
 }
+
+function Test-EdgeAlignCorrectionValid {
+    param(
+        [int]$PixelCorrection,
+        [int]$MaxCorrectionPixels
+    )
+
+    return [Math]::Abs($PixelCorrection) -le $MaxCorrectionPixels
+}
+
+function Test-PlacementOutsideWorkArea {
+    param(
+        [double]$Left,
+        [double]$Top,
+        [double]$Width,
+        [double]$Height,
+        [double]$WorkLeft,
+        [double]$WorkTop,
+        [double]$WorkRight,
+        [double]$WorkBottom
+    )
+
+    return (
+        ($Left + $Width) -le $WorkLeft -or
+        $Left -ge $WorkRight -or
+        ($Top + $Height) -le $WorkTop -or
+        $Top -ge $WorkBottom
+    )
+}

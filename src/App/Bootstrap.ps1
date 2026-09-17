@@ -475,13 +475,17 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.11.0'
+$script:AppVersion = '1.11.1'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
 $script:EdgeSnapDistance = 20.0
 $script:EdgeRevealDurationMs = 190
 $script:EdgeHideDurationMs = 150
+$script:EdgeAlignMaxCorrectionPixels = 240
+$script:EdgeDockAnimating = $false
+$script:WindowPlacementWatchdogSeconds = 5
+$script:LastWindowPlacementWatchdogAt = $null
 $script:ExpandedWidth = 400.0
 $script:ExpandedHeight = 560.0
 $script:CodexPlusExpandedHeight = 522.0

@@ -1414,6 +1414,7 @@ function Invoke-RefreshTimerTick {
     [void](Complete-UsageHistoryRepair)
     try {
         [void](Sync-EdgeDockEnvironment)
+        [void](Repair-WindowPlacementIfOffScreen)
     }
     catch {
         Set-RuntimeDiagnosticStatus `
