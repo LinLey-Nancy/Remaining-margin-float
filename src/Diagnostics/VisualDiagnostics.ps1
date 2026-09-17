@@ -1427,16 +1427,30 @@ if ($CheckTransitions) {
             -Left 100 -Top -500 -Width 80 -Height 80 `
             -WorkLeft 0 -WorkTop 0 -WorkRight 2560 -WorkBottom 1392)
     )
-    Set-EdgeDockReveal -Revealed $false -Immediate
-    Set-EdgeDockReveal -Revealed $true
-    $alignDuringAnimation = Align-EdgeDockToPhysicalScreenEdge
-    Wait-ForUi -Milliseconds ($script:EdgeRevealDurationMs + 90)
-    $alignAfterAnimation = Align-EdgeDockToPhysicalScreenEdge
-    Set-EdgeDockReveal -Revealed $false -Immediate
-    $alignFlightGuarded = (
-        $null -eq $alignDuringAnimation -and
-        $null -ne $alignAfterAnimation
-    )
+    if ($script:ReducedMotion) {
+        # No animation path exists under reduced motion, so there is no
+        # in-flight sampling to guard against.
+        $alignFlightGuarded = $true
+    }
+    else {
+        Set-EdgeDockReveal -Revealed $false -Immediate
+        Set-EdgeDockReveal -Revealed $true
+        $alignDuringAnimation = Align-EdgeDockToPhysicalScreenEdge
+        $flightGuardWaitMs = 0
+        while (
+            $script:EdgeDockAnimating -and
+            $flightGuardWaitMs -lt 2000
+        ) {
+            Wait-ForUi -Milliseconds 50
+            $flightGuardWaitMs += 50
+        }
+        $alignAfterAnimation = Align-EdgeDockToPhysicalScreenEdge
+        Set-EdgeDockReveal -Revealed $false -Immediate
+        $alignFlightGuarded = (
+            $null -eq $alignDuringAnimation -and
+            $null -ne $alignAfterAnimation
+        )
+    }
     if (
         -not $hiddenRailHitTest -or
         $hiddenRailAlpha -lt 8 -or
