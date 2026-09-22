@@ -475,7 +475,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.11.1'
+$script:AppVersion = '1.11.2'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -567,12 +567,20 @@ $script:UsageHistoryUpdateLastError = ''
 $script:LastUsageInsights = $null
 $script:LastUsageHistoryError = ''
 $script:UsageStateDiagnosticCaptureCount = 0
+# Alert settings are stored per data source; the flat $script: values below
+# mirror the active source and are refreshed by Sync-ActiveAlertSettings.
+$script:AlertSettings = [ordered]@{}
 $script:LowRemainingThreshold = 20.0
+$script:LowFiveHourThreshold = 20.0
+$script:LowWeeklyThreshold = 20.0
+$script:LowAmountThreshold = 10.0
 $script:LowRemainingAlertsEnabled = $true
 $script:LowAlertActive = @{}
 $script:RapidDropAlertsEnabled = $true
 $script:RapidDropWindowMinutes = 30
 $script:CodexRapidDropPercent = 10.0
+$script:RapidFiveHourPercent = 10.0
+$script:RapidWeeklyPercent = 10.0
 $script:DeepSeekRapidDropMode = 'Percent'
 $script:DeepSeekRapidDropPercent = 10.0
 $script:DeepSeekRapidDropAmount = 10.0

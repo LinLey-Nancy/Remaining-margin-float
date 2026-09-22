@@ -956,6 +956,227 @@ if ($CheckTransitions) {
             }) `
             -Threshold 20)
     )
+    # A depleted weekly window blocks a Codex Plus account even when the
+    # five-hour window has just rolled over, so the header must follow weekly.
+    $weeklyDepletedSnapshot = $plusSnapshot.PSObject.Copy()
+    $weeklyDepletedSnapshot.HasProgress = $true
+    $weeklyDepletedSnapshot.RemainingPercent = 100
+    $weeklyDepletedSnapshot.WindowLabel = '5 小时余量'
+    $weeklyDepletedSnapshot.FiveHourAvailable = $true
+    $weeklyDepletedSnapshot.FiveHourUsedPercent = 0
+    $weeklyDepletedSnapshot.FiveHourRemainingPercent = 100
+    $weeklyDepletedSnapshot.FiveHourResetDate = '1月1日 20:00'
+    $weeklyDepletedSnapshot.FiveHourResetCountdown = '5 小时后'
+    $weeklyDepletedSnapshot.FiveHourResetAt = $diagnosticNow.AddHours(5)
+    $weeklyDepletedSnapshot.WeeklyAvailable = $true
+    $weeklyDepletedSnapshot.WeeklyUsedPercent = 100
+    $weeklyDepletedSnapshot.WeeklyRemainingPercent = 0
+    $weeklyDepletedSnapshot.WeeklyResetDate = '1月7日 12:00'
+    $weeklyDepletedSnapshot.WeeklyResetCountdown = '6 天后'
+    $weeklyDepletedSnapshot.WeeklyResetAt = $diagnosticNow.AddDays(6)
+    $weeklyDepletedSnapshot.ResetDate =
+        $weeklyDepletedSnapshot.FiveHourResetDate
+    $weeklyDepletedSnapshot.ResetCountdown =
+        $weeklyDepletedSnapshot.FiveHourResetCountdown
+    $weeklyDepletedSnapshot.ResetAt = $weeklyDepletedSnapshot.FiveHourResetAt
+    Update-UsageView -Snapshot $weeklyDepletedSnapshot -DisplayOnly
+    $weeklyDepletedMaskColor = (
+        [Windows.Media.SolidColorBrush]$UltraDepletedMask.Background
+    ).Color
+    $plusWeeklyDepletedBindsHeaderToWeekly = (
+        $RemainingValue.Text -eq '0' -and
+        $CompactPrefix.Text -eq '' -and
+        $CompactSuffix.Text -eq '%' -and
+        $WindowLabel.Text -eq '每周余量' -and
+        $ExpandedWindowLabel.Text -eq '每周余量' -and
+        $DetailsResetDate.Text -eq '1月7日 12:00' -and
+        $DetailsResetCountdown.Text -eq '6 天后' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value) -lt 0.01 -and
+        [Math]::Abs($UltraEmptyProgressRow.Height.Value - 100) -lt 0.01 -and
+        [Math]::Abs($RemainingProgressColumn.Width.Value) -lt 0.01 -and
+        [Math]::Abs($UsedProgressColumn.Width.Value - 100) -lt 0.01 -and
+        $ProgressTrack.ToolTip -eq
+            '每周余额 0% · 已使用 100% · 5 小时窗口仍余 100%' -and
+        $UltraProgressTrack.ToolTip -eq $ProgressTrack.ToolTip
+    )
+    $weeklyDepletedSample = ConvertTo-UsageHistorySample `
+        -Snapshot $weeklyDepletedSnapshot `
+        -ObservedAt $diagnosticNow
+    $plusWeeklyDepletedPreservesPrimaryQuotaChannel = (
+        [string]$weeklyDepletedSnapshot.PrimaryQuotaPeriod -eq 'FiveHour' -and
+        [double]$weeklyDepletedSnapshot.RemainingPercent -eq 100 -and
+        [bool]$weeklyDepletedSnapshot.HasProgress -and
+        $null -ne $weeklyDepletedSample -and
+        [string]$weeklyDepletedSample.QuotaPeriod -eq 'FiveHour' -and
+        [double]$weeklyDepletedSample.RemainingValue -eq 100 -and
+        [string]$weeklyDepletedSample.MetricType -eq 'Percent' -and
+        (Get-UsageAlertScopeKey -Snapshot $weeklyDepletedSnapshot) -eq
+            'Codex|FiveHour'
+    )
+    $plusWeeklyDepletedKeepsResetAtOnPrimaryChannel = (
+        $null -ne $weeklyDepletedSnapshot.ResetAt -and
+        [Math]::Abs(
+            (
+                [DateTimeOffset]$weeklyDepletedSnapshot.ResetAt -
+                [DateTimeOffset]$weeklyDepletedSnapshot.FiveHourResetAt
+            ).TotalSeconds
+        ) -lt 1 -and
+        [string]$weeklyDepletedSample.ResetAtUtc -eq
+            ([DateTimeOffset]$weeklyDepletedSnapshot.FiveHourResetAt).
+                ToUniversalTime().
+                ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    )
+    $plusWeeklyDepletedKeepsTrendOnFiveHour = (
+        $UsageTrendTitle.Text -eq '5 小时额度趋势'
+    )
+    $weeklyDepletedFillStops = @($UltraProgressFill.Background.GradientStops)
+    $weeklyDepletedOutlineColor = (
+        [Windows.Media.SolidColorBrush]$UltraProgressOutline.BorderBrush
+    ).Color
+    $plusWeeklyDepletedNeutralGrayIsKnownZero = (
+        $weeklyDepletedMaskColor.A -eq 255 -and
+        (
+            (@(
+                $weeklyDepletedMaskColor.R,
+                $weeklyDepletedMaskColor.G,
+                $weeklyDepletedMaskColor.B
+            ) | Measure-Object -Maximum).Maximum -
+            (@(
+                $weeklyDepletedMaskColor.R,
+                $weeklyDepletedMaskColor.G,
+                $weeklyDepletedMaskColor.B
+            ) | Measure-Object -Minimum).Minimum
+        ) -le 12 -and
+        (
+            $weeklyDepletedMaskColor.R +
+            $weeklyDepletedMaskColor.G +
+            $weeklyDepletedMaskColor.B
+        ) / 3 -lt 140 -and
+        [string]$UltraLevelMarker.Visibility -eq 'Visible' -and
+        $weeklyDepletedFillStops.Count -eq 5 -and
+        $weeklyDepletedOutlineColor.ToString() -eq '#E52B3831'
+    )
+    $plusWeeklyDepletedKeepsPlusExpandedHeight = (
+        [Math]::Abs(
+            (Get-ExpandedHeightForSnapshot -Snapshot $weeklyDepletedSnapshot) -
+                522
+        ) -lt 0.01 -and
+        [string]$CodexQuotaPanel.Visibility -eq 'Visible' -and
+        [Math]::Abs($QuotaMetricRow.Height.Value - 48) -lt 0.01
+    )
+    $savedTrayNotifyIcon = $script:TrayNotifyIcon
+    try {
+        $script:TrayNotifyIcon = [pscustomobject]@{ Text = '' }
+        Update-UsageView -Snapshot $weeklyDepletedSnapshot -DisplayOnly
+        $weeklyDepletedTrayText = [string]$script:TrayNotifyIcon.Text
+    }
+    finally {
+        $script:TrayNotifyIcon = $savedTrayNotifyIcon
+    }
+    $plusWeeklyDepletedTrayTextUsesWeekly = (
+        $weeklyDepletedTrayText -eq 'Codex 每周余量 0% · 单击打开详情'
+    )
+    # A weekly window that is merely partly used must not move the header.
+    $partialWeeklySnapshot = $plusSnapshot.PSObject.Copy()
+    $partialWeeklySnapshot.HasProgress = $true
+    $partialWeeklySnapshot.RemainingPercent = 20
+    $partialWeeklySnapshot.WindowLabel = '5 小时余量'
+    $partialWeeklySnapshot.FiveHourAvailable = $true
+    $partialWeeklySnapshot.FiveHourUsedPercent = 80
+    $partialWeeklySnapshot.FiveHourRemainingPercent = 20
+    $partialWeeklySnapshot.FiveHourResetDate = '1月1日 20:00'
+    $partialWeeklySnapshot.FiveHourResetCountdown = '5 小时后'
+    $partialWeeklySnapshot.FiveHourResetAt = $diagnosticNow.AddHours(5)
+    $partialWeeklySnapshot.WeeklyAvailable = $true
+    $partialWeeklySnapshot.WeeklyUsedPercent = 60
+    $partialWeeklySnapshot.WeeklyRemainingPercent = 40
+    $partialWeeklySnapshot.WeeklyResetDate = '1月7日 12:00'
+    $partialWeeklySnapshot.WeeklyResetCountdown = '6 天后'
+    $partialWeeklySnapshot.WeeklyResetAt = $diagnosticNow.AddDays(6)
+    $partialWeeklySnapshot.ResetDate = $partialWeeklySnapshot.FiveHourResetDate
+    $partialWeeklySnapshot.ResetCountdown =
+        $partialWeeklySnapshot.FiveHourResetCountdown
+    $partialWeeklySnapshot.ResetAt = $partialWeeklySnapshot.FiveHourResetAt
+    Update-UsageView -Snapshot $partialWeeklySnapshot -DisplayOnly
+    $plusPartialWeeklyKeepsFiveHourHeader = (
+        $RemainingValue.Text -eq '20' -and
+        $WindowLabel.Text -eq '5 小时余量' -and
+        $DetailsResetDate.Text -eq '1月1日 20:00' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 20) -lt 0.01 -and
+        [Math]::Abs($RemainingProgressColumn.Width.Value - 20) -lt 0.01 -and
+        $ProgressTrack.ToolTip -eq '5 小时余额 20% · 已使用 80%'
+    )
+    $weeklyUnavailableSnapshot = $plusSnapshot.PSObject.Copy()
+    $weeklyUnavailableSnapshot.HasProgress = $true
+    $weeklyUnavailableSnapshot.RemainingPercent = 40
+    $weeklyUnavailableSnapshot.WindowLabel = '5 小时余量'
+    $weeklyUnavailableSnapshot.FiveHourAvailable = $true
+    $weeklyUnavailableSnapshot.FiveHourUsedPercent = 60
+    $weeklyUnavailableSnapshot.FiveHourRemainingPercent = 40
+    $weeklyUnavailableSnapshot.WeeklyAvailable = $false
+    $weeklyUnavailableSnapshot.WeeklyUsedPercent = 0
+    $weeklyUnavailableSnapshot.WeeklyRemainingPercent = 0
+    Update-UsageView -Snapshot $weeklyUnavailableSnapshot -DisplayOnly
+    $plusWeeklyUnavailableKeepsFiveHourHeader = (
+        $RemainingValue.Text -eq '40' -and
+        $WindowLabel.Text -eq '5 小时余量' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 40) -lt 0.01
+    )
+    # An unavailable five-hour window reports 0% like a depleted weekly one,
+    # so the rule must read the raw window fields to keep showing "unknown".
+    $fiveHourUnknownSnapshot = $plusSnapshot.PSObject.Copy()
+    $fiveHourUnknownSnapshot.HasProgress = $false
+    $fiveHourUnknownSnapshot.RemainingPercent = 0
+    $fiveHourUnknownSnapshot.WindowLabel = '5 小时余量未知'
+    $fiveHourUnknownSnapshot.FiveHourAvailable = $false
+    $fiveHourUnknownSnapshot.FiveHourUsedPercent = 0
+    $fiveHourUnknownSnapshot.FiveHourRemainingPercent = 0
+    $fiveHourUnknownSnapshot.WeeklyAvailable = $true
+    $fiveHourUnknownSnapshot.WeeklyUsedPercent = 4
+    $fiveHourUnknownSnapshot.WeeklyRemainingPercent = 96
+    Update-UsageView -Snapshot $fiveHourUnknownSnapshot -DisplayOnly
+    $plusFiveHourUnknownWithHealthyWeeklyKeepsUnknownHeader = (
+        $RemainingValue.Text -eq '未知' -and
+        $CompactSuffix.Text -eq '' -and
+        $WindowLabel.Text -eq '5 小时余量未知' -and
+        $UltraProgressTrack.ToolTip -eq '5 小时额度未知' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value) -lt 0.01
+    )
+    # The rule is deliberately asymmetric: a weekly-primary plan keeps weekly.
+    $proDowngradedSnapshot = $startupLocalSnapshot.PSObject.Copy()
+    $proDowngradedSnapshot.Plan = 'Pro'
+    $proDowngradedSnapshot.PlanType = 'pro'
+    $proDowngradedSnapshot.PrimaryQuotaPeriod = 'Weekly'
+    $proDowngradedSnapshot.HasProgress = $true
+    $proDowngradedSnapshot.RemainingPercent = 91
+    $proDowngradedSnapshot.WindowLabel = '每周余量'
+    $proDowngradedSnapshot.FiveHourAvailable = $true
+    $proDowngradedSnapshot.FiveHourUsedPercent = 100
+    $proDowngradedSnapshot.FiveHourRemainingPercent = 0
+    $proDowngradedSnapshot.FiveHourResetAt = $diagnosticNow.AddHours(5)
+    $proDowngradedSnapshot.WeeklyAvailable = $true
+    $proDowngradedSnapshot.WeeklyUsedPercent = 9
+    $proDowngradedSnapshot.WeeklyRemainingPercent = 91
+    $proDowngradedSnapshot.WeeklyResetDate = '1月7日 12:00'
+    $proDowngradedSnapshot.WeeklyResetCountdown = '6 天后'
+    $proDowngradedSnapshot.WeeklyResetAt = $diagnosticNow.AddDays(6)
+    $proDowngradedSnapshot.ResetDate = $proDowngradedSnapshot.WeeklyResetDate
+    $proDowngradedSnapshot.ResetCountdown =
+        $proDowngradedSnapshot.WeeklyResetCountdown
+    $proDowngradedSnapshot.ResetAt = $proDowngradedSnapshot.WeeklyResetAt
+    Update-UsageView -Snapshot $proDowngradedSnapshot -DisplayOnly
+    $proDowngradedWeeklyKeepsWeeklyHeader = (
+        $RemainingValue.Text -eq '91' -and
+        $WindowLabel.Text -eq '每周余量' -and
+        $UsageTrendTitle.Text -eq '每周额度趋势' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 91) -lt 0.01 -and
+        [Math]::Abs(
+            (Get-ExpandedHeightForSnapshot -Snapshot $proDowngradedSnapshot) -
+                474
+        ) -lt 0.01 -and
+        [string]$CodexQuotaPanel.Visibility -eq 'Collapsed' -and
+        [string]$WeeklyQuotaBand.Visibility -eq 'Visible'
+    )
     Update-UsageView -Snapshot $plusSnapshot -DisplayOnly
     $startupLocalRapidSuppressed = (
         [string]$RapidDropText.Text -match '本地快照不计入快速下降'
@@ -1539,20 +1760,35 @@ if ($CheckTransitions) {
     }
     Update-UsageView -Snapshot $settingsCurrentSnapshot
     $rapidDropStatusBeforeSettings = [string]$RapidDropText.Text
+    # The alert settings below are edited per data source, and the menus mirror
+    # the active one, so pin it to the source these scenarios describe.
+    $script:ActiveProvider = 'Codex'
+    Sync-ActiveAlertSettings
     [void](Set-UsageAlertSettings `
+        -ProviderId 'Codex' `
         -LowAlertsEnabled $true `
-        -LowThreshold 35 `
+        -LowFiveHourThreshold 35 `
+        -LowWeeklyThreshold 30 `
         -RapidAlertsEnabled $true `
         -WindowMinutes 45 `
-        -CodexPercent 12.5 `
-        -DeepSeekMode 'Amount' `
-        -DeepSeekPercent 11.5 `
-        -DeepSeekAmount 8.5)
+        -RapidFiveHourPercent 12.5 `
+        -RapidWeeklyPercent 9.5)
+    [void](Set-UsageAlertSettings `
+        -ProviderId 'DeepSeek' `
+        -LowPercentThreshold 25 `
+        -LowAmountThreshold 8.5 `
+        -RapidMode 'Amount' `
+        -RapidPercent 11.5 `
+        -RapidAmount 8.5)
     $rapidDropStatusAfterSettings = [string]$RapidDropText.Text
-    $script:RapidDropAlertsEnabled = $false
+    [void](Set-UsageAlertSettings `
+        -ProviderId 'Codex' `
+        -RapidAlertsEnabled $false)
     Refresh-RapidDropStatusView
     $rapidDropStatusWhenDisabled = [string]$RapidDropText.Text
-    $script:RapidDropAlertsEnabled = $true
+    [void](Set-UsageAlertSettings `
+        -ProviderId 'Codex' `
+        -RapidAlertsEnabled $true)
     Refresh-RapidDropStatusView
     $rapidDropStatusWhenReenabled = [string]$RapidDropText.Text
     $lowAlertThresholdMenuText = [string]$script:LowAlertsMenuItem.Header
@@ -1571,7 +1807,131 @@ if ($CheckTransitions) {
         $null -ne $lowAlertThresholdDialog.FindName('SaveButton') -and
         $null -ne $lowAlertThresholdDialog.FindName('ErrorText')
     )
+    $lowAlertThresholdDialogQuotaRows = (
+        $null -ne $lowAlertThresholdDialog.FindName('ThresholdLabel') -and
+        $null -ne $lowAlertThresholdDialog.FindName('ThresholdUnitText') -and
+        $null -ne $lowAlertThresholdDialog.FindName(
+            'SecondaryThresholdLabel'
+        ) -and
+        $null -ne $lowAlertThresholdDialog.FindName(
+            'SecondaryThresholdBox'
+        ) -and
+        $null -ne $lowAlertThresholdDialog.FindName(
+            'SecondaryThresholdUnitText'
+        ) -and
+        $null -ne $lowAlertThresholdDialog.FindName('QuotaRapidPanel') -and
+        $null -ne $lowAlertThresholdDialog.FindName('BalanceRapidPanel') -and
+        $null -ne $lowAlertThresholdDialog.FindName('SecondaryDropBox')
+    )
     $lowAlertThresholdDialog.Close()
+    # Alert settings are stored per data source: editing one source must leave
+    # the others untouched, and an unconfigured source keeps its defaults.
+    $codexAlertSettings = Get-UsageAlertSettings -ProviderId 'Codex'
+    $kimiAlertSettings = Get-UsageAlertSettings -ProviderId 'Kimi'
+    $deepSeekAlertSettings = Get-UsageAlertSettings -ProviderId 'DeepSeek'
+    $alertSettingsIsolateProviders = (
+        [double]$codexAlertSettings.LowFiveHourThreshold -eq 35 -and
+        [double]$codexAlertSettings.LowWeeklyThreshold -eq 30 -and
+        [double]$codexAlertSettings.RapidFiveHourPercent -eq 12.5 -and
+        [double]$codexAlertSettings.RapidWeeklyPercent -eq 9.5 -and
+        [double]$kimiAlertSettings.LowFiveHourThreshold -eq 20 -and
+        [double]$kimiAlertSettings.LowWeeklyThreshold -eq 20 -and
+        [double]$deepSeekAlertSettings.LowPercentThreshold -eq 25 -and
+        [double]$deepSeekAlertSettings.LowAmountThreshold -eq 8.5 -and
+        [string]$deepSeekAlertSettings.RapidMode -eq 'Amount' -and
+        [double]$deepSeekAlertSettings.RapidPercent -eq 11.5 -and
+        [double]$deepSeekAlertSettings.RapidAmount -eq 8.5
+    )
+    $alertSettingsRoundTripPreservesNestedBlock = (
+        [double](
+            ConvertFrom-Json (
+                ConvertTo-SettingsJson -Snapshot $lowAlertSettingsSnapshot
+            )
+        ).AlertSettings.Codex.LowFiveHourThreshold -eq 35 -and
+        [double](
+            ConvertFrom-Json (
+                ConvertTo-SettingsJson -Snapshot $lowAlertSettingsSnapshot
+            )
+        ).AlertSettings.Kimi.LowWeeklyThreshold -eq 20
+    )
+    $weeklyDepletedLowChecks = @(
+        Get-UsageAlertLowChecks `
+            -Snapshot $weeklyDepletedSnapshot `
+            -Insights $null
+    )
+    $deepSeekLowChecks = @(
+        Get-UsageAlertLowChecks `
+            -Snapshot $deepSeekCheckSnapshot `
+            -Insights $null
+    )
+    $lowAlertChecksSplitPerWindow = (
+        @($weeklyDepletedLowChecks | Where-Object {
+            $_.Key -eq 'Codex|FiveHour|Low'
+        }).Count -eq 1 -and
+        @($weeklyDepletedLowChecks | Where-Object {
+            $_.Key -eq 'Codex|Weekly|Low'
+        }).Count -eq 1 -and
+        @($weeklyDepletedLowChecks | Where-Object {
+            $_.Key -eq 'Codex|FiveHour|Low'
+        })[0].Title -eq 'Codex 5 小时余量偏低' -and
+        @($weeklyDepletedLowChecks | Where-Object {
+            $_.Key -eq 'Codex|Weekly|Low'
+        })[0].Title -eq 'Codex 每周余量偏低'
+    )
+    # The weekly window is at 0% while the five-hour window is untouched, and
+    # each threshold is compared against its own window only.
+    $windowThresholdsAreIndependent = (
+        (Test-UsageAlertThresholdCrossed `
+            -Available $true -Value 100 -Threshold 35 `
+            -PreviousValue $null) -eq $false -and
+        (Test-UsageAlertThresholdCrossed `
+            -Available $true -Value 0 -Threshold 30 `
+            -PreviousValue $null) -and
+        (Test-UsageAlertThresholdCrossed `
+            -Available $true -Value 20 -Threshold 30 `
+            -PreviousValue 90) -and
+        (Test-UsageAlertThresholdCrossed `
+            -Available $true -Value 30 -Threshold 30 `
+            -PreviousValue 90) -and
+        (Test-UsageAlertThresholdCrossed `
+            -Available $true -Value 20 -Threshold 30 `
+            -PreviousValue 10) -eq $false -and
+        (Test-UsageAlertThresholdCrossed `
+            -Available $false -Value 0 -Threshold 30 `
+            -PreviousValue $null) -eq $false
+    )
+    # DeepSeek keeps a percentage check that needs a budget baseline and a
+    # balance check that does not.
+    $deepSeekLowChecksSplit = (
+        $deepSeekLowChecks.Count -eq 2 -and
+        @($deepSeekLowChecks | Where-Object {
+            $_.Key -eq 'DeepSeek|Percent|Low'
+        }).Count -eq 1 -and
+        @($deepSeekLowChecks | Where-Object {
+            $_.Key -eq 'DeepSeek|Amount|Low'
+        }).Count -eq 1 -and
+        @($deepSeekLowChecks | Where-Object {
+            $_.Key -eq 'DeepSeek|Amount|Low'
+        })[0].Threshold -eq 8.5 -and
+        @($deepSeekLowChecks | Where-Object {
+            $_.Key -eq 'DeepSeek|Percent|Low'
+        })[0].Available -eq $false -and
+        @($deepSeekLowChecks | Where-Object {
+            $_.Key -eq 'DeepSeek|Amount|Low'
+        })[0].Available
+    )
+    $rapidDropWindowsSplitPerQuota = (
+        @(Get-RapidDropQuotaWindows -Snapshot $weeklyDepletedSnapshot).Count -eq
+            2 -and
+        @(
+            Get-RapidDropQuotaWindows -Snapshot $weeklyDepletedSnapshot |
+                Where-Object { $_.Period -eq 'Weekly' }
+        )[0].Threshold -eq 9.5 -and
+        @(
+            Get-RapidDropQuotaWindows -Snapshot $weeklyDepletedSnapshot |
+                Where-Object { $_.Period -eq 'FiveHour' }
+        )[0].Threshold -eq 12.5
+    )
     $script:ActiveProvider = 'Kimi'
     $kimiDemoSnapshot = Get-KimiDemoSnapshot
     Update-UsageView -Snapshot $kimiDemoSnapshot
@@ -1759,6 +2119,17 @@ if ($CheckTransitions) {
         PlusMissingFiveHourRemainsUnknown = $plusMissingFiveHourRemainsUnknown
         PlusWeeklyOnlyDoesNotDriveMonitoring = $plusWeeklyOnlyDoesNotDriveMonitoring
         PlusFiveHourWinsConflictingQuotaValues = $plusFiveHourWinsConflictingQuotaValues
+        PlusWeeklyDepletedBindsHeaderToWeekly = $plusWeeklyDepletedBindsHeaderToWeekly
+        PlusWeeklyDepletedPreservesPrimaryQuotaChannel = $plusWeeklyDepletedPreservesPrimaryQuotaChannel
+        PlusWeeklyDepletedKeepsResetAtOnPrimaryChannel = $plusWeeklyDepletedKeepsResetAtOnPrimaryChannel
+        PlusWeeklyDepletedKeepsTrendOnFiveHour = $plusWeeklyDepletedKeepsTrendOnFiveHour
+        PlusWeeklyDepletedNeutralGrayIsKnownZero = $plusWeeklyDepletedNeutralGrayIsKnownZero
+        PlusWeeklyDepletedKeepsPlusExpandedHeight = $plusWeeklyDepletedKeepsPlusExpandedHeight
+        PlusWeeklyDepletedTrayTextUsesWeekly = $plusWeeklyDepletedTrayTextUsesWeekly
+        PlusPartialWeeklyKeepsFiveHourHeader = $plusPartialWeeklyKeepsFiveHourHeader
+        PlusWeeklyUnavailableKeepsFiveHourHeader = $plusWeeklyUnavailableKeepsFiveHourHeader
+        PlusFiveHourUnknownWithHealthyWeeklyKeepsUnknownHeader = $plusFiveHourUnknownWithHealthyWeeklyKeepsUnknownHeader
+        ProDowngradedWeeklyKeepsWeeklyHeader = $proDowngradedWeeklyKeepsWeeklyHeader
         TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
         TrendHealthyPaletteColor = $trendHealthyPaletteColor
         TrendLowBackgroundColor = $trendLowBackgroundColor
@@ -1792,8 +2163,20 @@ if ($CheckTransitions) {
             [double]$lowAlertSettingsSnapshot.CodexRapidDropPercent -eq 12.5 -and
             [string]$lowAlertSettingsSnapshot.DeepSeekRapidDropMode -eq 'Amount' -and
             [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropPercent -eq 11.5 -and
-            [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropAmount -eq 8.5
+            [double]$lowAlertSettingsSnapshot.DeepSeekRapidDropAmount -eq 8.5 -and
+            [double]$lowAlertSettingsSnapshot.AlertSettings.Codex.LowFiveHourThreshold -eq 35 -and
+            [double]$lowAlertSettingsSnapshot.AlertSettings.Codex.RapidWeeklyPercent -eq 9.5 -and
+            [double]$lowAlertSettingsSnapshot.AlertSettings.DeepSeek.LowAmountThreshold -eq 8.5
         )
+        AlertSettingsIsolateProviders = $alertSettingsIsolateProviders
+        AlertSettingsRoundTripPreservesNestedBlock = (
+            $alertSettingsRoundTripPreservesNestedBlock
+        )
+        LowAlertThresholdDialogQuotaRows = $lowAlertThresholdDialogQuotaRows
+        LowAlertChecksSplitPerWindow = $lowAlertChecksSplitPerWindow
+        WindowThresholdsAreIndependent = $windowThresholdsAreIndependent
+        DeepSeekLowChecksSplit = $deepSeekLowChecksSplit
+        RapidDropWindowsSplitPerQuota = $rapidDropWindowsSplitPerQuota
         RapidDropStatusBeforeSettings = $rapidDropStatusBeforeSettings
         RapidDropStatusAfterSettings = $rapidDropStatusAfterSettings
         RapidDropStatusWhenDisabled = $rapidDropStatusWhenDisabled
@@ -1801,23 +2184,23 @@ if ($CheckTransitions) {
         RapidDropStatusUpdatedImmediately = (
             [string]::Equals(
                 $rapidDropStatusBeforeSettings,
-                '30 分钟内下降 1pp · 阈值 10pp',
+                '5 小时 30 分钟内下降 1pp · 阈值 10pp',
                 [StringComparison]::Ordinal
             ) -and
             [string]::Equals(
                 $rapidDropStatusAfterSettings,
-                '45 分钟内下降 1pp · 阈值 12.5pp',
+                '5 小时 45 分钟内下降 1pp · 阈值 12.5pp',
                 [StringComparison]::Ordinal
             )
         )
         RapidDropDisabledShowsHourlyChange = [string]::Equals(
             $rapidDropStatusWhenDisabled,
-            '1 小时内下降 5pp',
+            '5 小时 1 小时内下降 5pp',
             [StringComparison]::Ordinal
         )
         RapidDropReenabledRestoresConfiguredWindow = [string]::Equals(
             $rapidDropStatusWhenReenabled,
-            '45 分钟内下降 1pp · 阈值 12.5pp',
+            '5 小时 45 分钟内下降 1pp · 阈值 12.5pp',
             [StringComparison]::Ordinal
         )
         FallbackProvenanceDisplayed = $fallbackProvenanceDisplayed

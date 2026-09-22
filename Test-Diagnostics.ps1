@@ -608,6 +608,39 @@ Assert-Diagnostic `
     -Condition ([bool]$transitions.PlusFiveHourWinsConflictingQuotaValues) `
     -Message 'Five-hour quota wins conflicting Codex Plus values'
 Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedBindsHeaderToWeekly) `
+    -Message 'A depleted weekly quota drives the Codex Plus header'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedPreservesPrimaryQuotaChannel) `
+    -Message 'Header binding does not move the primary quota channel'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedKeepsResetAtOnPrimaryChannel) `
+    -Message 'Header binding keeps the snapshot reset on the primary channel'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedKeepsTrendOnFiveHour) `
+    -Message 'Header binding keeps the trend on the five-hour channel'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedNeutralGrayIsKnownZero) `
+    -Message 'A depleted but known quota stays distinct from an unknown quota'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedKeepsPlusExpandedHeight) `
+    -Message 'Header binding does not change the expanded layout height'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyDepletedTrayTextUsesWeekly) `
+    -Message 'Tray text follows the bound header quota'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusPartialWeeklyKeepsFiveHourHeader) `
+    -Message 'A partly used weekly quota does not drive the Codex Plus header'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusWeeklyUnavailableKeepsFiveHourHeader) `
+    -Message 'An unavailable weekly quota does not drive the Codex Plus header'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.PlusFiveHourUnknownWithHealthyWeeklyKeepsUnknownHeader) `
+    -Message 'A missing five-hour quota stays unknown while weekly is healthy'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.ProDowngradedWeeklyKeepsWeeklyHeader) `
+    -Message 'Codex Pro keeps the weekly header when five-hour is depleted'
+Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendTimeAxisAligned) `
     -Message 'Trend chart uses elapsed-time x coordinates'
 Assert-Diagnostic `
@@ -623,7 +656,8 @@ Assert-Diagnostic `
     -Condition ([bool]$transitions.LowAlertMenuChecked) `
     -Message 'Low-alert menu UI'
 Assert-Diagnostic -Condition (
-    [string]$transitions.LowAlertThresholdMenuText -match '35%' -and
+    [string]$transitions.LowAlertThresholdMenuText -match '≤35%' -and
+    [string]$transitions.LowAlertThresholdMenuText -match '每周 ≤30%' -and
     [string]$transitions.UsageAlertSettingsMenuText -match '45'
 ) -Message 'Custom low-alert threshold menu UI'
 Assert-Diagnostic -Condition (
@@ -636,6 +670,19 @@ Assert-Diagnostic -Condition (
         [string]$transitions.RapidDropStatusText
     )
 ) -Message 'Custom low-alert threshold persistence'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.AlertSettingsIsolateProviders -and
+    [bool]$transitions.AlertSettingsRoundTripPreservesNestedBlock
+) -Message 'Alert settings are stored per data source'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.LowAlertThresholdDialogQuotaRows) `
+    -Message 'The alert settings dialog offers one threshold per quota window'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.LowAlertChecksSplitPerWindow -and
+    [bool]$transitions.WindowThresholdsAreIndependent -and
+    [bool]$transitions.DeepSeekLowChecksSplit -and
+    [bool]$transitions.RapidDropWindowsSplitPerQuota
+) -Message 'Low-remaining and rapid-drop checks are evaluated per quota window'
 Assert-Diagnostic `
     -Condition ([bool]$transitions.RapidDropStatusUpdatedImmediately) `
     -Message 'Custom rapid-drop settings update the detail status immediately'

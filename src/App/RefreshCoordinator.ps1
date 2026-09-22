@@ -894,6 +894,8 @@ function Set-ActiveProvider {
         }
     }
     $script:ActiveProvider = $Provider
+    Sync-ActiveAlertSettings
+    Sync-LowAlertMenuState
     Sync-ProviderMenuState
     Save-Settings
     if ($Refresh) { Invoke-Refresh }

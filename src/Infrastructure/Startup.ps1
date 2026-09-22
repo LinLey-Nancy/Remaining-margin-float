@@ -594,6 +594,11 @@ function Get-AppSettingsSnapshot {
     } else {
         $window.Top
     }
+    $alertSettingsPayload = [ordered]@{}
+    foreach ($providerId in (Get-UsageAlertProviderIds)) {
+        $alertSettingsPayload[$providerId] = Get-UsageAlertSettings `
+            -ProviderId $providerId
+    }
     return [pscustomobject][ordered]@{
         Left = $saveLeft
         Top = $saveTop
@@ -602,6 +607,9 @@ function Get-AppSettingsSnapshot {
         Provider = $script:ActiveProvider
         CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
         AutoUpdateEnabled = $script:AutoUpdateEnabled
+        AlertSettings = $alertSettingsPayload
+        # The flat keys mirror the active data source so that an older build
+        # reading this file after a downgrade still sees a sensible value.
         LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
         LowRemainingThreshold = $script:LowRemainingThreshold
         RapidDropAlertsEnabled = $script:RapidDropAlertsEnabled
@@ -615,14 +623,21 @@ function Get-AppSettingsSnapshot {
     }
 }
 
+function ConvertTo-SettingsJson {
+    param($Snapshot)
+
+    # -Depth 5 keeps the nested per-provider AlertSettings block intact: the
+    # default depth of 2 would flatten it into a string.
+    return $Snapshot | ConvertTo-Json -Depth 5
+}
+
 function Save-Settings {
     param([switch]$ThrowOnError)
 
     if ($isDiagnosticRun -or $script:IsRestoringSettings) { return }
 
     try {
-        Get-AppSettingsSnapshot |
-            ConvertTo-Json |
+        ConvertTo-SettingsJson -Snapshot (Get-AppSettingsSnapshot) |
             Set-Content -LiteralPath (Get-SettingsPath) -Encoding UTF8
     }
     catch {
@@ -681,55 +696,20 @@ function Restore-Settings {
                 $script:AutoUpdateEnabled =
                     [bool]$settings.AutoUpdateEnabled
             }
-            if ($settings.PSObject.Properties['LowRemainingAlertsEnabled']) {
-                $script:LowRemainingAlertsEnabled =
-                    [bool]$settings.LowRemainingAlertsEnabled
-            }
-            if ($settings.PSObject.Properties['LowRemainingThreshold']) {
-                $script:LowRemainingThreshold = ConvertTo-LowRemainingThreshold `
-                    -Value $settings.LowRemainingThreshold `
-                    -Fallback $script:LowRemainingThreshold
-            }
-            if ($settings.PSObject.Properties['RapidDropAlertsEnabled']) {
-                $script:RapidDropAlertsEnabled =
-                    [bool]$settings.RapidDropAlertsEnabled
-            }
-            if ($settings.PSObject.Properties['RapidDropWindowMinutes']) {
-                $script:RapidDropWindowMinutes =
-                    ConvertTo-RapidDropWindowMinutes `
-                        -Value $settings.RapidDropWindowMinutes `
-                        -Fallback $script:RapidDropWindowMinutes
-            }
-            if ($settings.PSObject.Properties['CodexRapidDropPercent']) {
-                $script:CodexRapidDropPercent =
-                    ConvertTo-RapidDropPercent `
-                        -Value $settings.CodexRapidDropPercent `
-                        -Fallback $script:CodexRapidDropPercent
-            }
-            if (
-                $settings.PSObject.Properties['DeepSeekRapidDropMode'] -and
-                [string]$settings.DeepSeekRapidDropMode -in @('Percent', 'Amount')
-            ) {
-                $script:DeepSeekRapidDropMode =
-                    [string]$settings.DeepSeekRapidDropMode
-            }
-            if ($settings.PSObject.Properties['DeepSeekRapidDropPercent']) {
-                $script:DeepSeekRapidDropPercent =
-                    ConvertTo-RapidDropPercent `
-                        -Value $settings.DeepSeekRapidDropPercent `
-                        -Fallback $script:DeepSeekRapidDropPercent
-            }
-            if ($settings.PSObject.Properties['DeepSeekRapidDropAmount']) {
-                $script:DeepSeekRapidDropAmount =
-                    ConvertTo-RapidDropAmount `
-                        -Value $settings.DeepSeekRapidDropAmount `
-                        -Fallback $script:DeepSeekRapidDropAmount
+            # Also migrates the flat pre-1.11.2 alert keys: when the nested
+            # AlertSettings block is absent they seed every data source.
+            # Diagnostics read their settings from the machine running them, so
+            # they start from defaults instead to stay deterministic.
+            if (-not $isDiagnosticRun) {
+                $script:AlertSettings =
+                    ConvertTo-UsageAlertSettingsMap -Value $settings
             }
         }
     }
     catch {
         $script:IsExpanded = $false
     }
+    Sync-ActiveAlertSettings
 
     if (
         $script:AutoUpdateEnabled -and
@@ -744,5 +724,6 @@ function Restore-Settings {
             'kimi' { 'Kimi' }
             default { 'Codex' }
         }
+        Sync-ActiveAlertSettings
     }
 }

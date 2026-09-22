@@ -1675,6 +1675,46 @@ function ConvertTo-RapidDropAmount {
     return $Fallback
 }
 
+function Get-RapidDropQuotaWindows {
+    param($Snapshot)
+
+    # Codex and Kimi Code expose two quota windows with independent rapid-drop
+    # thresholds; every other source is measured once with no quota period.
+    $windows = New-Object Collections.Generic.List[object]
+    $providerId = [string]$Snapshot.ProviderId
+    if ($providerId -notin @('Codex', 'Kimi')) {
+        $windows.Add([pscustomobject]@{ Period = ''; Threshold = 0.0 })
+        return $windows
+    }
+    $settings = Get-UsageAlertSettings -ProviderId $providerId
+    foreach ($period in @('FiveHour', 'Weekly')) {
+        $availableProperty = "${period}Available"
+        if (
+            -not $Snapshot.PSObject.Properties[$availableProperty] -or
+            -not [bool]$Snapshot.$availableProperty
+        ) {
+            continue
+        }
+        $windows.Add([pscustomobject]@{
+            Period = $period
+            Threshold = if ($period -eq 'Weekly') {
+                $settings.RapidWeeklyPercent
+            } else {
+                $settings.RapidFiveHourPercent
+            }
+        })
+    }
+    if ($windows.Count -eq 0) {
+        # Neither window is available: keep reporting the plan's primary
+        # window so the placeholder text still names the right quota.
+        $windows.Add([pscustomobject]@{
+            Period = (Get-CodexQuotaPresentation -Snapshot $Snapshot).Period
+            Threshold = $settings.RapidFiveHourPercent
+        })
+    }
+    return $windows
+}
+
 function Measure-RapidUsageDrop {
     param(
         [object[]]$Samples,
@@ -1685,9 +1725,12 @@ function Measure-RapidUsageDrop {
         [string]$DeepSeekMode = 'Percent',
         [double]$DeepSeekPercent = 10.0,
         [double]$DeepSeekAmount = 10.0,
+        [ValidateSet('', 'FiveHour', 'Weekly')]
+        [string]$QuotaPeriod = '',
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
 
+    $quotaPeriod = [string]$QuotaPeriod
     $emptyResult = {
         param(
             [string]$ProviderId,
@@ -1705,6 +1748,7 @@ function Measure-RapidUsageDrop {
             Threshold = $Threshold
             Drop = 0.0
             Unit = $Unit
+            QuotaPeriod = $quotaPeriod
             BaselineValue = $null
             CurrentValue = $null
             BaselineAtUtc = $null
@@ -1723,10 +1767,12 @@ function Measure-RapidUsageDrop {
         $metricType = 'Percent'
         $threshold = $CodexPercent
         $unit = '%'
-        $quotaPeriod = if (
-            $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
-            [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
-        ) { 'Weekly' } else { 'FiveHour' }
+        if (-not $quotaPeriod) {
+            $quotaPeriod = if (
+                $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
+                [string]$Snapshot.PrimaryQuotaPeriod -eq 'Weekly'
+            ) { 'Weekly' } else { 'FiveHour' }
+        }
         $quotaLabel = if ($quotaPeriod -eq 'Weekly') { '每周' } else { '5 小时' }
         if (-not [bool]$Snapshot.HasProgress) {
             return & $emptyResult $providerId $metricType $threshold $unit `
@@ -1809,6 +1855,7 @@ function Measure-RapidUsageDrop {
         Threshold = $threshold
         Drop = $drop
         Unit = $unit
+        QuotaPeriod = $quotaPeriod
         BaselineValue = [double]$baselineSample.RemainingValue
         CurrentValue = [double]$currentSample.RemainingValue
         BaselineAtUtc = $baselineSample.ObservedAtUtc
@@ -1970,6 +2017,285 @@ function Test-LowRemainingAlertCondition {
         return $false
     }
     return $true
+}
+
+function Test-UsageAlertThresholdCrossed {
+    param(
+        [bool]$Available,
+        [double]$Value,
+        [double]$Threshold,
+        $PreviousValue
+    )
+
+    # An explicit threshold check per metric: the previous value is only
+    # supplied for the series it belongs to, so unrelated quota windows never
+    # suppress each other's alerts.
+    if (-not $Available) { return $false }
+    if ($Value -gt $Threshold) { return $false }
+    if ($null -eq $PreviousValue) { return $true }
+    if ([double]::IsNaN([double]$PreviousValue)) { return $true }
+    return [double]$PreviousValue -gt $Threshold
+}
+
+function Get-UsageAlertProviderIds {
+    return @('Codex', 'Kimi', 'DeepSeek')
+}
+
+function New-DefaultUsageAlertSettings {
+    param([string]$ProviderId)
+
+    # DeepSeek reports a balance instead of quota windows, so it gets one
+    # threshold per metric kind rather than one per quota window.
+    if ($ProviderId -eq 'DeepSeek') {
+        return [pscustomobject][ordered]@{
+            ProviderId = 'DeepSeek'
+            LowAlertsEnabled = $true
+            LowPercentThreshold = 20.0
+            LowAmountThreshold = 10.0
+            RapidAlertsEnabled = $true
+            RapidWindowMinutes = 30
+            RapidMode = 'Percent'
+            RapidPercent = 10.0
+            RapidAmount = 10.0
+        }
+    }
+    return [pscustomobject][ordered]@{
+        ProviderId = $ProviderId
+        LowAlertsEnabled = $true
+        LowFiveHourThreshold = 20.0
+        LowWeeklyThreshold = 20.0
+        RapidAlertsEnabled = $true
+        RapidWindowMinutes = 30
+        RapidFiveHourPercent = 10.0
+        RapidWeeklyPercent = 10.0
+    }
+}
+
+function ConvertTo-UsageAlertSettings {
+    param(
+        [string]$ProviderId,
+        $Value,
+        [switch]$Strict
+    )
+
+    $defaults = New-DefaultUsageAlertSettings -ProviderId $ProviderId
+    $lowEnabled = [bool](Get-ObjectPropertyValue `
+        -Object $Value `
+        -Name 'LowAlertsEnabled' `
+        -Default $defaults.LowAlertsEnabled)
+    $rapidEnabled = [bool](Get-ObjectPropertyValue `
+        -Object $Value `
+        -Name 'RapidAlertsEnabled' `
+        -Default $defaults.RapidAlertsEnabled)
+    $windowMinutes = ConvertTo-RapidDropWindowMinutes `
+        -Value (Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'RapidWindowMinutes' `
+            -Default $defaults.RapidWindowMinutes) `
+        -Fallback $defaults.RapidWindowMinutes `
+        -Strict:$Strict
+    if ($ProviderId -eq 'DeepSeek') {
+        return [pscustomobject][ordered]@{
+            ProviderId = 'DeepSeek'
+            LowAlertsEnabled = $lowEnabled
+            LowPercentThreshold = ConvertTo-LowRemainingThreshold `
+                -Value (Get-ObjectPropertyValue `
+                    -Object $Value `
+                    -Name 'LowPercentThreshold' `
+                    -Default $defaults.LowPercentThreshold) `
+                -Fallback $defaults.LowPercentThreshold `
+                -Strict:$Strict
+            LowAmountThreshold = ConvertTo-RapidDropAmount `
+                -Value (Get-ObjectPropertyValue `
+                    -Object $Value `
+                    -Name 'LowAmountThreshold' `
+                    -Default $defaults.LowAmountThreshold) `
+                -Fallback $defaults.LowAmountThreshold `
+                -Strict:$Strict
+            RapidAlertsEnabled = $rapidEnabled
+            RapidWindowMinutes = $windowMinutes
+            RapidMode = if (
+                [string](Get-ObjectPropertyValue `
+                    -Object $Value `
+                    -Name 'RapidMode' `
+                    -Default $defaults.RapidMode) -eq 'Amount'
+            ) { 'Amount' } else { 'Percent' }
+            RapidPercent = ConvertTo-RapidDropPercent `
+                -Value (Get-ObjectPropertyValue `
+                    -Object $Value `
+                    -Name 'RapidPercent' `
+                    -Default $defaults.RapidPercent) `
+                -Fallback $defaults.RapidPercent `
+                -Strict:$Strict
+            RapidAmount = ConvertTo-RapidDropAmount `
+                -Value (Get-ObjectPropertyValue `
+                    -Object $Value `
+                    -Name 'RapidAmount' `
+                    -Default $defaults.RapidAmount) `
+                -Fallback $defaults.RapidAmount `
+                -Strict:$Strict
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        ProviderId = $ProviderId
+        LowAlertsEnabled = $lowEnabled
+        LowFiveHourThreshold = ConvertTo-LowRemainingThreshold `
+            -Value (Get-ObjectPropertyValue `
+                -Object $Value `
+                -Name 'LowFiveHourThreshold' `
+                -Default $defaults.LowFiveHourThreshold) `
+            -Fallback $defaults.LowFiveHourThreshold `
+            -Strict:$Strict
+        LowWeeklyThreshold = ConvertTo-LowRemainingThreshold `
+            -Value (Get-ObjectPropertyValue `
+                -Object $Value `
+                -Name 'LowWeeklyThreshold' `
+                -Default $defaults.LowWeeklyThreshold) `
+            -Fallback $defaults.LowWeeklyThreshold `
+            -Strict:$Strict
+        RapidAlertsEnabled = $rapidEnabled
+        RapidWindowMinutes = $windowMinutes
+        RapidFiveHourPercent = ConvertTo-RapidDropPercent `
+            -Value (Get-ObjectPropertyValue `
+                -Object $Value `
+                -Name 'RapidFiveHourPercent' `
+                -Default $defaults.RapidFiveHourPercent) `
+            -Fallback $defaults.RapidFiveHourPercent `
+            -Strict:$Strict
+        RapidWeeklyPercent = ConvertTo-RapidDropPercent `
+            -Value (Get-ObjectPropertyValue `
+                -Object $Value `
+                -Name 'RapidWeeklyPercent' `
+                -Default $defaults.RapidWeeklyPercent) `
+            -Fallback $defaults.RapidWeeklyPercent `
+            -Strict:$Strict
+    }
+}
+
+function ConvertTo-UsageAlertSettingsMap {
+    param($Value)
+
+    # Reads the nested AlertSettings block. Settings files written before
+    # 1.11.2 only carry flat keys, so those are reused as the starting point
+    # for every data source instead of silently resetting them.
+    $legacy = [pscustomobject][ordered]@{
+        LowAlertsEnabled = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'LowRemainingAlertsEnabled' `
+            -Default $true
+        RapidAlertsEnabled = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'RapidDropAlertsEnabled' `
+            -Default $true
+        RapidWindowMinutes = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'RapidDropWindowMinutes' `
+            -Default 30
+        RapidMode = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'DeepSeekRapidDropMode' `
+            -Default 'Percent'
+        RapidPercent = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'DeepSeekRapidDropPercent' `
+            -Default 10.0
+        RapidAmount = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'DeepSeekRapidDropAmount' `
+            -Default 10.0
+        LowPercentThreshold = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'LowRemainingThreshold' `
+            -Default 20.0
+        LowFiveHourThreshold = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'LowRemainingThreshold' `
+            -Default 20.0
+        LowWeeklyThreshold = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'LowRemainingThreshold' `
+            -Default 20.0
+        RapidFiveHourPercent = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'CodexRapidDropPercent' `
+            -Default 10.0
+        RapidWeeklyPercent = Get-ObjectPropertyValue `
+            -Object $Value `
+            -Name 'CodexRapidDropPercent' `
+            -Default 10.0
+    }
+    $nested = Get-ObjectPropertyValue -Object $Value -Name 'AlertSettings'
+    $map = [ordered]@{}
+    foreach ($providerId in (Get-UsageAlertProviderIds)) {
+        $stored = Get-ObjectPropertyValue -Object $nested -Name $providerId
+        $source = [ordered]@{}
+        foreach ($property in $legacy.PSObject.Properties) {
+            $source[$property.Name] = $property.Value
+        }
+        if ($stored) {
+            foreach ($property in $stored.PSObject.Properties) {
+                $source[$property.Name] = $property.Value
+            }
+        }
+        $map[$providerId] = ConvertTo-UsageAlertSettings `
+            -ProviderId $providerId `
+            -Value ([pscustomobject]$source)
+    }
+    return $map
+}
+
+function Get-UsageAlertSettings {
+    param([string]$ProviderId)
+
+    $provider = [string]$ProviderId
+    if ($provider -notin (Get-UsageAlertProviderIds)) {
+        $provider = 'Codex'
+    }
+    if (
+        $script:AlertSettings -and
+        $script:AlertSettings.Contains($provider) -and
+        $script:AlertSettings[$provider]
+    ) {
+        return $script:AlertSettings[$provider]
+    }
+    return ConvertTo-UsageAlertSettings `
+        -ProviderId $provider `
+        -Value (New-DefaultUsageAlertSettings -ProviderId $provider)
+}
+
+function Sync-ActiveAlertSettings {
+    # Settings are stored per data source; the $script: mirrors below keep the
+    # existing single-source readers working and always describe the data
+    # source the window currently shows.
+    $activeProvider = [string]$script:ActiveProvider
+    $active = Get-UsageAlertSettings -ProviderId $activeProvider
+    $deepSeek = Get-UsageAlertSettings -ProviderId 'DeepSeek'
+
+    $script:LowRemainingAlertsEnabled = [bool]$active.LowAlertsEnabled
+    $script:RapidDropAlertsEnabled = [bool]$active.RapidAlertsEnabled
+    $script:RapidDropWindowMinutes = [int]$active.RapidWindowMinutes
+    $script:DeepSeekRapidDropMode = [string]$deepSeek.RapidMode
+    $script:DeepSeekRapidDropPercent = [double]$deepSeek.RapidPercent
+    $script:DeepSeekRapidDropAmount = [double]$deepSeek.RapidAmount
+
+    if ([string]$active.ProviderId -eq 'DeepSeek') {
+        $script:LowRemainingThreshold = [double]$active.LowPercentThreshold
+        $script:LowFiveHourThreshold = [double]$active.LowPercentThreshold
+        $script:LowWeeklyThreshold = [double]$active.LowPercentThreshold
+        $script:LowAmountThreshold = [double]$active.LowAmountThreshold
+        $script:CodexRapidDropPercent = [double]$active.RapidPercent
+        $script:RapidFiveHourPercent = [double]$active.RapidPercent
+        $script:RapidWeeklyPercent = [double]$active.RapidPercent
+        return
+    }
+    $script:LowRemainingThreshold = [double]$active.LowFiveHourThreshold
+    $script:LowFiveHourThreshold = [double]$active.LowFiveHourThreshold
+    $script:LowWeeklyThreshold = [double]$active.LowWeeklyThreshold
+    $script:LowAmountThreshold = 0.0
+    $script:CodexRapidDropPercent = [double]$active.RapidFiveHourPercent
+    $script:RapidFiveHourPercent = [double]$active.RapidFiveHourPercent
+    $script:RapidWeeklyPercent = [double]$active.RapidWeeklyPercent
 }
 
 function ConvertTo-LowRemainingThreshold {

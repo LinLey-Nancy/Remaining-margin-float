@@ -1351,6 +1351,31 @@ function Set-TrendChart {
         $allPoints[-1].Y - ($EndMarker.Height / 2)
     )
 }
+function Format-RapidDropDisplaySummary {
+    param(
+        $Insights,
+        $RapidDrop
+    )
+
+    if (-not $RapidDrop) { return '' }
+    $summary = [string]$RapidDrop.Summary
+    # Only disambiguate when the source actually reports two quota windows.
+    if (
+        -not [string]::IsNullOrWhiteSpace([string]$RapidDrop.QuotaPeriod) -and
+        $Insights -and
+        $Insights.PSObject.Properties['RapidDrops'] -and
+        @($Insights.RapidDrops).Count -gt 1
+    ) {
+        $label = if ($RapidDrop.QuotaPeriod -eq 'Weekly') {
+            '每周'
+        } else {
+            '5 小时'
+        }
+        return '{0} {1}' -f $label, $summary
+    }
+    return $summary
+}
+
 function Update-UsageInsightView {
     param($Insights)
 
@@ -1441,16 +1466,19 @@ function Update-UsageInsightView {
         -Hours (24 * 7)
 
     $rapidDrop = $Insights.RapidDrop
+    $rapidDropSummary = Format-RapidDropDisplaySummary `
+        -Insights $Insights `
+        -RapidDrop $rapidDrop
     if (-not $script:RapidDropAlertsEnabled) {
         $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
             [Windows.Media.ColorConverter]::ConvertFromString('#9AA09B')
         )
         $RapidDropText.Text = if ($rapidDrop -and $rapidDrop.Available) {
-            $rapidDrop.Summary
+            $rapidDropSummary
         }
         else {
             '1 小时内下降 · ' + $(if ($rapidDrop) {
-                $rapidDrop.Summary
+                $rapidDropSummary
             } else {
                 '正在积累样本'
             })
@@ -1461,7 +1489,7 @@ function Update-UsageInsightView {
     elseif (-not $rapidDrop -or -not $rapidDrop.Available) {
         $RapidDropStatusDot.Fill = $window.FindResource('Sage')
         $RapidDropText.Text = '快速下降监控 · ' + $(if ($rapidDrop) {
-            $rapidDrop.Summary
+            $rapidDropSummary
         } else {
             '正在积累样本'
         })
@@ -1472,7 +1500,7 @@ function Update-UsageInsightView {
         $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
             [Windows.Media.ColorConverter]::ConvertFromString('#B75B52')
         )
-        $RapidDropText.Text = '检测到快速下降 · ' + $rapidDrop.Summary
+        $RapidDropText.Text = '检测到快速下降 · ' + $rapidDropSummary
         $RapidDropText.Foreground = New-Object Windows.Media.SolidColorBrush(
             [Windows.Media.ColorConverter]::ConvertFromString('#984B44')
         )
@@ -1488,7 +1516,7 @@ function Update-UsageInsightView {
                 -Currency $rapidDrop.Unit
         }
         $RapidDropText.Text = '{0} · 阈值 {1}' -f
-            $rapidDrop.Summary,
+            $rapidDropSummary,
             $thresholdText
         $RapidDropText.Foreground = $window.FindResource('TextSecondary')
         $RapidDropText.FontWeight = 'Normal'
@@ -1544,6 +1572,65 @@ function Get-RapidDropDisplayWindowMinutes {
         return $script:RapidDropWindowMinutes
     }
     return 60
+}
+
+function Set-RapidDropInsightValues {
+    param(
+        $Snapshot,
+        $Insights,
+        [DateTimeOffset]$Now = [DateTimeOffset]::Now
+    )
+
+    # One measurement per quota window: the thresholds are configured per
+    # window and the sample series is already isolated by quota period.
+    $settings = Get-UsageAlertSettings -ProviderId ([string]$Snapshot.ProviderId)
+    $deepSeekSettings = Get-UsageAlertSettings -ProviderId 'DeepSeek'
+    $windowMinutes = if ([bool]$settings.RapidAlertsEnabled) {
+        [int]$settings.RapidWindowMinutes
+    } else {
+        60
+    }
+    $rapidDrops = New-Object Collections.Generic.List[object]
+    foreach ($rapidWindow in (Get-RapidDropQuotaWindows -Snapshot $Snapshot)) {
+        $rapidDrops.Add((Measure-RapidUsageDrop `
+            -Samples @($script:UsageSyncSession.RapidSamples) `
+            -Snapshot $Snapshot `
+            -QuotaPeriod $rapidWindow.Period `
+            -WindowMinutes $windowMinutes `
+            -CodexPercent $rapidWindow.Threshold `
+            -DeepSeekMode ([string]$deepSeekSettings.RapidMode) `
+            -DeepSeekPercent ([double]$deepSeekSettings.RapidPercent) `
+            -DeepSeekAmount ([double]$deepSeekSettings.RapidAmount) `
+            -Now $Now))
+    }
+    # The single-line status shows whichever window is closer to trouble.
+    $displayDrop = $null
+    foreach ($candidate in $rapidDrops) {
+        if (-not $displayDrop) {
+            $displayDrop = $candidate
+            continue
+        }
+        $candidateRank = [int][bool]$candidate.IsRapid
+        $displayRank = [int][bool]$displayDrop.IsRapid
+        if (
+            $candidateRank -gt $displayRank -or
+            (
+                $candidateRank -eq $displayRank -and
+                [double]$candidate.Drop -gt [double]$displayDrop.Drop
+            )
+        ) {
+            $displayDrop = $candidate
+        }
+    }
+    # StrictMode 2.0 rejects assigning a property that does not exist yet, so
+    # the per-window list has to be attached with Add-Member. The value must be
+    # a plain array: Add-Member rejects an array subexpression here.
+    $Insights | Add-Member `
+        -NotePropertyName RapidDrops `
+        -NotePropertyValue $rapidDrops.ToArray() `
+        -Force
+    $Insights.RapidDrop = $displayDrop
+    return $Insights
 }
 
 function Set-SessionRapidDropInsight {
@@ -1658,23 +1745,19 @@ function Set-SessionRapidDropInsight {
         )
     }
 
-    $rapidDrop = Measure-RapidUsageDrop `
-        -Samples @($script:UsageSyncSession.RapidSamples) `
+    $Insights = Set-RapidDropInsightValues `
         -Snapshot $Snapshot `
-        -WindowMinutes (Get-RapidDropDisplayWindowMinutes) `
-        -CodexPercent $script:CodexRapidDropPercent `
-        -DeepSeekMode $script:DeepSeekRapidDropMode `
-        -DeepSeekPercent $script:DeepSeekRapidDropPercent `
-        -DeepSeekAmount $script:DeepSeekRapidDropAmount `
+        -Insights $Insights `
         -Now $ObservedAt
-    if ($excludeCurrentSample) {
-        $rapidDrop.Available = $false
-        $rapidDrop.IsRapid = $false
+    foreach ($rapidDrop in @($Insights.RapidDrops)) {
+        if ($excludeCurrentSample) {
+            $rapidDrop.Available = $false
+            $rapidDrop.IsRapid = $false
+        }
+        if (-not [string]::IsNullOrWhiteSpace($summaryOverride)) {
+            $rapidDrop.Summary = $summaryOverride
+        }
     }
-    if (-not [string]::IsNullOrWhiteSpace($summaryOverride)) {
-        $rapidDrop.Summary = $summaryOverride
-    }
-    $Insights.RapidDrop = $rapidDrop
     return $Insights
 }
 
@@ -1752,8 +1835,29 @@ function Invoke-StartupUsageSnapshotNotification {
     }
 }
 
+function Get-DeepSeekDisplayCurrency {
+    if (
+        $script:LastSnapshot -and
+        [string]$script:LastSnapshot.ProviderId -eq 'DeepSeek' -and
+        $script:LastSnapshot.PSObject.Properties['Currency']
+    ) {
+        return [string]$script:LastSnapshot.Currency
+    }
+    return 'CNY'
+}
+
 function Get-LowRemainingAlertMenuText {
-    return '低余量提醒（≤{0:0}%）' -f $script:LowRemainingThreshold
+    $settings = Get-UsageAlertSettings -ProviderId $script:ActiveProvider
+    if ([string]$settings.ProviderId -eq 'DeepSeek') {
+        return '低余量提醒（≤{0:0}% 或 ≤{1}）' -f `
+            [double]$settings.LowPercentThreshold,
+            (Format-CurrencyAmount `
+                -Amount $settings.LowAmountThreshold `
+                -Currency (Get-DeepSeekDisplayCurrency))
+    }
+    return '低余量提醒（5 小时 ≤{0:0}% · 每周 ≤{1:0}%）' -f `
+        [double]$settings.LowFiveHourThreshold,
+        [double]$settings.LowWeeklyThreshold
 }
 
 function Get-UsageAlertSettingsMenuText {
@@ -1762,12 +1866,15 @@ function Get-UsageAlertSettingsMenuText {
 
 function Sync-LowAlertMenuState {
     $menuText = Get-LowRemainingAlertMenuText
+    $lowEnabled = [bool](
+        Get-UsageAlertSettings -ProviderId $script:ActiveProvider
+    ).LowAlertsEnabled
     if ($script:LowAlertsMenuItem) {
-        $script:LowAlertsMenuItem.IsChecked = $script:LowRemainingAlertsEnabled
+        $script:LowAlertsMenuItem.IsChecked = $lowEnabled
         $script:LowAlertsMenuItem.Header = $menuText
     }
     if ($script:TrayLowAlertsItem) {
-        $script:TrayLowAlertsItem.Checked = $script:LowRemainingAlertsEnabled
+        $script:TrayLowAlertsItem.Checked = $lowEnabled
         $script:TrayLowAlertsItem.Text = $menuText
     }
     $settingsMenuText = Get-UsageAlertSettingsMenuText
@@ -1782,12 +1889,14 @@ function Sync-LowAlertMenuState {
 function Set-LowRemainingAlertsEnabled {
     param([bool]$Enabled)
 
-    $script:LowRemainingAlertsEnabled = $Enabled
-    if (-not $Enabled) {
-        $script:LowAlertActive = @{}
+    try {
+        [void](Set-UsageAlertSettings -LowAlertsEnabled $Enabled)
     }
-    Sync-LowAlertMenuState
-    Save-Settings
+    catch {
+        # A failed write must not break the menu: Set-UsageAlertSettings has
+        # already rolled the value back, so just re-render from stored state.
+        Sync-LowAlertMenuState
+    }
 }
 
 function Refresh-RapidDropStatusView {
@@ -1795,85 +1904,80 @@ function Refresh-RapidDropStatusView {
         return
     }
 
-    $script:LastUsageInsights.RapidDrop = Measure-RapidUsageDrop `
-        -Samples @($script:UsageSyncSession.RapidSamples) `
+    $script:LastUsageInsights = Set-RapidDropInsightValues `
         -Snapshot $script:LastSnapshot `
-        -WindowMinutes (Get-RapidDropDisplayWindowMinutes) `
-        -CodexPercent $script:CodexRapidDropPercent `
-        -DeepSeekMode $script:DeepSeekRapidDropMode `
-        -DeepSeekPercent $script:DeepSeekRapidDropPercent `
-        -DeepSeekAmount $script:DeepSeekRapidDropAmount
+        -Insights $script:LastUsageInsights
     Update-UsageInsightView -Insights $script:LastUsageInsights
 }
 
 function Set-UsageAlertSettings {
     param(
-        [bool]$LowAlertsEnabled,
-        $LowThreshold,
-        [bool]$RapidAlertsEnabled,
+        [string]$ProviderId = '',
+        $LowAlertsEnabled,
+        $RapidAlertsEnabled,
         $WindowMinutes,
-        $CodexPercent,
-        [ValidateSet('Percent', 'Amount')]
-        [string]$DeepSeekMode,
-        $DeepSeekPercent,
-        $DeepSeekAmount
+        $LowFiveHourThreshold,
+        $LowWeeklyThreshold,
+        $LowPercentThreshold,
+        $LowAmountThreshold,
+        $RapidFiveHourPercent,
+        $RapidWeeklyPercent,
+        [ValidateSet('', 'Percent', 'Amount')]
+        [string]$RapidMode = '',
+        $RapidPercent,
+        $RapidAmount
     )
 
-    $validatedLowThreshold = ConvertTo-LowRemainingThreshold `
-        -Value $LowThreshold `
-        -Strict
-    $validatedWindow = ConvertTo-RapidDropWindowMinutes `
-        -Value $WindowMinutes `
-        -Strict
-    $validatedCodexPercent = ConvertTo-RapidDropPercent `
-        -Value $CodexPercent `
-        -Strict
-    $validatedDeepSeekPercent = ConvertTo-RapidDropPercent `
-        -Value $DeepSeekPercent `
-        -Strict
-    $validatedDeepSeekAmount = ConvertTo-RapidDropAmount `
-        -Value $DeepSeekAmount `
-        -Strict
+    # Only the values the caller actually passes are replaced; everything else
+    # keeps the stored value so a dialog that edits one metric cannot reset the
+    # others.
+    $provider = if ([string]::IsNullOrWhiteSpace($ProviderId)) {
+        [string]$script:ActiveProvider
+    } else { [string]$ProviderId }
+    if ($provider -notin (Get-UsageAlertProviderIds)) { $provider = 'Codex' }
+    if (-not $script:AlertSettings) { $script:AlertSettings = [ordered]@{} }
 
-    $previousSettings = [pscustomobject]@{
-        LowRemainingAlertsEnabled = $script:LowRemainingAlertsEnabled
-        LowRemainingThreshold = $script:LowRemainingThreshold
-        RapidDropAlertsEnabled = $script:RapidDropAlertsEnabled
-        RapidDropWindowMinutes = $script:RapidDropWindowMinutes
-        CodexRapidDropPercent = $script:CodexRapidDropPercent
-        DeepSeekRapidDropMode = $script:DeepSeekRapidDropMode
-        DeepSeekRapidDropPercent = $script:DeepSeekRapidDropPercent
-        DeepSeekRapidDropAmount = $script:DeepSeekRapidDropAmount
+    $previous = Get-UsageAlertSettings -ProviderId $provider
+    $candidate = [ordered]@{}
+    foreach ($property in $previous.PSObject.Properties) {
+        $candidate[$property.Name] = $property.Value
     }
-    $script:LowRemainingAlertsEnabled = $LowAlertsEnabled
-    $script:LowRemainingThreshold = $validatedLowThreshold
-    $script:RapidDropAlertsEnabled = $RapidAlertsEnabled
-    $script:RapidDropWindowMinutes = $validatedWindow
-    $script:CodexRapidDropPercent = $validatedCodexPercent
-    $script:DeepSeekRapidDropMode = $DeepSeekMode
-    $script:DeepSeekRapidDropPercent = $validatedDeepSeekPercent
-    $script:DeepSeekRapidDropAmount = $validatedDeepSeekAmount
+    $provided = @{
+        LowAlertsEnabled = $LowAlertsEnabled
+        RapidAlertsEnabled = $RapidAlertsEnabled
+        RapidWindowMinutes = $WindowMinutes
+        LowFiveHourThreshold = $LowFiveHourThreshold
+        LowWeeklyThreshold = $LowWeeklyThreshold
+        LowPercentThreshold = $LowPercentThreshold
+        LowAmountThreshold = $LowAmountThreshold
+        RapidFiveHourPercent = $RapidFiveHourPercent
+        RapidWeeklyPercent = $RapidWeeklyPercent
+        RapidMode = $RapidMode
+        RapidPercent = $RapidPercent
+        RapidAmount = $RapidAmount
+    }
+    foreach ($name in @($provided.Keys)) {
+        $value = $provided[$name]
+        if ($null -eq $value) { continue }
+        if ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) {
+            continue
+        }
+        $candidate[$name] = $value
+    }
+
+    $validated = ConvertTo-UsageAlertSettings `
+        -ProviderId $provider `
+        -Value ([pscustomobject]$candidate) `
+        -Strict
+    $script:AlertSettings[$provider] = $validated
+    Sync-ActiveAlertSettings
     Sync-LowAlertMenuState
     try {
         Save-Settings -ThrowOnError
     }
     catch {
-        $script:LowRemainingAlertsEnabled =
-            $previousSettings.LowRemainingAlertsEnabled
-        $script:LowRemainingThreshold =
-            $previousSettings.LowRemainingThreshold
-        $script:RapidDropAlertsEnabled =
-            $previousSettings.RapidDropAlertsEnabled
-        $script:RapidDropWindowMinutes =
-            $previousSettings.RapidDropWindowMinutes
-        $script:CodexRapidDropPercent =
-            $previousSettings.CodexRapidDropPercent
-        $script:DeepSeekRapidDropMode =
-            $previousSettings.DeepSeekRapidDropMode
-        $script:DeepSeekRapidDropPercent =
-            $previousSettings.DeepSeekRapidDropPercent
-        $script:DeepSeekRapidDropAmount =
-            $previousSettings.DeepSeekRapidDropAmount
+        $script:AlertSettings[$provider] = $previous
+        Sync-ActiveAlertSettings
         Sync-LowAlertMenuState
         throw
     }
@@ -1889,74 +1993,75 @@ function New-LowRemainingAlertSettingsDialog {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="使用提醒设置"
         Width="480"
-        Height="540"
+        SizeToContent="Height"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
         Background="#FCFBF8"
         FontFamily="Microsoft YaHei UI">
-    <Grid Margin="24">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="20"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="12"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="20"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="12"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="12"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="12"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="38"/>
-        </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0">
-            <TextBlock Text="使用提醒"
-                       FontSize="19" FontWeight="SemiBold" Foreground="#343A35"/>
-            <TextBlock x:Name="CodexAlertSummary" Margin="0,5,0,0"
-                       Text="Codex 提醒跟随 5 小时额度；低余量和快速下降分别判断。"
-                       FontSize="10.5" Foreground="#667069"/>
-        </StackPanel>
+    <StackPanel Margin="24">
+        <TextBlock Text="使用提醒"
+                   FontSize="19" FontWeight="SemiBold" Foreground="#343A35"/>
+        <TextBlock x:Name="CodexAlertSummary" Margin="0,5,0,0"
+                   Text="当前数据源：Codex；低余量和快速下降分别判断。"
+                   FontSize="10.5" Foreground="#667069" TextWrapping="Wrap"/>
 
         <CheckBox x:Name="LowAlertsEnabledBox"
-                  Grid.Row="2"
+                  Margin="0,18,0,0"
                   Content="启用低余量提醒"
                   FontSize="12"
                   FontWeight="SemiBold"
                   Foreground="#3B433E"/>
-        <Grid Grid.Row="4">
+        <Grid Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="45"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Text="余量低于"
+            <TextBlock x:Name="ThresholdLabel"
+                       Text="5 小时余量低于"
                        VerticalAlignment="Center"
                        FontSize="11"
                        Foreground="#59635C"/>
             <TextBox x:Name="ThresholdBox" Grid.Column="1" Height="34"
                       Padding="9,6" BorderBrush="#D8DDD7" Background="White"
                       AutomationProperties.Name="低余量提醒阈值"/>
-            <TextBlock Grid.Column="2" Text="%" Margin="10,7,0,0"
+            <TextBlock x:Name="ThresholdUnitText" Grid.Column="2" Text="%"
+                       Margin="10,7,0,0"
+                       FontSize="12" Foreground="#4E5750"/>
+        </Grid>
+        <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="45"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="SecondaryThresholdLabel"
+                       Text="每周余量低于"
+                       VerticalAlignment="Center"
+                       FontSize="11"
+                       Foreground="#59635C"/>
+            <TextBox x:Name="SecondaryThresholdBox" Grid.Column="1" Height="34"
+                      Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                      AutomationProperties.Name="每周低余量提醒阈值"/>
+            <TextBlock x:Name="SecondaryThresholdUnitText" Grid.Column="2"
+                       Text="%" Margin="10,7,0,0"
                        FontSize="12" Foreground="#4E5750"/>
         </Grid>
 
-        <Border Grid.Row="5"
+        <Border Margin="0,18,0,0"
                 Height="1"
                 VerticalAlignment="Center"
                 Background="#E2E5E0"/>
 
         <CheckBox x:Name="RapidAlertsEnabledBox"
-                  Grid.Row="6"
+                  Margin="0,18,0,0"
                   Content="启用快速下降提醒"
                   FontSize="12"
                   FontWeight="SemiBold"
                   Foreground="#3B433E"/>
 
-        <Grid Grid.Row="8">
+        <Grid Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="*"/>
@@ -1973,31 +2078,49 @@ function New-LowRemainingAlertSettingsDialog {
                        FontSize="11" Foreground="#4E5750"/>
         </Grid>
 
-        <Grid Grid.Row="10">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="150"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="45"/>
-            </Grid.ColumnDefinitions>
-            <TextBlock x:Name="CodexDropLabel" Text="Codex 5 小时下降"
-                       VerticalAlignment="Center"
-                       FontSize="11"
-                       Foreground="#59635C"/>
-            <TextBox x:Name="CodexDropBox" Grid.Column="1" Height="34"
-                     Padding="9,6" BorderBrush="#D8DDD7" Background="White"
-                      AutomationProperties.Name="Codex 5 小时额度快速下降阈值"/>
-            <TextBlock Grid.Column="2" Text="百分点" Margin="10,7,0,0"
-                       FontSize="10" Foreground="#4E5750"/>
-        </Grid>
+        <StackPanel x:Name="QuotaRapidPanel">
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="45"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="CodexDropLabel" Text="5 小时下降"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="#59635C"/>
+                <TextBox x:Name="CodexDropBox" Grid.Column="1" Height="34"
+                         Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                         AutomationProperties.Name="5 小时额度快速下降阈值"/>
+                <TextBlock Grid.Column="2" Text="百分点" Margin="10,7,0,0"
+                           FontSize="10" Foreground="#4E5750"/>
+            </Grid>
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="45"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="SecondaryDropLabel" Text="每周下降"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="#59635C"/>
+                <TextBox x:Name="SecondaryDropBox" Grid.Column="1" Height="34"
+                         Padding="9,6" BorderBrush="#D8DDD7" Background="White"
+                         AutomationProperties.Name="每周额度快速下降阈值"/>
+                <TextBlock Grid.Column="2" Text="百分点" Margin="10,7,0,0"
+                           FontSize="10" Foreground="#4E5750"/>
+            </Grid>
+        </StackPanel>
 
-        <Grid Grid.Row="12">
+        <Grid x:Name="BalanceRapidPanel" Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="112"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="45"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Text="DeepSeek 下降"
+            <TextBlock Text="账户余额下降"
                        VerticalAlignment="Center"
                        FontSize="11"
                        Foreground="#59635C"/>
@@ -2027,16 +2150,16 @@ function New-LowRemainingAlertSettingsDialog {
                        Foreground="#4E5750"/>
         </Grid>
 
-        <StackPanel Grid.Row="13" Margin="0,10,0,0">
+        <StackPanel Margin="0,14,0,0">
             <TextBlock FontSize="9.5"
                        Foreground="#7B847D"
                        TextWrapping="Wrap"
-                       Text="时间范围可设置 5–1440 分钟。DeepSeek 百分比模式需要先设置预算基准；金额模式直接比较账户余额。"/>
+                       Text="时间范围可设置 5–1440 分钟；低余量阈值需为 1–99 的整数。DeepSeek 百分比模式需要先设置预算基准，金额阈值直接比较账户余额。"/>
             <TextBlock x:Name="ErrorText" Margin="0,8,0,0"
                     Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
         </StackPanel>
 
-        <Grid Grid.Row="14">
+        <Grid Margin="0,18,0,0" Height="34">
             <Button Width="82" Height="34" HorizontalAlignment="Right"
                     Margin="0,0,92,0" Content="取消" IsCancel="True"/>
             <Button x:Name="SaveButton" Width="82" Height="34"
@@ -2044,7 +2167,7 @@ function New-LowRemainingAlertSettingsDialog {
                     Background="#E9F0EA" BorderBrush="#BFCDBF"
                     Foreground="#344A3B"/>
         </Grid>
-    </Grid>
+    </StackPanel>
 </Window>
 '@
     $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
@@ -2053,63 +2176,125 @@ function New-LowRemainingAlertSettingsDialog {
 }
 
 function Show-LowRemainingAlertSettings {
+    # The dialog always edits the data source the window currently shows.
+    $providerId = [string]$script:ActiveProvider
+    if ($providerId -notin (Get-UsageAlertProviderIds)) { $providerId = 'Codex' }
+    $settings = Get-UsageAlertSettings -ProviderId $providerId
+    $isBalanceSource = [string]$settings.ProviderId -eq 'DeepSeek'
+    $currency = Get-DeepSeekDisplayCurrency
+    $providerDisplayName = if ($providerId -eq 'Kimi') {
+        'Kimi Code'
+    } else { $providerId }
+    $currencySymbol = if ($currency -eq 'USD') { '$' } else { '¥' }
+
     $dialog = New-LowRemainingAlertSettingsDialog
     $dialog.Owner = $window
     $codexAlertSummary = $dialog.FindName('CodexAlertSummary')
-    $codexDropLabel = $dialog.FindName('CodexDropLabel')
+    $thresholdLabel = $dialog.FindName('ThresholdLabel')
+    $thresholdUnitText = $dialog.FindName('ThresholdUnitText')
+    $secondaryThresholdLabel = $dialog.FindName('SecondaryThresholdLabel')
+    $secondaryThresholdUnitText =
+        $dialog.FindName('SecondaryThresholdUnitText')
     $lowEnabledBox = $dialog.FindName('LowAlertsEnabledBox')
     $thresholdBox = $dialog.FindName('ThresholdBox')
+    $secondaryThresholdBox = $dialog.FindName('SecondaryThresholdBox')
     $rapidEnabledBox = $dialog.FindName('RapidAlertsEnabledBox')
     $windowBox = $dialog.FindName('WindowBox')
+    $quotaRapidPanel = $dialog.FindName('QuotaRapidPanel')
+    $balanceRapidPanel = $dialog.FindName('BalanceRapidPanel')
+    $codexDropLabel = $dialog.FindName('CodexDropLabel')
     $codexDropBox = $dialog.FindName('CodexDropBox')
+    $secondaryDropLabel = $dialog.FindName('SecondaryDropLabel')
+    $secondaryDropBox = $dialog.FindName('SecondaryDropBox')
     $deepSeekModeBox = $dialog.FindName('DeepSeekModeBox')
     $deepSeekDropBox = $dialog.FindName('DeepSeekDropBox')
     $deepSeekUnitText = $dialog.FindName('DeepSeekUnitText')
     $errorText = $dialog.FindName('ErrorText')
     $saveButton = $dialog.FindName('SaveButton')
-    $codexQuotaLabel = if (
-        $script:LastSnapshot -and
-        [string]$script:LastSnapshot.ProviderId -in @('Codex', 'Kimi')
-    ) {
-        (Get-CodexQuotaPresentation -Snapshot $script:LastSnapshot).Label
-    } else { '5 小时' }
-    $codexAlertSummary.Text = (
-        "Codex / Kimi Code 提醒跟随$codexQuotaLabel 额度；低余量和快速下降分别判断。"
-    )
-    $codexDropLabel.Text = "Codex / Kimi $codexQuotaLabel 下降"
-    [Windows.Automation.AutomationProperties]::SetName(
-        $codexDropBox,
-        "Codex / Kimi Code $codexQuotaLabel 额度快速下降阈值"
-    )
-    $lowEnabledBox.IsChecked = $script:LowRemainingAlertsEnabled
-    $thresholdBox.Text = $script:LowRemainingThreshold.ToString(
-        '0',
-        [Globalization.CultureInfo]::CurrentCulture
-    )
-    $rapidEnabledBox.IsChecked = $script:RapidDropAlertsEnabled
-    $windowBox.Text = [string]$script:RapidDropWindowMinutes
-    $codexDropBox.Text = $script:CodexRapidDropPercent.ToString(
-        '0.#',
-        [Globalization.CultureInfo]::CurrentCulture
-    )
-    $deepSeekModeBox.SelectedIndex = if (
-        $script:DeepSeekRapidDropMode -eq 'Amount'
-    ) { 1 } else { 0 }
-    $deepSeekDropBox.Text = if ($script:DeepSeekRapidDropMode -eq 'Amount') {
-        $script:DeepSeekRapidDropAmount.ToString(
-            '0.##',
+
+    if ($isBalanceSource) {
+        $codexAlertSummary.Text = (
+            "当前数据源：$providerDisplayName；预算百分比与账户余额分别判断。"
+        )
+        $thresholdLabel.Text = '预算余量低于'
+        $secondaryThresholdLabel.Text = "账户余额低于（$currencySymbol）"
+        $thresholdUnitText.Text = '%'
+        $secondaryThresholdUnitText.Text = ''
+        $quotaRapidPanel.Visibility = 'Collapsed'
+        $balanceRapidPanel.Visibility = 'Visible'
+    }
+    else {
+        $codexAlertSummary.Text = (
+            "当前数据源：$providerDisplayName；5 小时与每周额度、低余量与快速下降分别判断。"
+        )
+        $thresholdLabel.Text = '5 小时余量低于'
+        $secondaryThresholdLabel.Text = '每周余量低于'
+        $thresholdUnitText.Text = '%'
+        $secondaryThresholdUnitText.Text = '%'
+        $quotaRapidPanel.Visibility = 'Visible'
+        $balanceRapidPanel.Visibility = 'Collapsed'
+        $codexDropLabel.Text = '5 小时下降'
+        $secondaryDropLabel.Text = '每周下降'
+        [Windows.Automation.AutomationProperties]::SetName(
+            $codexDropBox,
+            '5 小时额度快速下降阈值'
+        )
+        [Windows.Automation.AutomationProperties]::SetName(
+            $secondaryDropBox,
+            '每周额度快速下降阈值'
+        )
+    }
+
+    $lowEnabledBox.IsChecked = [bool]$settings.LowAlertsEnabled
+    $rapidEnabledBox.IsChecked = [bool]$settings.RapidAlertsEnabled
+    $windowBox.Text = [string]$settings.RapidWindowMinutes
+    if ($isBalanceSource) {
+        $thresholdBox.Text = ([double]$settings.LowPercentThreshold).ToString(
+            '0',
             [Globalization.CultureInfo]::CurrentCulture
         )
-    } else {
-        $script:DeepSeekRapidDropPercent.ToString(
+        $secondaryThresholdBox.Text =
+            ([double]$settings.LowAmountThreshold).ToString(
+                '0.##',
+                [Globalization.CultureInfo]::CurrentCulture
+            )
+        $deepSeekModeBox.SelectedIndex = if (
+            [string]$settings.RapidMode -eq 'Amount'
+        ) { 1 } else { 0 }
+        $deepSeekDropBox.Text = if ([string]$settings.RapidMode -eq 'Amount') {
+            ([double]$settings.RapidAmount).ToString(
+                '0.##',
+                [Globalization.CultureInfo]::CurrentCulture
+            )
+        } else {
+            ([double]$settings.RapidPercent).ToString(
+                '0.#',
+                [Globalization.CultureInfo]::CurrentCulture
+            )
+        }
+        $deepSeekUnitText.Text = if (
+            [string]$settings.RapidMode -eq 'Amount'
+        ) { '金额' } else { '百分点' }
+    }
+    else {
+        $thresholdBox.Text = ([double]$settings.LowFiveHourThreshold).ToString(
+            '0',
+            [Globalization.CultureInfo]::CurrentCulture
+        )
+        $secondaryThresholdBox.Text =
+            ([double]$settings.LowWeeklyThreshold).ToString(
+                '0',
+                [Globalization.CultureInfo]::CurrentCulture
+            )
+        $codexDropBox.Text = ([double]$settings.RapidFiveHourPercent).ToString(
             '0.#',
             [Globalization.CultureInfo]::CurrentCulture
         )
-    }
-    $deepSeekUnitText.Text = if ($script:DeepSeekRapidDropMode -eq 'Amount') {
-        '金额'
-    } else {
-        '百分点'
+        $secondaryDropBox.Text =
+            ([double]$settings.RapidWeeklyPercent).ToString(
+                '0.#',
+                [Globalization.CultureInfo]::CurrentCulture
+            )
     }
 
     $deepSeekModeBox.Add_SelectionChanged((
@@ -2135,26 +2320,36 @@ function Show-LowRemainingAlertSettings {
     $saveButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
         $errorText.Text = ''
         try {
-            $deepSeekMode = [string]$deepSeekModeBox.SelectedItem.Tag
-            $deepSeekPercent = if ($deepSeekMode -eq 'Percent') {
-                $deepSeekDropBox.Text
-            } else {
-                $script:DeepSeekRapidDropPercent
+            if ($isBalanceSource) {
+                $deepSeekMode = [string]$deepSeekModeBox.SelectedItem.Tag
+                $rapidPercent = if ($deepSeekMode -eq 'Percent') {
+                    $deepSeekDropBox.Text
+                } else { $null }
+                $rapidAmount = if ($deepSeekMode -eq 'Amount') {
+                    $deepSeekDropBox.Text
+                } else { $null }
+                [void](Set-UsageAlertSettings `
+                    -ProviderId $providerId `
+                    -LowAlertsEnabled ([bool]$lowEnabledBox.IsChecked) `
+                    -LowPercentThreshold $thresholdBox.Text `
+                    -LowAmountThreshold $secondaryThresholdBox.Text `
+                    -RapidAlertsEnabled ([bool]$rapidEnabledBox.IsChecked) `
+                    -WindowMinutes $windowBox.Text `
+                    -RapidMode $deepSeekMode `
+                    -RapidPercent $rapidPercent `
+                    -RapidAmount $rapidAmount)
             }
-            $deepSeekAmount = if ($deepSeekMode -eq 'Amount') {
-                $deepSeekDropBox.Text
-            } else {
-                $script:DeepSeekRapidDropAmount
+            else {
+                [void](Set-UsageAlertSettings `
+                    -ProviderId $providerId `
+                    -LowAlertsEnabled ([bool]$lowEnabledBox.IsChecked) `
+                    -LowFiveHourThreshold $thresholdBox.Text `
+                    -LowWeeklyThreshold $secondaryThresholdBox.Text `
+                    -RapidAlertsEnabled ([bool]$rapidEnabledBox.IsChecked) `
+                    -WindowMinutes $windowBox.Text `
+                    -RapidFiveHourPercent $codexDropBox.Text `
+                    -RapidWeeklyPercent $secondaryDropBox.Text)
             }
-            [void](Set-UsageAlertSettings `
-                -LowAlertsEnabled ([bool]$lowEnabledBox.IsChecked) `
-                -LowThreshold $thresholdBox.Text `
-                -RapidAlertsEnabled ([bool]$rapidEnabledBox.IsChecked) `
-                -WindowMinutes $windowBox.Text `
-                -CodexPercent $codexDropBox.Text `
-                -DeepSeekMode $deepSeekMode `
-                -DeepSeekPercent $deepSeekPercent `
-                -DeepSeekAmount $deepSeekAmount)
             $dialog.DialogResult = $true
         }
         catch {
@@ -2166,14 +2361,107 @@ function Show-LowRemainingAlertSettings {
 }
 
 function Get-UsageAlertScopeKey {
-    param($Snapshot)
+    param(
+        $Snapshot,
+        [ValidateSet('', 'FiveHour', 'Weekly')]
+        [string]$QuotaPeriod = ''
+    )
 
     $providerId = [string]$Snapshot.ProviderId
     if ($providerId -in @('Codex', 'Kimi')) {
-        $period = (Get-CodexQuotaPresentation -Snapshot $Snapshot).Period
+        $period = if ($QuotaPeriod -in @('FiveHour', 'Weekly')) {
+            $QuotaPeriod
+        } else {
+            (Get-CodexQuotaPresentation -Snapshot $Snapshot).Period
+        }
         return "${providerId}|${period}"
     }
     return $providerId
+}
+
+function Get-UsageAlertLowChecks {
+    param(
+        $Snapshot,
+        $Insights
+    )
+
+    # One independent check per metric: a quota window that still has room must
+    # never hide an exhausted one, which is exactly what a single threshold on
+    # the primary window used to do.
+    $checks = New-Object Collections.Generic.List[object]
+    $providerId = [string]$Snapshot.ProviderId
+    # Always read the thresholds of the source the snapshot came from rather
+    # than the active one: monitoring must not follow a stale data source.
+    $settings = Get-UsageAlertSettings -ProviderId $providerId
+    $providerDisplayName = if ($providerId -eq 'Kimi') {
+        'Kimi Code'
+    } else { $providerId }
+    $previousPercentValue = if (
+        $Insights -and
+        $Insights.PreviousSample -and
+        [string]$Insights.PreviousSample.MetricType -eq 'Percent'
+    ) { $Insights.PreviousSample.RemainingValue } else { $null }
+
+    if ($providerId -in @('Codex', 'Kimi')) {
+        $primaryPeriod = (Get-CodexQuotaPresentation -Snapshot $Snapshot).Period
+        foreach ($period in @('FiveHour', 'Weekly')) {
+            $availableProperty = "${period}Available"
+            $label = if ($period -eq 'Weekly') { '每周' } else { '5 小时' }
+            $threshold = if ($period -eq 'Weekly') {
+                $settings.LowWeeklyThreshold
+            } else {
+                $settings.LowFiveHourThreshold
+            }
+            $checks.Add([pscustomobject]@{
+                Key = "${providerId}|${period}|Low"
+                Title = "$providerDisplayName ${label}余量偏低"
+                Available = (
+                    $Snapshot.PSObject.Properties[$availableProperty] -and
+                    [bool]$Snapshot.$availableProperty
+                )
+                Value = [double](Get-ObjectPropertyValue `
+                    -Object $Snapshot `
+                    -Name "${period}RemainingPercent" `
+                    -Default 0)
+                Threshold = [double]$threshold
+                PreviousValue = if ($period -eq $primaryPeriod) {
+                    $previousPercentValue
+                } else { $null }
+                IncludeForecast = $period -eq $primaryPeriod
+                IsAmount = $false
+            })
+        }
+        return $checks
+    }
+
+    $checks.Add([pscustomobject]@{
+        Key = "${providerId}|Percent|Low"
+        Title = "$providerDisplayName 预算余量偏低"
+        Available = [bool]$Snapshot.HasProgress
+        Value = [double]$Snapshot.RemainingPercent
+        Threshold = [double]$settings.LowPercentThreshold
+        PreviousValue = $previousPercentValue
+        IncludeForecast = $true
+        IsAmount = $false
+    })
+    if (
+        $providerId -eq 'DeepSeek' -and
+        $Snapshot.PSObject.Properties['TotalBalance']
+    ) {
+        # The balance check works without a budget baseline, which the
+        # percentage check cannot: that is the gap this closes.
+        $checks.Add([pscustomobject]@{
+            Key = "${providerId}|Amount|Low"
+            Title = "$providerDisplayName 余额偏低"
+            Available = $true
+            Value = [double]$Snapshot.TotalBalance
+            Threshold = [double]$settings.LowAmountThreshold
+            PreviousValue = $null
+            IncludeForecast = $false
+            IsAmount = $true
+        })
+    }
+    return $checks
 }
 
 function Invoke-LowRemainingAlert {
@@ -2187,66 +2475,74 @@ function Invoke-LowRemainingAlert {
         $Demo -or
         -not $script:LowRemainingAlertsEnabled -or
         -not $script:TrayNotifyIcon -or
-        -not $Snapshot.Available -or
-        -not $Snapshot.HasProgress
+        -not $Snapshot.Available
     ) {
         return $false
     }
 
     $providerId = [string]$Snapshot.ProviderId
-    $alertKey = Get-UsageAlertScopeKey -Snapshot $Snapshot
-    $remaining = [double]$Snapshot.RemainingPercent
-    if ($remaining -gt $script:LowRemainingThreshold) {
-        $script:LowAlertActive[$alertKey] = $false
-        return $false
-    }
-
-    if (
-        $script:LowAlertActive.ContainsKey($alertKey) -and
-        [bool]$script:LowAlertActive[$alertKey]
-    ) {
-        return $false
-    }
-
-    $shouldNotify = Test-LowRemainingAlertCondition `
-        -Snapshot $Snapshot `
-        -PreviousSample $(if ($Insights) { $Insights.PreviousSample } else { $null }) `
-        -Threshold $script:LowRemainingThreshold
-    if (-not $shouldNotify) {
-        $script:LowAlertActive[$alertKey] = $true
-        return $false
-    }
-
-    $codexQuotaLabel = if ($providerId -in @('Codex', 'Kimi')) {
-        (Get-CodexQuotaPresentation -Snapshot $Snapshot).Label
+    $currency = if ($providerId -eq 'DeepSeek') {
+        Get-DeepSeekDisplayCurrency
     } else { '' }
-    $providerDisplayName = if ($providerId -eq 'Kimi') { 'Kimi Code' } else { $providerId }
-    $title = if ($providerId -eq 'DeepSeek') {
-        'DeepSeek 预算余量偏低'
-    } else {
-        "$providerDisplayName ${codexQuotaLabel}余量偏低"
+    $forecastText = if ($Insights -and $Insights.Forecast) {
+        [string]$Insights.Forecast.Text
+    } else { '' }
+    $shown = $false
+    foreach ($check in @(
+        Get-UsageAlertLowChecks -Snapshot $Snapshot -Insights $Insights
+    )) {
+        if (-not $check.Available) { continue }
+        if ([double]$check.Value -gt [double]$check.Threshold) {
+            $script:LowAlertActive[$check.Key] = $false
+            continue
+        }
+        if (
+            $script:LowAlertActive.ContainsKey($check.Key) -and
+            [bool]$script:LowAlertActive[$check.Key]
+        ) {
+            continue
+        }
+        if (
+            -not (Test-UsageAlertThresholdCrossed `
+                -Available $check.Available `
+                -Value ([double]$check.Value) `
+                -Threshold ([double]$check.Threshold) `
+                -PreviousValue $check.PreviousValue)
+        ) {
+            $script:LowAlertActive[$check.Key] = $true
+            continue
+        }
+        $valueText = if ($check.IsAmount) {
+            '当前余额 {0}' -f (
+                Format-CurrencyAmount `
+                    -Amount $check.Value `
+                    -Currency $currency
+            )
+        } else {
+            '当前剩余 {0:0}%' -f $check.Value
+        }
+        $message = if (
+            $check.IncludeForecast -and
+            -not [string]::IsNullOrWhiteSpace($forecastText)
+        ) {
+            '{0} · {1}' -f $valueText, $forecastText
+        } else { $valueText }
+        try {
+            $script:TrayNotifyIcon.ShowBalloonTip(
+                8000,
+                $check.Title,
+                $message,
+                [System.Windows.Forms.ToolTipIcon]::Warning
+            )
+            $script:LowAlertActive[$check.Key] = $true
+            $shown = $true
+        }
+        catch {
+            # Notifications are best-effort and may be disabled by Windows.
+            $script:LowAlertActive[$check.Key] = $false
+        }
     }
-    $message = if ($providerId -in @('Codex', 'Kimi')) {
-        '{0}当前剩余 {1:0}% · {2}' -f `
-            $codexQuotaLabel, $remaining, $Insights.Forecast.Text
-    } else {
-        '当前剩余 {0:0}% · {1}' -f $remaining, $Insights.Forecast.Text
-    }
-    try {
-        $script:TrayNotifyIcon.ShowBalloonTip(
-            8000,
-            $title,
-            $message,
-            [System.Windows.Forms.ToolTipIcon]::Warning
-        )
-        $script:LowAlertActive[$alertKey] = $true
-        return $true
-    }
-    catch {
-        # Notifications are best-effort and may be disabled by Windows.
-        $script:LowAlertActive[$alertKey] = $false
-        return $false
-    }
+    return $shown
 }
 
 function Invoke-RapidDropAlert {
@@ -2261,60 +2557,79 @@ function Invoke-RapidDropAlert {
         -not $script:RapidDropAlertsEnabled -or
         -not $script:TrayNotifyIcon -or
         -not $Snapshot.Available -or
-        -not $Insights -or
-        -not $Insights.RapidDrop
+        -not $Insights
     ) {
         return $false
     }
 
-    $rapidDrop = $Insights.RapidDrop
-    $alertKey = '{0}|{1}|{2}' -f
-        (Get-UsageAlertScopeKey -Snapshot $Snapshot),
-        $rapidDrop.MetricType,
-        $rapidDrop.Unit
-    if (-not $rapidDrop.Available -or -not $rapidDrop.IsRapid) {
-        $script:RapidDropAlertActive[$alertKey] = $false
-        return $false
-    }
-    if (
-        $script:RapidDropAlertActive.ContainsKey($alertKey) -and
-        [bool]$script:RapidDropAlertActive[$alertKey]
+    $providerId = [string]$Snapshot.ProviderId
+    $providerDisplayName = if ($providerId -eq 'Kimi') {
+        'Kimi Code'
+    } else { $providerId }
+    $rapidDrops = if (
+        $Insights.PSObject.Properties['RapidDrops'] -and
+        $Insights.RapidDrops
     ) {
-        return $false
+        @($Insights.RapidDrops)
     }
-    $title = if ($rapidDrop.ProviderId -in @('Codex', 'Kimi')) {
-        $quotaLabel = (Get-CodexQuotaPresentation -Snapshot $Snapshot).Label
-        $providerDisplayName = if ($rapidDrop.ProviderId -eq 'Kimi') {
-            'Kimi Code'
-        } else { 'Codex' }
-        "$providerDisplayName ${quotaLabel}余量快速下降"
-    } else {
-        '{0} 余量快速下降' -f $rapidDrop.ProviderId
+    elseif ($Insights.RapidDrop) {
+        @($Insights.RapidDrop)
     }
-    $currentText = if ($rapidDrop.MetricType -eq 'Percent') {
-        '当前剩余 {0:0.#}%' -f $rapidDrop.CurrentValue
-    } else {
-        '当前余额 {0}' -f (
-            Format-CurrencyAmount `
-                -Amount $rapidDrop.CurrentValue `
-                -Currency $rapidDrop.Unit
-        )
+    else { @() }
+
+    $shown = $false
+    foreach ($rapidDrop in $rapidDrops) {
+        $alertKey = '{0}|{1}|{2}' -f
+            (Get-UsageAlertScopeKey `
+                -Snapshot $Snapshot `
+                -QuotaPeriod ([string]$rapidDrop.QuotaPeriod)),
+            $rapidDrop.MetricType,
+            $rapidDrop.Unit
+        if (-not $rapidDrop.Available -or -not $rapidDrop.IsRapid) {
+            $script:RapidDropAlertActive[$alertKey] = $false
+            continue
+        }
+        if (
+            $script:RapidDropAlertActive.ContainsKey($alertKey) -and
+            [bool]$script:RapidDropAlertActive[$alertKey]
+        ) {
+            continue
+        }
+        $title = if ($providerId -in @('Codex', 'Kimi')) {
+            $quotaLabel = if ($rapidDrop.QuotaPeriod -eq 'Weekly') {
+                '每周'
+            } else {
+                '5 小时'
+            }
+            "$providerDisplayName ${quotaLabel}余量快速下降"
+        } else {
+            '{0} 余量快速下降' -f $providerDisplayName
+        }
+        $currentText = if ($rapidDrop.MetricType -eq 'Percent') {
+            '当前剩余 {0:0.#}%' -f $rapidDrop.CurrentValue
+        } else {
+            '当前余额 {0}' -f (
+                Format-CurrencyAmount `
+                    -Amount $rapidDrop.CurrentValue `
+                    -Currency $rapidDrop.Unit
+            )
+        }
+        $message = '{0} · {1}' -f $rapidDrop.Summary, $currentText
+        try {
+            $script:TrayNotifyIcon.ShowBalloonTip(
+                8000,
+                $title,
+                $message,
+                [System.Windows.Forms.ToolTipIcon]::Warning
+            )
+            $script:RapidDropAlertActive[$alertKey] = $true
+            $shown = $true
+        }
+        catch {
+            $script:RapidDropAlertActive[$alertKey] = $false
+        }
     }
-    $message = '{0} · {1}' -f $rapidDrop.Summary, $currentText
-    try {
-        $script:TrayNotifyIcon.ShowBalloonTip(
-            8000,
-            $title,
-            $message,
-            [System.Windows.Forms.ToolTipIcon]::Warning
-        )
-        $script:RapidDropAlertActive[$alertKey] = $true
-        return $true
-    }
-    catch {
-        $script:RapidDropAlertActive[$alertKey] = $false
-        return $false
-    }
+    return $shown
 }
 
 function Set-UsageSnapshotProvenance {
@@ -2484,6 +2799,71 @@ function Get-CodexQuotaPresentation {
     }
 }
 
+function Get-CodexQuotaBinding {
+    param(
+        $Snapshot,
+        $PrimaryQuota
+    )
+
+    # A depleted weekly window blocks the account even when the five-hour
+    # window has just rolled over to 100%, so the header has to show the
+    # weekly quota instead of the freshly refilled five-hour one. Only the raw
+    # window fields are read here: Snapshot.RemainingPercent / HasProgress are
+    # rewritten from the plan's primary window by Update-UsageView and equal 0
+    # whenever a window is merely unavailable, which must stay "unknown".
+    $weeklyAvailable = (
+        $Snapshot -and
+        $Snapshot.PSObject.Properties['WeeklyAvailable'] -and
+        [bool]$Snapshot.WeeklyAvailable
+    )
+    $weeklyRemaining = if ($weeklyAvailable) {
+        [double](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'WeeklyRemainingPercent' `
+            -Default 0)
+    } else { 0.0 }
+    if (
+        -not $weeklyAvailable -or
+        $weeklyRemaining -gt 0 -or
+        [string]$PrimaryQuota.Period -eq 'Weekly'
+    ) {
+        return [pscustomobject]@{
+            IsWeeklyExhausted = $false
+            Period = $PrimaryQuota.Period
+            Label = $PrimaryQuota.Label
+            Available = $PrimaryQuota.Available
+            RemainingPercent = $PrimaryQuota.RemainingPercent
+            UsedPercent = $PrimaryQuota.UsedPercent
+            ResetDate = $PrimaryQuota.ResetDate
+            ResetCountdown = $PrimaryQuota.ResetCountdown
+            ResetAt = $PrimaryQuota.ResetAt
+        }
+    }
+
+    return [pscustomobject]@{
+        IsWeeklyExhausted = $true
+        Period = 'Weekly'
+        Label = '每周'
+        Available = $true
+        RemainingPercent = $weeklyRemaining
+        UsedPercent = [double](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'WeeklyUsedPercent' `
+            -Default 0)
+        ResetDate = [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'WeeklyResetDate' `
+            -Default '暂无')
+        ResetCountdown = [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'WeeklyResetCountdown' `
+            -Default '等待每周额度数据')
+        ResetAt = Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'WeeklyResetAt'
+    }
+}
+
 function Invoke-PendingUsageHistoryUpdate {
     if (
         $script:IsClosing -or
@@ -2620,19 +3000,23 @@ function Update-UsageView {
     )
 
     $codexPrimaryQuota = $null
+    $codexQuotaBinding = $null
     $isQuotaLayout = [string]$Snapshot.ProviderId -in @('Codex', 'Kimi')
     if ($isQuotaLayout) {
         $codexPrimaryQuota = Get-CodexQuotaPresentation -Snapshot $Snapshot
+        $codexQuotaBinding = Get-CodexQuotaBinding `
+            -Snapshot $Snapshot `
+            -PrimaryQuota $codexPrimaryQuota
         $Snapshot | Add-Member `
             -NotePropertyName PrimaryQuotaPeriod `
             -NotePropertyValue $codexPrimaryQuota.Period `
             -Force
         $Snapshot.HasProgress = [bool]$codexPrimaryQuota.Available
         $Snapshot.RemainingPercent = [double]$codexPrimaryQuota.RemainingPercent
-        $Snapshot.WindowLabel = if ($codexPrimaryQuota.Available) {
-            "$($codexPrimaryQuota.Label)余量"
+        $Snapshot.WindowLabel = if ($codexQuotaBinding.Available) {
+            "$($codexQuotaBinding.Label)余量"
         } else {
-            "$($codexPrimaryQuota.Label)余量未知"
+            "$($codexQuotaBinding.Label)余量未知"
         }
         if ($Snapshot.PSObject.Properties['ResetDate']) {
             $Snapshot.ResetDate = $codexPrimaryQuota.ResetDate
@@ -2748,14 +3132,22 @@ function Update-UsageView {
     $codexPrimaryQuota = if ($isQuotaLayout) {
         Get-CodexQuotaPresentation -Snapshot $Snapshot
     } else { $null }
+    $codexQuotaBinding = if ($isQuotaLayout) {
+        Get-CodexQuotaBinding `
+            -Snapshot $Snapshot `
+            -PrimaryQuota $codexPrimaryQuota
+    } else { $null }
     $displayWindowLabel = [string]$Snapshot.WindowLabel
     $WindowLabel.Text = $displayWindowLabel
     $ExpandedWindowLabel.Text = $displayWindowLabel
+    # The reset row follows whatever the header displays, so a depleted weekly
+    # window reports when quota actually returns rather than when the
+    # five-hour window rolls over.
     $DetailsResetDate.Text = if ($isQuotaLayout) {
-        $codexPrimaryQuota.ResetDate
+        $codexQuotaBinding.ResetDate
     } else { [string]$Snapshot.ResetDate }
     $DetailsResetCountdown.Text = if ($isQuotaLayout) {
-        $codexPrimaryQuota.ResetCountdown
+        $codexQuotaBinding.ResetCountdown
     } else { [string]$Snapshot.ResetCountdown }
     $AccountName.Text = $Snapshot.AccountName
     $PlanBadge.Text = $Snapshot.Plan
@@ -2958,10 +3350,10 @@ function Update-UsageView {
             -RemainingColumn $WeeklyRemainingColumn `
             -UsedColumn $WeeklyUsedColumn
         $CompactPrefix.Text = ''
-        $RemainingValue.Text = if ($codexPrimaryQuota.Available) {
-            [string][int]$codexPrimaryQuota.RemainingPercent
+        $RemainingValue.Text = if ($codexQuotaBinding.Available) {
+            [string][int]$codexQuotaBinding.RemainingPercent
         } else { '未知' }
-        $CompactSuffix.Text = if ($codexPrimaryQuota.Available) { '%' } else { '' }
+        $CompactSuffix.Text = if ($codexQuotaBinding.Available) { '%' } else { '' }
         $BreakdownTitle.Text = '今日 TOKEN'
         $TokenBreakdown.Text = '{0} · 输出 {1}' -f `
             (Format-CompactNumber $Snapshot.TodayTokens), `
@@ -2971,14 +3363,20 @@ function Update-UsageView {
             (Format-CompactNumber $Snapshot.TodayCachedTokens), `
             [double]$Snapshot.TodayCacheHitPercent
         Set-Progress `
-            -Percent $codexPrimaryQuota.RemainingPercent `
-            -Available $codexPrimaryQuota.Available
-        $primaryQuotaToolTip = if ($codexPrimaryQuota.Available) {
+            -Percent $codexQuotaBinding.RemainingPercent `
+            -Available $codexQuotaBinding.Available
+        $primaryQuotaToolTip = if ($codexQuotaBinding.Available) {
             '{0}余额 {1:0}% · 已使用 {2:0}%' -f `
-                $codexPrimaryQuota.Label,
-                $codexPrimaryQuota.RemainingPercent,
-                $codexPrimaryQuota.UsedPercent
-        } else { "$($codexPrimaryQuota.Label)额度未知" }
+                $codexQuotaBinding.Label,
+                $codexQuotaBinding.RemainingPercent,
+                $codexQuotaBinding.UsedPercent
+        } else { "$($codexQuotaBinding.Label)额度未知" }
+        if ($codexQuotaBinding.IsWeeklyExhausted -and $codexFiveHourAvailable) {
+            # Keep the five-hour figure reachable: it is still the number the
+            # rest of the panel reports, it just no longer gates usage.
+            $primaryQuotaToolTip += ' · 5 小时窗口仍余 {0:0}%' -f `
+                $codexFiveHourRemaining
+        }
         $ProgressTrack.ToolTip = $primaryQuotaToolTip
         $UltraProgressTrack.ToolTip = $primaryQuotaToolTip
     }
@@ -2994,13 +3392,13 @@ function Update-UsageView {
             $providerDisplayName = if ($Snapshot.ProviderId -eq 'Kimi') {
                 'Kimi Code'
             } else { 'Codex' }
-            if ($codexPrimaryQuota.Available) {
+            if ($codexQuotaBinding.Available) {
                 '{0} {1}余量 {2}% · 单击打开详情' -f `
                     $providerDisplayName,
-                    $codexPrimaryQuota.Label,
-                    [int]$codexPrimaryQuota.RemainingPercent
+                    $codexQuotaBinding.Label,
+                    [int]$codexQuotaBinding.RemainingPercent
             } else {
-                "$providerDisplayName $($codexPrimaryQuota.Label)余量未知 · 单击打开详情"
+                "$providerDisplayName $($codexQuotaBinding.Label)余量未知 · 单击打开详情"
             }
         }
     }

@@ -64,8 +64,11 @@ Provider 最终向 UI 返回统一快照。`Core\UsageSnapshot.ps1` 在渲染前
 Codex 快照还携带 `FiveHour*` 与 `Weekly*` 两组周期字段，包括可用性、已用百分比、
 剩余百分比和重置时间，并通过 `PlanType` 与 `PrimaryQuotaPeriod` 明确套餐和主周期。
 Plus 的 `RemainingPercent` / `HasProgress` 代表 5 小时窗口；`pro` / `prolite` 代表
-每周窗口。贴边能量条、趋势、低额度提醒和快速下降提醒统一消费套餐主指标，且
-历史样本按 `FiveHour` / `Weekly` 隔离。
+每周窗口。趋势与历史样本按 `FiveHour` / `Weekly` 隔离，`RemainingPercent`、
+`HasProgress`、`PrimaryQuotaPeriod` 与 `ResetAt` 始终取套餐主窗口。头部展示是
+例外：每周窗口可用且剩余为 0 时，紧凑数字、窗标签、进度条、贴边能量条、重置行
+与托盘文本改绑每周窗口（`Get-CodexQuotaBinding`），但快照字段保持不变，以免把
+每周的 0 写进 5 小时趋势通道。低余量提醒与快速下降提醒按各自配额窗口独立判断。
 
 KimiProvider（`Providers\KimiProvider.ps1`）从 Kimi Code CLI 本地配置解析
 凭证：优先 `credentials\*.json` 的 OAuth 访问令牌（只读 access token，不刷新），
@@ -179,11 +182,22 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
 - Codex 官方与本地限额都必须按窗口时长识别 300 分钟的 5 小时窗口和
   10080 分钟的每周窗口，不得假定 `primary` / `secondary` 的固定含义。Plus 缺少
   明确的 5 小时字段时展示为 5 小时未知；`pro` / `prolite` 始终选择每周字段。
+  头部改绑每周窗口必须读取原始 `Weekly*` 字段：回写后的 `HasProgress` /
+  `RemainingPercent` 在窗口不可用时同样是 0，据此判断会把「余量未知」误判为
+  「每周用完」。绑定只作用于展示函数，不得写进 `Get-CodexQuotaPresentation`，
+  否则窗口高度、告警作用域键与启动气泡文案都会被连带改变。
 - DeepSeek 日志先按完整路径、修改时间和文件长度构建清单键；清单未变化时复用
   今日、本月和最近消息的聚合结果，新增、删除或修改日志后才使用逐文件缓存重新
   聚合。日期或月份边界必须进入清单键，避免跨日复用旧统计。
-- 低余量提醒阈值限制为 1–99 的整数，默认 20；阈值与提醒开关共同写入
-  `settings.json`，读取非法旧值时回退默认值，不得阻止窗口启动。
+- 低余量提醒阈值限制为 1–99 的整数，默认 20；阈值与提醒开关写入 `settings.json`
+  的 `AlertSettings` 节点，按 `Codex` / `Kimi` / `DeepSeek` 分组，读取非法旧值时
+  回退默认值，不得阻止窗口启动。旧版本的平铺键只用于首次迁移与降级镜像，真源
+  始终是每个数据源各自的那一份；`$script:` 上的阈值与开关是当前数据源的镜像，
+  切换数据源、保存设置与恢复设置后都必须调用 `Sync-ActiveAlertSettings`。
+  序列化必须保留嵌套深度（`ConvertTo-SettingsJson`），否则整块设置会被压成字符串。
+- 提醒判定不得依赖当前数据源：低余量检查读快照自带数据源的那套阈值，Codex 与
+  Kimi Code 按 5 小时 / 每周两条独立规则判断、各自去重，DeepSeek 的金额阈值在
+  未设置预算基准时同样有效。诊断从默认值起步，不读取运行机器上的设置文件。
 - 快速下降时间范围限制为 5–1440 分钟；百分比点阈值限制为 0.1–100，金额
   阈值限制为 0.01–1,000,000,000。Codex 与 Kimi Code 固定使用百分比点，
   DeepSeek 可在百分比点与余额金额之间切换，所有规则均原子校验后写入
@@ -203,7 +217,8 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   按当前时区重新校准本地日期，并兼容 DeepSeek 的 v1/v2 JSONL。Codex v1/v2
   无周期百分比样本按既定语义迁移为 `Weekly`；v3 及后续缺失或包含非法周期的
   样本必须拒绝。新记录只与相同 `FiveHour` / `Weekly` 周期比较，避免套餐切换后
-  污染趋势或触发快速下降误报。未来时钟偏差样本可以保留在文件中，但不得进入
+  污染趋势或触发快速下降误报。头部改绑每周窗口只改展示，样本周期与样本值仍取
+  套餐主窗口，重设时间同理。未来时钟偏差样本可以保留在文件中，但不得进入
   当前趋势与预测。
 - 使用记录导入必须与现有样本按 Provider、指标、单位和 UTC 时间去重合并；
   导出和运行诊断不得包含账户名称、邮箱、Token、API Key 或原始日志。
