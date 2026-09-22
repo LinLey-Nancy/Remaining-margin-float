@@ -294,6 +294,40 @@
     Save-VisualPng -Element $window -Path $expandedCodexProPath
     $captureFiles['codex-pro-details'] = $expandedCodexProPath
 
+    # A depleted weekly window with a freshly refilled five-hour window: the
+    # headline has to show 0% / weekly, and the edge rail has to be all grey.
+    Clear-EdgeDock
+    $weeklyDepletedCaptureSnapshot = $codexPreviewSnapshot.PSObject.Copy()
+    $weeklyDepletedCaptureSnapshot.RemainingPercent = 100
+    $weeklyDepletedCaptureSnapshot.FiveHourAvailable = $true
+    $weeklyDepletedCaptureSnapshot.FiveHourUsedPercent = 0
+    $weeklyDepletedCaptureSnapshot.FiveHourRemainingPercent = 100
+    $weeklyDepletedCaptureSnapshot.FiveHourResetCountdown = '5 小时后'
+    $weeklyDepletedCaptureSnapshot.WeeklyUsedPercent = 100
+    $weeklyDepletedCaptureSnapshot.WeeklyRemainingPercent = 0
+    $weeklyDepletedCaptureSnapshot.WeeklyResetCountdown = '6 天 9 小时后'
+    Set-CaptureUsageHistory `
+        -Snapshot $weeklyDepletedCaptureSnapshot `
+        -Values @(80, 62, 48, 35, 24, 15, 8, 0)
+    Update-UsageView -Snapshot $weeklyDepletedCaptureSnapshot
+    $window.Left = 24
+    $window.Top = 24
+    Set-ExpandedState -Expanded $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $weeklyDepletedCompactPath = Join-Path $captureRoot `
+        'codex-weekly-depleted-compact.png'
+    Save-VisualPng -Element $window -Path $weeklyDepletedCompactPath
+    $captureFiles['codex-weekly-depleted-compact'] = $weeklyDepletedCompactPath
+
+    $script:EdgeDockSide = 'Right'
+    Set-EdgeDockReveal -Revealed $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $weeklyDepletedEdgePath = Join-Path $captureRoot `
+        'codex-weekly-depleted-edge.png'
+    Save-VisualPng -Element $window -Path $weeklyDepletedEdgePath
+    $captureFiles['codex-weekly-depleted-edge'] = $weeklyDepletedEdgePath
+
+    Clear-EdgeDock
     $window.Close()
     [pscustomobject]$captureFiles | ConvertTo-Json
     $script:RmfStopLoading = $true
