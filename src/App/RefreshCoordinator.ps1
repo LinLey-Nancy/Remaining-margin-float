@@ -313,7 +313,8 @@ function Get-DeepSeekHttpClient {
     if (-not $script:DeepSeekHttpClient) {
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(8)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd(
+        [void]$client.DefaultRequestHeaders.TryAddWithoutValidation(
+            'User-Agent',
             "RemainingMarginFloat/$($script:AppVersion)"
         )
         $script:DeepSeekHttpClient = $client
@@ -1215,29 +1216,33 @@ function Test-ShouldPersistCodexLocalSnapshot {
 }
 
 function Complete-CodexLocalRefresh {
+    # Process the latest queued local snapshot; earlier ones are merged/discarded
     $pending = $script:PendingCodexLocalRefresh
     $script:PendingCodexLocalRefresh = $null
     if (-not $pending -or $script:IsClosing) { return }
     try {
+        # Use the most recent snapshot (last in queue)
+        $snapshotToPresent = $pending[-1]
         if (Test-ShouldPresentCodexLocalSnapshot) {
             $persistLocalSnapshot = Test-ShouldPersistCodexLocalSnapshot
             Update-UsageView `
-                -Snapshot $pending.Snapshot `
-                -ObservationContext $pending.ObservationContext `
+                -Snapshot $snapshotToPresent.Snapshot `
+                -ObservationContext $snapshotToPresent.ObservationContext `
                 -DisplayOnly:(-not $persistLocalSnapshot)
             if (-not $persistLocalSnapshot) {
                 Write-RuntimeLog `
                     -Level 'Debug' `
                     -Event 'Refresh.LocalPreviewPresented' `
                     -Message 'Presented a display-only local preview while waiting for official usage' `
-                    -Data @{ DisplayOnly = $true }
+                    -Data @{ DisplayOnly = $true; QueueDepth = $pending.Count }
             }
         }
         else {
             Write-RuntimeLog `
                 -Level 'Debug' `
                 -Event 'Refresh.LocalPreviewSuppressed' `
-                -Message '保留当前官方结果，本地读取仅作为刷新候选'
+                -Message '保留当前官方结果，本地读取仅作为刷新候选' `
+                -Data @{ QueueDepth = $pending.Count }
         }
         Set-RuntimeDiagnosticStatus `
             -Area 'Refresh' `
@@ -1304,7 +1309,11 @@ function Invoke-Refresh {
             Start-CodexRefresh
         }
         else {
-            $script:PendingCodexLocalRefresh = [pscustomobject]@{
+            # Queue local snapshots; Complete-CodexLocalRefresh will present the latest
+            if (-not $script:PendingCodexLocalRefresh) {
+                $script:PendingCodexLocalRefresh = @()
+            }
+            $script:PendingCodexLocalRefresh += [pscustomobject]@{
                 Snapshot = $localSnapshot
                 ObservationContext = $observationContext
             }

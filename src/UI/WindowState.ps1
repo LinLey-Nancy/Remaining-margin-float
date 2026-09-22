@@ -107,28 +107,64 @@ function Align-EdgeDockToPhysicalScreenEdge {
     else {
         $UltraProgressTrack
     }
-    $visualPoint = if ($script:EdgeDockSide -eq 'Left') {
-        $edgeElement.PointToScreen((New-Object Windows.Point(0, 0)))
+
+    # Capture values for the deferred callback (avoids closure over loop variables)
+    $capturedScreenArea = $screenArea
+    $capturedHelper = $helper
+    $capturedEdgeElement = $edgeElement
+    $capturedSide = $script:EdgeDockSide
+
+    # Lightweight double-sample to avoid transient animation state:
+    # take two readings 16ms apart; if they differ, defer to next animation completion
+    $sampleVisualPoint = {
+        if ($capturedSide -eq 'Left') {
+            $capturedEdgeElement.PointToScreen((New-Object Windows.Point(0, 0)))
+        }
+        else {
+            $capturedEdgeElement.PointToScreen(
+                (New-Object Windows.Point($capturedEdgeElement.ActualWidth, 0))
+            )
+        }
     }
-    else {
-        $edgeElement.PointToScreen(
-            (New-Object Windows.Point($edgeElement.ActualWidth, 0))
-        )
-    }
-    $screenEdge = if ($script:EdgeDockSide -eq 'Left') {
-        [double]$screenArea.Left
-    }
-    else {
-        [double]$screenArea.Right
-    }
-    $pixelCorrection = [int][Math]::Round(
-        $screenEdge - $visualPoint.X,
-        [MidpointRounding]::AwayFromZero
+    $visualPoint1 = & $sampleVisualPoint
+    $window.Dispatcher.BeginInvoke(
+        [Windows.Threading.DispatcherPriority]::Render,
+        (New-RmfAction -Callback {
+            if ($script:EdgeDockAnimating -or -not $script:EdgeDockSide -or $script:IsExpanded) { return }
+            $visualPoint2 = & $sampleVisualPoint
+            if ([Math]::Abs($visualPoint2.X - $visualPoint1.X) -gt 1) {
+                # Still animating; skip this alignment, next animation completion will retry
+                return
+            }
+            # Proceed with alignment using the stable second sample
+            $screenEdge = if ($capturedSide -eq 'Left') {
+                [double]$capturedScreenArea.Left
+            }
+            else {
+                [double]$capturedScreenArea.Right
+            }
+            $pixelCorrection = [int][Math]::Round(
+                $screenEdge - $visualPoint2.X,
+                [MidpointRounding]::AwayFromZero
+            )
+            Invoke-EdgeAlignmentCorrection -PixelCorrection $pixelCorrection -ScreenEdge $screenEdge -VisualEdge $visualPoint2.X -Helper $capturedHelper -EdgeElement $capturedEdgeElement
+        })
+    ) | Out-Null
+    return $null
+}
+
+function Invoke-EdgeAlignmentCorrection {
+    param(
+        [int]$PixelCorrection,
+        [double]$ScreenEdge,
+        [double]$VisualEdge,
+        [System.Windows.Interop.WindowInteropHelper]$Helper,
+        [Windows.FrameworkElement]$EdgeElement
     )
 
     if (
         -not (Test-EdgeAlignCorrectionValid `
-            -PixelCorrection $pixelCorrection `
+            -PixelCorrection $PixelCorrection `
             -MaxCorrectionPixels $script:EdgeAlignMaxCorrectionPixels)
     ) {
         Write-RuntimeLog `
@@ -138,25 +174,17 @@ function Align-EdgeDockToPhysicalScreenEdge {
             -Data ([ordered]@{
                 Side = $script:EdgeDockSide
                 Revealed = $script:IsEdgeRevealed
-                ScreenEdge = $screenEdge
-                VisualEdge = $visualPoint.X
-                CorrectionPixels = $pixelCorrection
+                ScreenEdge = $ScreenEdge
+                VisualEdge = $VisualEdge
+                CorrectionPixels = $PixelCorrection
             })
-        return [pscustomobject]@{
-            Side = $script:EdgeDockSide
-            Revealed = $script:IsEdgeRevealed
-            ScreenEdge = $screenEdge
-            VisualEdge = $visualPoint.X
-            GapPixels = [Math]::Abs($screenEdge - $visualPoint.X)
-            CorrectionPixels = 0
-            Skipped = $true
-        }
+        return
     }
 
-    if ($pixelCorrection -ne 0) {
+    if ($PixelCorrection -ne 0) {
         $windowRect = New-Object RemainingMarginNativeWindow+RECT
         if (-not [RemainingMarginNativeWindow]::GetWindowRect(
-            $helper.Handle,
+            $Helper.Handle,
             [ref]$windowRect
         )) {
             Write-RuntimeLog `
@@ -166,15 +194,15 @@ function Align-EdgeDockToPhysicalScreenEdge {
                 -Data ([ordered]@{
                     Side = $script:EdgeDockSide
                     Stage = 'GetWindowRect'
-                    CorrectionPixels = $pixelCorrection
+                    CorrectionPixels = $PixelCorrection
                 })
-            return $null
+            return
         }
         $positionOnly = 0x0001 -bor 0x0004 -bor 0x0010 -bor 0x0200
         if (-not [RemainingMarginNativeWindow]::SetWindowPos(
-            $helper.Handle,
+            $Helper.Handle,
             [IntPtr]::Zero,
-            $windowRect.Left + $pixelCorrection,
+            $windowRect.Left + $PixelCorrection,
             $windowRect.Top,
             0,
             0,
@@ -187,28 +215,28 @@ function Align-EdgeDockToPhysicalScreenEdge {
                 -Data ([ordered]@{
                     Side = $script:EdgeDockSide
                     Stage = 'SetWindowPos'
-                    CorrectionPixels = $pixelCorrection
+                    CorrectionPixels = $PixelCorrection
                 })
-            return $null
+            return
         }
         $window.UpdateLayout()
     }
 
     $alignedPoint = if ($script:EdgeDockSide -eq 'Left') {
-        $edgeElement.PointToScreen((New-Object Windows.Point(0, 0))).X
+        $EdgeElement.PointToScreen((New-Object Windows.Point(0, 0))).X
     }
     else {
-        $edgeElement.PointToScreen(
-            (New-Object Windows.Point($edgeElement.ActualWidth, 0))
+        $EdgeElement.PointToScreen(
+            (New-Object Windows.Point($EdgeElement.ActualWidth, 0))
         ).X
     }
     return [pscustomobject]@{
         Side = $script:EdgeDockSide
         Revealed = $script:IsEdgeRevealed
-        ScreenEdge = $screenEdge
+        ScreenEdge = $ScreenEdge
         VisualEdge = $alignedPoint
-        GapPixels = [Math]::Abs($screenEdge - $alignedPoint)
-        CorrectionPixels = $pixelCorrection
+        GapPixels = [Math]::Abs($ScreenEdge - $alignedPoint)
+        CorrectionPixels = $PixelCorrection
     }
 }
 

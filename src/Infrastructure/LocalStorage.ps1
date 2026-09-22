@@ -21,10 +21,24 @@
                 -not (Test-Path -LiteralPath $newPath)
             ) {
                 try {
-                    Copy-Item -LiteralPath $legacyPath -Destination $newPath
+                    Copy-Item -LiteralPath $legacyPath -Destination $newPath -Force
+                    if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+                        Write-RuntimeLog `
+                            -Level 'Info' `
+                            -Event 'App.Migration.LegacyFileCopied' `
+                            -Message "迁移旧配置文件：$fileName" `
+                            -Data @{ From = $legacyPath; To = $newPath }
+                    }
                 }
                 catch {
                     # Migration is best-effort; the app can recreate either file.
+                    if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+                        Write-RuntimeLog `
+                            -Level 'Warning' `
+                            -Event 'App.Migration.LegacyFileFailed' `
+                            -Message "迁移旧配置文件失败：$fileName" `
+                            -Data @{ Error = $_.Exception.Message }
+                    }
                 }
             }
         }

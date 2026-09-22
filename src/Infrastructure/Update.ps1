@@ -402,10 +402,12 @@ function Get-UpdateHttpClient {
     if (-not $script:UpdateHttpClient) {
         $client = New-Object Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(20)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd(
+        [void]$client.DefaultRequestHeaders.TryAddWithoutValidation(
+            'User-Agent',
             "RemainingMarginFloat/$($script:AppVersion)"
         )
-        $client.DefaultRequestHeaders.Accept.ParseAdd(
+        [void]$client.DefaultRequestHeaders.TryAddWithoutValidation(
+            'Accept',
             'application/vnd.github+json'
         )
         $script:UpdateHttpClient = $client

@@ -393,12 +393,14 @@ function Select-CodexStableRateLimitSample {
     # A reported non-zero cycle remains authoritative until its own reset
     # timestamp. Synthetic local 0% samples can keep sliding their reset time
     # forward and must not replace a cycle that Codex says is still active.
+    # Allow 60s clock skew tolerance between local and server time.
     $nowEpoch = $Now.ToUnixTimeSeconds()
+    $clockSkewTolerance = 60
     $activePositive = $Candidates.Values | Where-Object {
         $window = Get-CodexRateLimitWindow -Payload $_.Payload
         $_.UsedPercent -gt 0 -and
         $window -and
-        [long]$window.resets_at -gt $nowEpoch
+        [long]$window.resets_at -gt ($nowEpoch - $clockSkewTolerance)
     } | Sort-Object ObservedAt -Descending | Select-Object -First 1
     if ($activePositive) { return $activePositive }
 
@@ -426,10 +428,11 @@ function Select-CodexRateLimitSnapshot {
         $_ -and $_.RateLimitPayload -and (Get-CodexRateLimitWindow -Payload $_.RateLimitPayload)
     })
     $nowEpoch = $Now.ToUnixTimeSeconds()
+    $clockSkewTolerance = 60
     $activePositive = $validSnapshots | Where-Object {
         $window = Get-CodexRateLimitWindow -Payload $_.RateLimitPayload
         [double]$window.used_percent -gt 0 -and
-        [long]$window.resets_at -gt $nowEpoch
+        [long]$window.resets_at -gt ($nowEpoch - $clockSkewTolerance)
     } | Sort-Object RateLimitObservedAt -Descending | Select-Object -First 1
     if ($activePositive) { return $activePositive }
 
@@ -634,12 +637,15 @@ function Read-SessionSnapshot {
                 }
             }
 
-            foreach ($line in ($text -split "`r?`n")) {
+            $lines = $text -split "`r?`n"
+            $foundTokenCount = $false
+            foreach ($line in $lines) {
                 if ($line.IndexOf('"type":"token_count"', [StringComparison]::Ordinal) -lt 0) {
                     continue
                 }
+                $foundTokenCount = $true
                 try {
-                    $usageEvent = $line | ConvertFrom-Json
+                    $usageEvent = $line | ConvertFrom-Json -Depth 10
                     if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
                         $lastPayload = $usageEvent.payload
                         $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime
@@ -651,6 +657,38 @@ function Read-SessionSnapshot {
                 }
                 catch {
                     continue
+                }
+            }
+
+            # Lightweight fallback: if tail had no token_count, scan last 200 lines only
+            # (avoids full file scan while still catching recent quota updates)
+            if (-not $foundTokenCount -and $lines.Count -gt 0) {
+                $fallbackLines = $lines | Select-Object -Last 200
+                foreach ($line in $fallbackLines) {
+                    if ($line.IndexOf('"type":"token_count"', [StringComparison]::Ordinal) -lt 0) {
+                        continue
+                    }
+                    try {
+                        $usageEvent = $line | ConvertFrom-Json -Depth 10
+                        if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
+                            $lastPayload = $usageEvent.payload
+                            $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime
+                            Add-CodexRateLimitSample `
+                                -Candidates $rateLimitCandidates `
+                                -Payload $usageEvent.payload `
+                                -ObservedAt $lastObservedAt
+                        }
+                    }
+                    catch {
+                        continue
+                    }
+                }
+                if ($foundTokenCount -eq $false) {
+                    Write-RuntimeLog `
+                        -Level 'Debug' `
+                        -Event 'Codex.Session.TailFallbackUsed' `
+                        -Message '64KB tail had no token_count; scanned last 200 lines' `
+                        -Data @{ File = $File.Name; FileSize = $File.Length }
                 }
             }
 

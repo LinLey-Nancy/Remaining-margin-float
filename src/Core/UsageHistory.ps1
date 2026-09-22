@@ -495,19 +495,32 @@ function Save-UsageHistory {
             $lines,
             (New-Object Text.UTF8Encoding($false))
         )
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            [IO.File]::Replace($temporaryPath, $path, $backupPath, $true)
-        }
-        else {
-            Move-Item -LiteralPath $temporaryPath -Destination $path
+        # Retry atomic replace on IOException (e.g., AV scanning the file)
+        $maxRetries = 3
+        $retryDelayMs = 50
+        for ($attempt = 0; $attempt -le $maxRetries; $attempt++) {
+            try {
+                if (Test-Path -LiteralPath $path -PathType Leaf) {
+                    [IO.File]::Replace($temporaryPath, $path, $backupPath, $true)
+                }
+                else {
+                    Move-Item -LiteralPath $temporaryPath -Destination $path -Force
+                }
+                break
+            }
+            catch [System.IO.IOException] {
+                if ($attempt -ge $maxRetries) { throw }
+                Start-Sleep -Milliseconds $retryDelayMs
+                $retryDelayMs *= 2
+            }
         }
     }
     finally {
         if (Test-Path -LiteralPath $temporaryPath) {
-            Remove-Item -LiteralPath $temporaryPath -Force
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $backupPath) {
-            Remove-Item -LiteralPath $backupPath -Force
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
         Exit-UsageHistoryWriteLock -Mutex $writeLock
     }

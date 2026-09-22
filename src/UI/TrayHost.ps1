@@ -234,9 +234,17 @@ if (-not $isDiagnosticRun) {
 
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
+$script:TimerTickBusy = $false
 $timer.Add_Tick((New-RmfEventHandler -Kind Event -Callback {
-    Invoke-RefreshTimerTick
-    Invoke-UpdateTimerTick
+    if ($script:TimerTickBusy) { return }
+    $script:TimerTickBusy = $true
+    try {
+        Invoke-RefreshTimerTick
+        Invoke-UpdateTimerTick
+    }
+    finally {
+        $script:TimerTickBusy = $false
+    }
 }))
 $timer.Start()
 

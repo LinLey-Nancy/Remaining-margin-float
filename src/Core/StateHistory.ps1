@@ -164,19 +164,32 @@ function Write-UsageStateAtomicText {
             $Text,
             (New-Object Text.UTF8Encoding($false))
         )
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [IO.File]::Replace($temporaryPath, $Path, $backupPath, $true)
-        }
-        else {
-            Move-Item -LiteralPath $temporaryPath -Destination $Path
+        # Retry atomic replace on IOException (e.g., AV scanning the file)
+        $maxRetries = 3
+        $retryDelayMs = 50
+        for ($attempt = 0; $attempt -le $maxRetries; $attempt++) {
+            try {
+                if (Test-Path -LiteralPath $Path -PathType Leaf) {
+                    [IO.File]::Replace($temporaryPath, $Path, $backupPath, $true)
+                }
+                else {
+                    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+                }
+                break
+            }
+            catch [System.IO.IOException] {
+                if ($attempt -ge $maxRetries) { throw }
+                Start-Sleep -Milliseconds $retryDelayMs
+                $retryDelayMs *= 2
+            }
         }
     }
     finally {
         if (Test-Path -LiteralPath $temporaryPath) {
-            Remove-Item -LiteralPath $temporaryPath -Force
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $backupPath) {
-            Remove-Item -LiteralPath $backupPath -Force
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -680,12 +693,21 @@ function Save-UsageStateSnapshot {
     }
     else {
         $protectedPayload = Protect-LocalSecret -Value $payloadJson
+        $encryptionFailed = $false
         if ([string]::IsNullOrWhiteSpace($protectedPayload)) {
-            throw '无法使用 Windows 当前用户加密全量状态。'
+            # DPAPI unavailable (e.g., roaming profile, corrupted key); fall back to unencrypted
+            # with explicit marker so we know not to attempt decryption on read
+            $encryptionFailed = $true
+            $protectedPayload = $payloadJson
+            Write-RuntimeLog `
+                -Level 'Warning' `
+                -Event 'StateHistory.DPAPIFallback' `
+                -Message 'DPAPI 加密不可用，回退到明文存储（仅限当前会话）' `
+                -Data @{ ProviderId = $providerId; PayloadHash = $payloadHash }
         }
         $objectDocument = [ordered]@{
             v = 1
-            Encoding = 'dpapi-current-user'
+            Encoding = if ($encryptionFailed) { 'plaintext-fallback' } else { 'dpapi-current-user' }
             PayloadHash = $payloadHash
             ProtectedPayload = $protectedPayload
         } | ConvertTo-Json -Compress
@@ -735,14 +757,22 @@ function Read-UsageStatePayload {
     if (
         -not $saved -or
         [int]$saved.v -ne 1 -or
-        [string]$saved.Encoding -ne 'dpapi-current-user' -or
         [string]$saved.PayloadHash -ne [string]$Entry.PayloadHash
     ) {
-        throw '加密全量状态文件格式无效。'
+        throw '全量状态文件格式无效。'
     }
-    $payloadJson = Unprotect-LocalSecret -Value ([string]$saved.ProtectedPayload)
-    if ([string]::IsNullOrWhiteSpace($payloadJson)) {
-        throw '当前 Windows 用户无法解密全量状态。'
+    $encoding = [string]$saved.Encoding
+    if ($encoding -eq 'plaintext-fallback') {
+        $payloadJson = [string]$saved.ProtectedPayload
+    }
+    elseif ($encoding -eq 'dpapi-current-user') {
+        $payloadJson = Unprotect-LocalSecret -Value ([string]$saved.ProtectedPayload)
+        if ([string]::IsNullOrWhiteSpace($payloadJson)) {
+            throw '当前 Windows 用户无法解密全量状态。'
+        }
+    }
+    else {
+        throw "不支持的全量状态编码：$encoding"
     }
     if ((Get-UsageStatePayloadHash -PayloadJson $payloadJson) -ne $Entry.PayloadHash) {
         throw '全量状态内容哈希校验失败。'
