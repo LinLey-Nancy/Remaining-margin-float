@@ -320,7 +320,7 @@ if ($CheckProviderContracts) {
         Where-Object { $_.MessageId -eq 'fixture-message' } |
         Select-Object -First 1
     $deepSeekPrimaryCost = Get-DeepSeekEstimatedEventCostCny `
-        -Event $deepSeekPrimaryEvent
+        -UsageEvent $deepSeekPrimaryEvent
     $deepSeekAggregate = Measure-DeepSeekUsageEvents `
         -Events $deepSeekEvents `
         -StartDate ([datetime]'2030-01-01') `
@@ -351,7 +351,7 @@ if ($CheckProviderContracts) {
         -LocalUsage $fixtureLocalUsage `
         -Budget 120 `
         -KeyHint '1234' `
-        -CredentialSource '契约样例' `
+        -SourceLabel '契约样例' `
         -SampledAt ([datetime]'2030-01-01T12:00:00')
     Assert-UsageSnapshotContract -Snapshot $deepSeekSnapshot
 

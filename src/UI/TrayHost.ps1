@@ -487,7 +487,9 @@ $window.Add_Closing((New-RmfEventHandler -Kind Cancel -Callback {
         $script:ActivationEvent.Dispose()
     }
     if ($script:AppMutex) {
-        try { $script:AppMutex.ReleaseMutex() } catch {}
+        try { $script:AppMutex.ReleaseMutex() } catch {
+            # Releasing is best-effort; ownership may already be gone.
+        }
         $script:AppMutex.Dispose()
     }
     $closingTimer.Stop()

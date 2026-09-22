@@ -162,21 +162,21 @@ function Get-KimiHttpClient {
 }
 
 function New-KimiUsageRequest {
-    param($Credential = (Get-KimiCredential))
+    param($AuthProfile = (Get-KimiCredential))
 
-    if ([string]::IsNullOrWhiteSpace($Credential.Token)) {
+    if ([string]::IsNullOrWhiteSpace($AuthProfile.Token)) {
         throw '未找到 Kimi Code 登录信息。'
     }
 
     $request = New-Object System.Net.Http.HttpRequestMessage(
         [System.Net.Http.HttpMethod]::Get,
-        $Credential.UsageUrl
+        $AuthProfile.UsageUrl
     )
     try {
         $request.Headers.Authorization =
             New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
                 'Bearer',
-                $Credential.Token
+                $AuthProfile.Token
             )
         [void]$request.Headers.TryAddWithoutValidation(
             'User-Agent',
@@ -547,8 +547,8 @@ function Read-KimiSessionUsageEvents {
             }
 
             foreach ($line in ($text -split "`r?`n")) {
-                $event = ConvertFrom-KimiWireUsageLine -Line $line
-                if ($event) { $events += $event }
+                $usageEvent = ConvertFrom-KimiWireUsageLine -Line $line
+                if ($usageEvent) { $events += $usageEvent }
             }
         }
         finally {
@@ -597,18 +597,18 @@ function Get-KimiLocalUsage {
             # A file untouched today can still hold the latest turn when no
             # session ran today; only files written today feed the daily sum.
             $summary = Read-KimiSessionUsageEvents -File $file
-            foreach ($event in $summary.Events) {
-                if ($event.Timestamp.LocalDateTime.Date -ne $todayDate) { continue }
+            foreach ($usageEvent in $summary.Events) {
+                if ($usageEvent.Timestamp.LocalDateTime.Date -ne $todayDate) { continue }
                 $result.TodayTokens += (
-                    $event.InputTokens +
-                    $event.OutputTokens +
-                    $event.CachedTokens +
-                    $event.CacheWriteTokens
+                    $usageEvent.InputTokens +
+                    $usageEvent.OutputTokens +
+                    $usageEvent.CachedTokens +
+                    $usageEvent.CacheWriteTokens
                 )
-                $result.TodayInputTokens += $event.InputTokens +
-                    $event.CachedTokens + $event.CacheWriteTokens
-                $result.TodayOutputTokens += $event.OutputTokens
-                $result.TodayCachedTokens += $event.CachedTokens
+                $result.TodayInputTokens += $usageEvent.InputTokens +
+                    $usageEvent.CachedTokens + $usageEvent.CacheWriteTokens
+                $result.TodayOutputTokens += $usageEvent.OutputTokens
+                $result.TodayCachedTokens += $usageEvent.CachedTokens
             }
             if ($file.LastWriteTime.Date -ne $todayDate -and $latest) { continue }
             $fileLatest = $summary.Events |

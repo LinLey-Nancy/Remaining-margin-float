@@ -467,7 +467,7 @@ function Complete-DeepSeekRefresh {
             -LocalUsage (Get-DeepSeekLocalUsage) `
             -Budget $configuration.Budget `
             -KeyHint $credential.Hint `
-            -CredentialSource $credential.Source
+            -SourceLabel $credential.Source
         $script:LastDeepSeekSnapshot = $snapshot
         if ($script:ActiveProvider -eq 'DeepSeek') {
             Update-UsageView -Snapshot $snapshot
@@ -1345,7 +1345,9 @@ function Reset-FailedRefreshOperation {
     $deepSeek = $script:AppContext.Refresh.DeepSeek
     $kimi = $script:AppContext.Refresh.Kimi
     if ($codex.Request) {
-        try { $codex.Request.Dispose() } catch {}
+        try { $codex.Request.Dispose() } catch {
+            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
+        }
     }
     $codex.Request = $null
     $codex.RequestTask = $null
@@ -1353,7 +1355,9 @@ function Reset-FailedRefreshOperation {
     $codex.Attempt = 0
 
     if ($deepSeek.Request) {
-        try { $deepSeek.Request.Dispose() } catch {}
+        try { $deepSeek.Request.Dispose() } catch {
+            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
+        }
     }
     $deepSeek.Request = $null
     $deepSeek.RequestTask = $null
@@ -1361,7 +1365,9 @@ function Reset-FailedRefreshOperation {
     $deepSeek.RetryAfter = $null
 
     if ($kimi.Request) {
-        try { $kimi.Request.Dispose() } catch {}
+        try { $kimi.Request.Dispose() } catch {
+            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
+        }
     }
     $kimi.Request = $null
     $kimi.RequestTask = $null

@@ -558,7 +558,9 @@ finally {
                 [void]$process.WaitForExit(5000)
             }
         }
-        catch {}
+        catch {
+            # The process may already have exited on its own; killing is best-effort.
+        }
         $process.Dispose()
     }
     if (

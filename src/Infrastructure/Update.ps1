@@ -486,8 +486,8 @@ function Get-AutoUpdateNetworkState {
         $networkInformation = (
             [Windows.Networking.Connectivity.NetworkInformation,Windows,ContentType=WindowsRuntime]
         )
-        $profile = $networkInformation::GetInternetConnectionProfile()
-        if (-not $profile) {
+        $connectionProfile = $networkInformation::GetInternetConnectionProfile()
+        if (-not $connectionProfile) {
             return Get-AutoUpdateNetworkAssessment `
                 -ConnectivityLevel None `
                 -CostType Unknown `
@@ -497,8 +497,8 @@ function Get-AutoUpdateNetworkState {
                 -BackgroundDataUsageRestricted $false
         }
 
-        $connectivityLevel = [string]$profile.GetNetworkConnectivityLevel()
-        $cost = $profile.GetConnectionCost()
+        $connectivityLevel = [string]$connectionProfile.GetNetworkConnectivityLevel()
+        $cost = $connectionProfile.GetConnectionCost()
         $costType = [string]$cost.NetworkCostType
         $roaming = [bool]$cost.Roaming
         $overDataLimit = [bool]$cost.OverDataLimit

@@ -325,12 +325,12 @@ function Get-CodexRateLimitWindows {
 
 function Get-CodexEventObservedAt {
     param(
-        $Event,
+        $UsageEvent,
         [datetime]$Fallback
     )
 
     $observedAt = [DateTimeOffset]$Fallback
-    $timestampProperty = $Event.PSObject.Properties['timestamp']
+    $timestampProperty = $UsageEvent.PSObject.Properties['timestamp']
     if ($timestampProperty -and $timestampProperty.Value) {
         $parsed = [DateTimeOffset]::MinValue
         if (
@@ -639,13 +639,13 @@ function Read-SessionSnapshot {
                     continue
                 }
                 try {
-                    $event = $line | ConvertFrom-Json
-                    if ($event.type -eq 'event_msg' -and $event.payload.type -eq 'token_count') {
-                        $lastPayload = $event.payload
-                        $lastObservedAt = Get-CodexEventObservedAt -Event $event -Fallback $File.LastWriteTime
+                    $usageEvent = $line | ConvertFrom-Json
+                    if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
+                        $lastPayload = $usageEvent.payload
+                        $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime
                         Add-CodexRateLimitSample `
                             -Candidates $rateLimitCandidates `
-                            -Payload $event.payload `
+                            -Payload $usageEvent.payload `
                             -ObservedAt $lastObservedAt
                     }
                 }

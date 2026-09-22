@@ -48,7 +48,9 @@ function Exit-UsageHistoryWriteLock {
     param($Mutex)
 
     if (-not $Mutex) { return }
-    try { $Mutex.ReleaseMutex() } catch {}
+    try { $Mutex.ReleaseMutex() } catch {
+        # Releasing is best-effort; ownership may already be gone.
+    }
     $Mutex.Dispose()
 }
 

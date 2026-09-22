@@ -43,7 +43,9 @@ function Complete-UsageHistoryRepair {
         $exitCode = $global:RmfUsageHistoryRepairProcess.ExitCode
         $global:RmfUsageHistoryRepairProcess.Dispose()
     }
-    catch {}
+    catch {
+        # The repair process may fail while shutting down; cleanup must continue.
+    }
     $global:RmfUsageHistoryRepairProcess = $null
     Write-RuntimeLog `
         -Level $(if ($exitCode -eq 0) { 'Info' } else { 'Warning' }) `
@@ -154,7 +156,9 @@ function Stop-UsageHistoryRepair {
             -Message $_.Exception.Message
     }
     finally {
-        try { $process.Dispose() } catch {}
+        try { $process.Dispose() } catch {
+            # Stopping is best-effort; a failed dispose must not propagate.
+        }
         $global:RmfUsageHistoryRepairProcess = $null
     }
     return $stopped

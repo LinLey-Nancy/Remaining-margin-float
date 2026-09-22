@@ -59,9 +59,9 @@ function Read-DeepSeekUsageFile {
     $messageEvents = @()
     try {
         $messageEvents = @([DeepSeekLogScanner]::ReadFile($File.FullName))
-        foreach ($event in $messageEvents) {
-            if (-not $latest -or $event.Timestamp -gt $latest.Timestamp) {
-                $latest = $event
+        foreach ($usageEvent in $messageEvents) {
+            if (-not $latest -or $usageEvent.Timestamp -gt $latest.Timestamp) {
+                $latest = $usageEvent
             }
         }
     }
@@ -113,10 +113,10 @@ function Read-DeepSeekLatestUsageFile {
             }
 
             foreach ($line in ($text -split "`r?`n")) {
-                $event = ConvertFrom-DeepSeekUsageLine -Line $line
-                if (-not $event) { continue }
-                if (-not $latest -or $event.Timestamp -gt $latest.Timestamp) {
-                    $latest = $event
+                $usageEvent = ConvertFrom-DeepSeekUsageLine -Line $line
+                if (-not $usageEvent) { continue }
+                if (-not $latest -or $usageEvent.Timestamp -gt $latest.Timestamp) {
+                    $latest = $usageEvent
                 }
             }
         }
@@ -139,18 +139,18 @@ function Read-DeepSeekLatestUsageFile {
 }
 
 function Get-DeepSeekEstimatedEventCostCny {
-    param($Event)
+    param($UsageEvent)
 
     $catalog = Get-DeepSeekPricingCatalog
     $pricing = Get-DeepSeekPricingTier `
-        -Model ([string]$Event.Model) `
+        -Model ([string]$UsageEvent.Model) `
         -Catalog $catalog
-    $cacheMissTokens = $Event.InputTokens + $Event.CacheWriteTokens
+    $cacheMissTokens = $UsageEvent.InputTokens + $UsageEvent.CacheWriteTokens
 
     return (
-        ($Event.CachedTokens * $pricing.CacheHit) +
+        ($UsageEvent.CachedTokens * $pricing.CacheHit) +
         ($cacheMissTokens * $pricing.CacheMiss) +
-        ($Event.OutputTokens * $pricing.Output)
+        ($UsageEvent.OutputTokens * $pricing.Output)
     ) / $catalog.TokensPerUnit
 }
 
@@ -165,21 +165,21 @@ function Measure-DeepSeekUsageEvents {
     $rangeEnd = if ($null -ne $EndDate) { [datetime]$EndDate } else { $rangeStart.AddDays(1) }
     $uniqueEvents = @{}
     $anonymousIndex = 0
-    foreach ($event in $Events) {
-        if (-not $event) { continue }
-        $eventTime = $event.Timestamp.LocalDateTime
+    foreach ($usageEvent in $Events) {
+        if (-not $usageEvent) { continue }
+        $eventTime = $usageEvent.Timestamp.LocalDateTime
         if ($eventTime -lt $rangeStart -or $eventTime -ge $rangeEnd) { continue }
-        $eventKey = if ($event.MessageId) {
-            $event.MessageId
+        $eventKey = if ($usageEvent.MessageId) {
+            $usageEvent.MessageId
         } else {
             $anonymousIndex++
             '__anonymous_{0}' -f $anonymousIndex
         }
         if (
             -not $uniqueEvents.ContainsKey($eventKey) -or
-            $event.Timestamp -gt $uniqueEvents[$eventKey].Timestamp
+            $usageEvent.Timestamp -gt $uniqueEvents[$eventKey].Timestamp
         ) {
-            $uniqueEvents[$eventKey] = $event
+            $uniqueEvents[$eventKey] = $usageEvent
         }
     }
 
@@ -192,13 +192,13 @@ function Measure-DeepSeekUsageEvents {
         EstimatedCostCny = 0.0
         UniqueMessages = $uniqueEvents.Count
     }
-    foreach ($event in $uniqueEvents.Values) {
-        $aggregate.TotalTokens += $event.TotalTokens
-        $aggregate.InputTokens += $event.InputTokens
-        $aggregate.OutputTokens += $event.OutputTokens
-        $aggregate.CachedTokens += $event.CachedTokens
-        $aggregate.CacheWriteTokens += $event.CacheWriteTokens
-        $aggregate.EstimatedCostCny += Get-DeepSeekEstimatedEventCostCny -Event $event
+    foreach ($usageEvent in $uniqueEvents.Values) {
+        $aggregate.TotalTokens += $usageEvent.TotalTokens
+        $aggregate.InputTokens += $usageEvent.InputTokens
+        $aggregate.OutputTokens += $usageEvent.OutputTokens
+        $aggregate.CachedTokens += $usageEvent.CachedTokens
+        $aggregate.CacheWriteTokens += $usageEvent.CacheWriteTokens
+        $aggregate.EstimatedCostCny += Get-DeepSeekEstimatedEventCostCny -UsageEvent $usageEvent
     }
     return [pscustomobject]$aggregate
 }
@@ -296,8 +296,8 @@ function Get-DeepSeekLocalUsage {
     $monthFiles = @($files | Where-Object { $_.LastWriteTime -ge $monthStart })
     foreach ($file in $monthFiles) {
         $summary = Read-DeepSeekUsageFile -File $file
-        foreach ($event in $summary.Events) {
-            [void]$monthEvents.Add($event)
+        foreach ($usageEvent in $summary.Events) {
+            [void]$monthEvents.Add($usageEvent)
         }
         if ($summary.Latest -and (-not $latest -or $summary.Latest.Timestamp -gt $latest.Timestamp)) {
             $latest = $summary.Latest
@@ -364,7 +364,7 @@ function ConvertTo-DeepSeekSnapshot {
         $LocalUsage,
         [double]$Budget,
         [string]$KeyHint,
-        [string]$CredentialSource,
+        [string]$SourceLabel,
         [datetime]$SampledAt = (Get-Date)
     )
 
@@ -412,7 +412,7 @@ function ConvertTo-DeepSeekSnapshot {
         Plan = '按量计费'
         AccountName = 'DeepSeek API'
         AccountEmail = if ($KeyHint) {
-            '密钥 ••••{0} · {1}' -f $KeyHint, $CredentialSource
+            '密钥 ••••{0} · {1}' -f $KeyHint, $SourceLabel
         } else { '尚未配置 API Key' }
         TodayTokens = $LocalUsage.TodayTokens
         MonthlyTokens = $LocalUsage.MonthlyTokens
@@ -509,5 +509,5 @@ function Get-DeepSeekDemoSnapshot {
         -LocalUsage $usage `
         -Budget $configuration.Budget `
         -KeyHint '7K9D' `
-        -CredentialSource '演示配置'
+        -SourceLabel '演示配置'
 }

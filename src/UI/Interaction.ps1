@@ -197,7 +197,9 @@ $UltraCompactPanel.Add_PreviewMouseLeftButtonDown((New-RmfEventHandler -Kind Mou
     try {
         $window.DragMove()
     }
-    catch {}
+    catch {
+        # DragMove throws once the mouse button is already released; ignore it.
+    }
     Complete-WindowDrag `
         -OriginEdgeSide $originEdgeSide `
         -StartScreenPoint $startScreenPoint
@@ -224,7 +226,9 @@ $CompactHit.Add_PreviewMouseMove((New-RmfEventHandler -Kind Mouse -Callback {
             $script:Dragging = $true
             $CompactHit.ReleaseMouseCapture()
             Clear-EdgeDock
-            try { $window.DragMove() } catch {}
+            try { $window.DragMove() } catch {
+                # DragMove throws once the mouse button is already released; ignore it.
+            }
             Complete-WindowDrag `
                 -OriginEdgeSide $script:DragOriginEdgeSide `
                 -StartScreenPoint $script:DragStartScreenPoint
