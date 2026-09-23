@@ -344,6 +344,13 @@ $script:KimiSettingsMenuItem.Header = 'Kimi Code 手动配置…'
 $script:KimiSettingsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     [void](Show-KimiSettings)
 }))
+$script:KimiWslMenuItem = New-Object Windows.Controls.MenuItem
+$script:KimiWslMenuItem.Header = '在 WSL 中使用'
+$script:KimiWslMenuItem.IsCheckable = $true
+$script:KimiWslMenuItem.ToolTip = '从 WSL 发行版的 ~/.kimi-code 读取 Kimi Code 凭证与本地记录'
+$script:KimiWslMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    Set-KimiUseWsl -Enabled ([bool]$script:KimiWslMenuItem.IsChecked)
+}))
 $topmostMenu = New-Object Windows.Controls.MenuItem
 $topmostMenu.Header = '始终置顶'
 $topmostMenu.IsCheckable = $true
@@ -484,6 +491,7 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$contextMenu.Items.Add($script:CodexOfficialAccessMenuItem)
 [void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
 [void]$contextMenu.Items.Add($script:KimiSettingsMenuItem)
+[void]$contextMenu.Items.Add($script:KimiWslMenuItem)
 [void]$contextMenu.Items.Add($topmostMenu)
 [void]$contextMenu.Items.Add($script:LowAlertsMenuItem)
 [void]$contextMenu.Items.Add($script:LowAlertThresholdMenuItem)

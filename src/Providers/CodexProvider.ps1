@@ -645,7 +645,7 @@ function Read-SessionSnapshot {
                 }
                 $foundTokenCount = $true
                 try {
-                    $usageEvent = $line | ConvertFrom-Json -Depth 10
+                    $usageEvent = $line | ConvertFrom-Json
                     if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
                         $lastPayload = $usageEvent.payload
                         $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime
@@ -669,7 +669,7 @@ function Read-SessionSnapshot {
                         continue
                     }
                     try {
-                        $usageEvent = $line | ConvertFrom-Json -Depth 10
+                        $usageEvent = $line | ConvertFrom-Json
                         if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
                             $lastPayload = $usageEvent.payload
                             $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime

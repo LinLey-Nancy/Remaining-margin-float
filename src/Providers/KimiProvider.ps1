@@ -2,12 +2,87 @@
     if (-not [string]::IsNullOrWhiteSpace($env:KIMI_CODE_HOME)) {
         return $env:KIMI_CODE_HOME
     }
+    if ($script:KimiUseWsl) {
+        return Resolve-KimiWslDataRoot
+    }
     return Join-Path $env:USERPROFILE '.kimi-code'
+}
+
+function Get-KimiWslDistroNames {
+    # 从注册表枚举已安装的 WSL 发行版，不调用 wsl.exe。
+    $lxssPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+    try {
+        if (-not (Test-Path -LiteralPath $lxssPath)) { return @() }
+        $names = @(
+            Get-ChildItem -LiteralPath $lxssPath | ForEach-Object {
+                [string](Get-ItemProperty -LiteralPath $_.PSPath).DistributionName
+            } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        return $names
+    }
+    catch {
+        return @()
+    }
+}
+
+function Test-KimiWslDataRootCandidate {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+    foreach ($marker in @('config.toml', 'credentials', 'sessions')) {
+        if (Test-Path -LiteralPath (Join-Path $Path $marker)) { return $true }
+    }
+    return $false
+}
+
+function Resolve-KimiWslDataRootFromBase {
+    param([string]$BasePath)
+
+    if ([string]::IsNullOrWhiteSpace($BasePath)) { return $null }
+    $rootCandidate = Join-Path $BasePath 'root\.kimi-code'
+    if (Test-KimiWslDataRootCandidate -Path $rootCandidate) {
+        return $rootCandidate
+    }
+    $homeRoot = Join-Path $BasePath 'home'
+    if (Test-Path -LiteralPath $homeRoot -PathType Container) {
+        foreach ($homeDir in @(Get-ChildItem -LiteralPath $homeRoot -Directory)) {
+            $candidate = Join-Path $homeDir.FullName '.kimi-code'
+            if (Test-KimiWslDataRootCandidate -Path $candidate) {
+                return $candidate
+            }
+        }
+    }
+    return $null
+}
+
+function Resolve-KimiWslDataRoot {
+    # 解析结果（含未命中）按进程缓存，切换开关时由 Set-KimiUseWsl 清空。
+    if ($script:KimiWslDataRootResolved) { return $script:KimiWslDataRootCache }
+    $resolved = $null
+    try {
+        foreach ($distro in @(Get-KimiWslDistroNames)) {
+            foreach ($uncPrefix in @(
+                "\\wsl.localhost\$distro",
+                "\\wsl`$\$distro"
+            )) {
+                $resolved = Resolve-KimiWslDataRootFromBase -BasePath $uncPrefix
+                if ($resolved) { break }
+            }
+            if ($resolved) { break }
+        }
+    }
+    catch {
+        $resolved = $null
+    }
+    $script:KimiWslDataRootCache = $resolved
+    $script:KimiWslDataRootResolved = $true
+    return $resolved
 }
 
 function Read-KimiConfigProviders {
     param([string]$DataRoot = (Get-KimiCodeDataRoot))
 
+    if ([string]::IsNullOrWhiteSpace($DataRoot)) { return @() }
     $configPath = Join-Path $DataRoot 'config.toml'
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return @() }
 
@@ -45,6 +120,7 @@ function Read-KimiConfigProviders {
 function Get-KimiDefaultModel {
     param([string]$DataRoot = (Get-KimiCodeDataRoot))
 
+    if ([string]::IsNullOrWhiteSpace($DataRoot)) { return '' }
     $configPath = Join-Path $DataRoot 'config.toml'
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return '' }
     foreach ($line in (Get-Content -LiteralPath $configPath)) {
@@ -82,58 +158,74 @@ function Get-KimiCredential {
     }
 
     $dataRoot = Get-KimiCodeDataRoot
-    $credentialsRoot = Join-Path $dataRoot 'credentials'
-    if (Test-Path -LiteralPath $credentialsRoot) {
-        $credentialFile = Get-ChildItem -LiteralPath $credentialsRoot `
-            -Filter '*.json' -File |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($credentialFile) {
-            try {
-                $payload = Get-Content -LiteralPath $credentialFile.FullName -Raw |
-                    ConvertFrom-Json
-                $accessToken = [string](Get-ObjectPropertyValue `
-                    -Object $payload `
-                    -Name 'access_token' `
-                    -Default '')
-                if (-not [string]::IsNullOrWhiteSpace($accessToken)) {
-                    $result.Token = $accessToken
-                    $result.Source = 'Kimi Code CLI（OAuth 登录）'
-                    $result.AuthMethod = 'OAuth'
-                    $result.AutoSource = 'OAuth 登录'
-                    $result.Hint = ''
+    # KIMI_CODE_HOME 显式指向时不按 WSL 模式标注来源。
+    $usingWslRoot = (
+        $script:KimiUseWsl -and
+        [string]::IsNullOrWhiteSpace($env:KIMI_CODE_HOME) -and
+        -not [string]::IsNullOrWhiteSpace($dataRoot)
+    )
+    if (-not [string]::IsNullOrWhiteSpace($dataRoot)) {
+        $credentialsRoot = Join-Path $dataRoot 'credentials'
+        if (Test-Path -LiteralPath $credentialsRoot) {
+            $credentialFile = Get-ChildItem -LiteralPath $credentialsRoot `
+                -Filter '*.json' -File |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First 1
+            if ($credentialFile) {
+                try {
+                    $payload = Get-Content -LiteralPath $credentialFile.FullName -Raw |
+                        ConvertFrom-Json
+                    $accessToken = [string](Get-ObjectPropertyValue `
+                        -Object $payload `
+                        -Name 'access_token' `
+                        -Default '')
+                    if (-not [string]::IsNullOrWhiteSpace($accessToken)) {
+                        $result.Token = $accessToken
+                        $result.Source = if ($usingWslRoot) {
+                            'Kimi Code CLI（WSL · OAuth 登录）'
+                        } else {
+                            'Kimi Code CLI（OAuth 登录）'
+                        }
+                        $result.AuthMethod = 'OAuth'
+                        $result.AutoSource = 'OAuth 登录'
+                        $result.Hint = ''
+                    }
+                }
+                catch {
+                    $result.Token = ''
                 }
             }
-            catch {
-                $result.Token = ''
-            }
         }
-    }
 
-    $configProvider = $null
-    $providers = @(Read-KimiConfigProviders -DataRoot $dataRoot)
-    $configProvider = $providers | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_.ApiKey) -and
-        $_.BaseUrl -match 'coding'
-    } | Select-Object -First 1
-    if (-not $configProvider) {
+        $configProvider = $null
+        $providers = @(Read-KimiConfigProviders -DataRoot $dataRoot)
         $configProvider = $providers | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.ApiKey)
+            -not [string]::IsNullOrWhiteSpace($_.ApiKey) -and
+            $_.BaseUrl -match 'coding'
         } | Select-Object -First 1
-    }
-    if ($configProvider) {
-        $result.BaseUrl = $configProvider.BaseUrl
-        $autoKey = $configProvider.ApiKey.Trim()
-        $result.AutoSource = 'config.toml API Key'
-        $result.AutoHint = if ($autoKey.Length -gt 4) {
-            $autoKey.Substring($autoKey.Length - 4)
-        } else { $autoKey }
-    }
-    if (-not $result.Token -and $configProvider) {
-        $result.Token = $configProvider.ApiKey.Trim()
-        $result.Source = 'Kimi Code CLI（config.toml）'
-        $result.AuthMethod = 'ApiKey'
-        $result.Hint = $result.AutoHint
+        if (-not $configProvider) {
+            $configProvider = $providers | Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_.ApiKey)
+            } | Select-Object -First 1
+        }
+        if ($configProvider) {
+            $result.BaseUrl = $configProvider.BaseUrl
+            $autoKey = $configProvider.ApiKey.Trim()
+            $result.AutoSource = 'config.toml API Key'
+            $result.AutoHint = if ($autoKey.Length -gt 4) {
+                $autoKey.Substring($autoKey.Length - 4)
+            } else { $autoKey }
+        }
+        if (-not $result.Token -and $configProvider) {
+            $result.Token = $configProvider.ApiKey.Trim()
+            $result.Source = if ($usingWslRoot) {
+                'Kimi Code CLI（WSL config.toml）'
+            } else {
+                'Kimi Code CLI（config.toml）'
+            }
+            $result.AuthMethod = 'ApiKey'
+            $result.Hint = $result.AutoHint
+        }
     }
 
     # 自动读取不可用时，回退到用户手动配置并加密保存的 API Key。
@@ -583,55 +675,57 @@ function Get-KimiLocalUsage {
     }
 
     $dataRoot = Get-KimiCodeDataRoot
-    $sessionsRoot = Join-Path $dataRoot 'sessions'
-    if (Test-Path -LiteralPath $sessionsRoot) {
-        $files = @(
-            [LocalJsonlFileScanner]::GetFilesNewestFirst($sessionsRoot) |
-                Where-Object {
-                    $_.FullName -replace '/', '\' -match '\\agents\\main\\wire\.jsonl$'
+    if (-not [string]::IsNullOrWhiteSpace($dataRoot)) {
+        $sessionsRoot = Join-Path $dataRoot 'sessions'
+        if (Test-Path -LiteralPath $sessionsRoot) {
+            $files = @(
+                [LocalJsonlFileScanner]::GetFilesNewestFirst($sessionsRoot) |
+                    Where-Object {
+                        $_.FullName -replace '/', '\' -match '\\agents\\main\\wire\.jsonl$'
+                    }
+            )
+            $todayDate = (Get-Date).Date
+            $latest = $null
+            foreach ($file in $files) {
+                # A file untouched today can still hold the latest turn when no
+                # session ran today; only files written today feed the daily sum.
+                $summary = Read-KimiSessionUsageEvents -File $file
+                foreach ($usageEvent in $summary.Events) {
+                    if ($usageEvent.Timestamp.LocalDateTime.Date -ne $todayDate) { continue }
+                    $result.TodayTokens += (
+                        $usageEvent.InputTokens +
+                        $usageEvent.OutputTokens +
+                        $usageEvent.CachedTokens +
+                        $usageEvent.CacheWriteTokens
+                    )
+                    $result.TodayInputTokens += $usageEvent.InputTokens +
+                        $usageEvent.CachedTokens + $usageEvent.CacheWriteTokens
+                    $result.TodayOutputTokens += $usageEvent.OutputTokens
+                    $result.TodayCachedTokens += $usageEvent.CachedTokens
                 }
-        )
-        $todayDate = (Get-Date).Date
-        $latest = $null
-        foreach ($file in $files) {
-            # A file untouched today can still hold the latest turn when no
-            # session ran today; only files written today feed the daily sum.
-            $summary = Read-KimiSessionUsageEvents -File $file
-            foreach ($usageEvent in $summary.Events) {
-                if ($usageEvent.Timestamp.LocalDateTime.Date -ne $todayDate) { continue }
-                $result.TodayTokens += (
-                    $usageEvent.InputTokens +
-                    $usageEvent.OutputTokens +
-                    $usageEvent.CachedTokens +
-                    $usageEvent.CacheWriteTokens
-                )
-                $result.TodayInputTokens += $usageEvent.InputTokens +
-                    $usageEvent.CachedTokens + $usageEvent.CacheWriteTokens
-                $result.TodayOutputTokens += $usageEvent.OutputTokens
-                $result.TodayCachedTokens += $usageEvent.CachedTokens
+                if ($file.LastWriteTime.Date -ne $todayDate -and $latest) { continue }
+                $fileLatest = $summary.Events |
+                    Sort-Object Timestamp -Descending |
+                    Select-Object -First 1
+                if ($fileLatest -and (-not $latest -or $fileLatest.Timestamp -gt $latest.Timestamp)) {
+                    $latest = $fileLatest
+                }
             }
-            if ($file.LastWriteTime.Date -ne $todayDate -and $latest) { continue }
-            $fileLatest = $summary.Events |
-                Sort-Object Timestamp -Descending |
-                Select-Object -First 1
-            if ($fileLatest -and (-not $latest -or $fileLatest.Timestamp -gt $latest.Timestamp)) {
-                $latest = $fileLatest
-            }
-        }
 
-        if ($latest) {
-            $result.LastTurnTokens = $latest.InputTokens + $latest.OutputTokens +
-                $latest.CachedTokens + $latest.CacheWriteTokens
-            $result.LastInputTokens = $latest.InputTokens +
-                $latest.CachedTokens + $latest.CacheWriteTokens
-            $result.LastOutputTokens = $latest.OutputTokens
-            $result.LastCachedTokens = $latest.CachedTokens
-            $cacheBase = $latest.InputTokens + $latest.CachedTokens + $latest.CacheWriteTokens
-            $result.CacheHitPercent = if ($cacheBase -gt 0) {
-                [Math]::Round(($latest.CachedTokens / $cacheBase) * 100, 1)
-            } else { 0 }
-            $result.Model = if ($latest.Model) { $latest.Model } else { '未知模型' }
-            $result.SampledAt = $latest.Timestamp.LocalDateTime
+            if ($latest) {
+                $result.LastTurnTokens = $latest.InputTokens + $latest.OutputTokens +
+                    $latest.CachedTokens + $latest.CacheWriteTokens
+                $result.LastInputTokens = $latest.InputTokens +
+                    $latest.CachedTokens + $latest.CacheWriteTokens
+                $result.LastOutputTokens = $latest.OutputTokens
+                $result.LastCachedTokens = $latest.CachedTokens
+                $cacheBase = $latest.InputTokens + $latest.CachedTokens + $latest.CacheWriteTokens
+                $result.CacheHitPercent = if ($cacheBase -gt 0) {
+                    [Math]::Round(($latest.CachedTokens / $cacheBase) * 100, 1)
+                } else { 0 }
+                $result.Model = if ($latest.Model) { $latest.Model } else { '未知模型' }
+                $result.SampledAt = $latest.Timestamp.LocalDateTime
+            }
         }
     }
     return [pscustomobject]$result

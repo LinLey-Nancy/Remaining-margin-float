@@ -21,6 +21,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 }
 foreach ($requiredPath in @(
     $installerScriptPath
+    (Join-Path $PSScriptRoot 'installer\Stop-RunningInstances.ps1')
     (Join-Path $packageRoot 'RemainingMarginFloat.exe')
     (Join-Path $packageRoot 'RemainingMarginFloat.ps1')
     (Join-Path $packageRoot 'README.txt')

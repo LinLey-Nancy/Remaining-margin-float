@@ -175,6 +175,17 @@ Codex）的用户。手动 Key 通过 Windows DPAPI `CurrentUser` 加密后保�
 打开该窗口；保存手动配置后自动刷新，账号行会注明凭证来源（Kimi Code
 CLI（OAuth 登录）/ Kimi Code CLI（config.toml）/ 手动配置）。
 
+如果 Kimi Code CLI 运行在 WSL 里，可以在悬浮窗或通知区域右键菜单勾选
+“在 WSL 中使用”（Kimi Code 为当前数据源时才显示）。勾选后应用改从 WSL
+发行版内的 `~/.kimi-code` 读取凭据（OAuth 令牌、`config.toml`）和本地会话
+统计：依次枚举注册表中已安装的发行版，通过 `\\wsl.localhost\<发行版>`（旧版
+Windows 回退 `\\wsl$\<发行版>`）在 `root` 与 `home` 下定位数据目录。勾选后
+在 WSL 里找不到数据时会显示“余量未知 / 暂无本地记录”，不会回退读取
+Windows 侧的数据；账号行会注明凭证来源（Kimi Code CLI（WSL · OAuth 登录）/
+Kimi Code CLI（WSL config.toml））。手动配置的 API Key 兜底逻辑两种模式下
+完全相同。设置了 `KIMI_CODE_HOME` 环境变量时始终以该目录为准（也可以手动
+指向 `\\wsl$` 路径，无需勾选开关）。
+
 ## 操作
 
 | 操作 | 结果 |

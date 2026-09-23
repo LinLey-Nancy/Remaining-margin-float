@@ -90,10 +90,21 @@ function Start-UsageHistoryRepair {
             $repairEnvironmentName,
             [EnvironmentVariableTarget]::Process
         )
+        $repairParentEnvironmentName =
+            'REMAINING_MARGIN_FLOAT_REPAIR_PARENT_PID'
+        $previousRepairParentEnvironment = [Environment]::GetEnvironmentVariable(
+            $repairParentEnvironmentName,
+            [EnvironmentVariableTarget]::Process
+        )
         try {
             [Environment]::SetEnvironmentVariable(
                 $repairEnvironmentName,
                 '1',
+                [EnvironmentVariableTarget]::Process
+            )
+            [Environment]::SetEnvironmentVariable(
+                $repairParentEnvironmentName,
+                [string]$PID,
                 [EnvironmentVariableTarget]::Process
             )
             $global:RmfUsageHistoryRepairProcess = Start-Process `
@@ -106,6 +117,11 @@ function Start-UsageHistoryRepair {
             [Environment]::SetEnvironmentVariable(
                 $repairEnvironmentName,
                 $previousRepairEnvironment,
+                [EnvironmentVariableTarget]::Process
+            )
+            [Environment]::SetEnvironmentVariable(
+                $repairParentEnvironmentName,
+                $previousRepairParentEnvironment,
                 [EnvironmentVariableTarget]::Process
             )
         }

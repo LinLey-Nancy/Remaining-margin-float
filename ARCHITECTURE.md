@@ -32,7 +32,10 @@ WPF Dispatcher，待当前回调结束后继续执行。
 `Build-Installer.ps1` 再将这五个文件编译成 Inno Setup 安装程序。正式 Release
 只发布 `*-Setup.exe` 与其 SHA-256；安装器提供用户级默认目录、可选安装位置、
 开始菜单/桌面快捷方式、覆盖升级和卸载。安装目录写入当前用户注册表后，开机
-启动直接指向稳定安装路径；便携目录仍使用原有哈希命名托管副本。
+启动直接指向稳定安装路径；便携目录仍使用原有哈希命名托管副本。安装器额外
+内嵌并安装 `Stop-RunningInstances.ps1`：安装与卸载开始前按安装路径精确终止
+残留的应用实例（无窗口的后台修复进程立即终止，主窗口先优雅关闭、8 秒宽限后
+强制结束，上限 30 秒），只匹配安装目录下的进程，不影响其他路径的便携副本。
 
 ## 组件职责
 
@@ -78,7 +81,18 @@ KimiProvider（`Providers\KimiProvider.ps1`）从 Kimi Code CLI 本地配置解�
 与 KeyHint 后四位一起保存在 `%LOCALAPPDATA%\RemainingMarginFloat\kimi.json`，
 并已加入旧目录 `CodexMarginFloat` 的迁移白名单；快照账号行注明凭证来源
 （Kimi Code CLI（OAuth 登录）/ Kimi Code CLI（config.toml）/ 手动配置）。
-官方配额接口为 GET `{base_url}/usages`（Bearer
+Kimi 数据根有两种定位模式：默认读取 `%USERPROFILE%\.kimi-code`（或
+`KIMI_CODE_HOME` 环境变量，该变量始终最优先）；勾选「在 WSL 中使用」
+（`KimiUseWsl` 设置，菜单项仅 Kimi 数据源激活时可见）后，
+`Resolve-KimiWslDataRoot` 改为枚举注册表
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` 下的发行版（不调用
+`wsl.exe`），依次通过 `\\wsl.localhost\<发行版>` 与 `\\wsl$\<发行版>` 在
+`root\.kimi-code` 与 `home\*\.kimi-code` 候选中定位首个含 `config.toml`、
+`credentials` 或 `sessions` 之一的目录，解析结果（含未命中）按进程缓存，
+切换开关时清空。WSL 模式下找不到数据根时各读取点返回空结果（界面显示
+“余量未知 / 暂无本地记录”），不回退 Windows 侧数据；凭证来源标注相应
+区分为 Kimi Code CLI（WSL · OAuth 登录）/ Kimi Code CLI（WSL
+config.toml）。官方配额接口为 GET `{base_url}/usages`（Bearer
 认证，默认 `https://api.kimi.com/coding/v1`），返回每周配额（已用百分比与
 重置时间）和 300 分钟的 5 小时滚动窗口。`limits[]` 只在 5 小时窗口有活跃
 使用时返回；空闲或刚重置时须回退到摘要字段 `usages.limit_5h`（`used_ratio`
@@ -119,6 +133,10 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   的事件与 Dispatcher Action 都必须通过 `New-RmfEventHandler` /
   `New-RmfAction` 注册。发布测试会实际触发窗口失焦与回调重入，防止
   `ScriptBlockDelegateInvokedFromWrongThread` 和嵌套调用状态异常回归。
+  桥接回调经 `Invoke-Command` 在宿主 Runspace 中另起作用域执行，读不到
+  定义处的函数局部变量；回调体只能引用 `$script:` 作用域状态或在回调
+  内部自行求值（贴边校准的延迟采样状态因此经
+  `$script:PendingEdgeAlignmentSamples` 队列传递）。
 - UI 事件桥必须在 Runspace 关闭前停止接收回调，并在单个回调失败时隔离异常，
   不得把 PowerShell Runspace 异常传播成 WPF Dispatcher 的未处理异常。
 - 官方余量请求期间，1 秒刷新计时器仍须更新等待时间；发布测试必须实际观察
@@ -165,7 +183,7 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   `state-history\usage-history-backfill.json` v2 只记录完成时间、覆盖样本数和
   SHA-256 覆盖指纹。只有指纹与完成时间之前的趋势历史一致时才能沿用增量游标，
   否则必须重新扫描滚动 168 小时窗口，避免导入、清理或替换历史后漏补样本。
-- 历史补录在首次刷新完成后转入隐藏后台进程，不得阻塞首屏显示；若用户在补录期间刷新，完成后自动补执行一次。
+- 历史补录在首次刷新完成后转入隐藏后台进程，不得阻塞首屏显示；若用户在补录期间刷新，完成后自动补执行一次。补录进程携带父进程 PID，启动器内的看门狗线程在父进程消失后 3 秒内自行退出，避免孤儿进程长期锁定安装目录。
 - 运行日志使用脱敏 JSONL，记录关键生命周期事件和慢操作；单文件 2 MB、
   4 个备份上限。日志失败必须被隔离，不得影响启动、刷新或关闭。
 - v1.9.0 之前的 v1/v2 Codex 百分比历史没有 `QuotaPeriod`，其既定语义为每周

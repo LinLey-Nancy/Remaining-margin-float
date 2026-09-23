@@ -52,6 +52,8 @@ Source: "{#PackageDirectory}\RemainingMarginFloat.ps1"; DestDir: "{app}"; Flags:
 Source: "{#PackageDirectory}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDirectory}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDirectory}\PRIVACY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Stop-RunningInstances.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Stop-RunningInstances.ps1"; Flags: dontcopy
 
 [Registry]
 Root: HKCU; Subkey: "Software\RemainingMarginFloat"; ValueType: string; ValueName: "InstallLocation"; ValueData: "{app}"; Flags: uninsdeletevalue uninsdeletekeyifempty
@@ -72,6 +74,49 @@ Filename: "{sys}\reg.exe"; Parameters: "DELETE ""HKCU\Software\Microsoft\Windows
 Type: files; Name: "{userstartup}\Remaining Margin Float.lnk"
 
 [Code]
+procedure TerminateRemainingAppInstances;
+var
+  ScriptPath: String;
+  TargetPath: String;
+  ResultCode: Integer;
+begin
+  TargetPath := ExpandConstant('{app}\RemainingMarginFloat.exe');
+  if not FileExists(TargetPath) then
+    Exit;
+  if IsUninstaller then
+    { dontcopy payloads are only embedded in setup.exe; during uninstall the
+      installed copy is still present at the usUninstall step. }
+    ScriptPath := ExpandConstant('{app}\Stop-RunningInstances.ps1')
+  else
+  begin
+    ExtractTemporaryFile('Stop-RunningInstances.ps1');
+    ScriptPath := ExpandConstant('{tmp}\Stop-RunningInstances.ps1');
+  end;
+  if not FileExists(ScriptPath) then
+    Exit;
+  Exec(
+    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+      ScriptPath + '" -TargetPath "' + TargetPath + '"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  TerminateRemainingAppInstances;
+  Result := '';
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    TerminateRemainingAppInstances;
+end;
+
 function ShouldRestartAfterAutomaticUpdate: Boolean;
 var
   Index: Integer;

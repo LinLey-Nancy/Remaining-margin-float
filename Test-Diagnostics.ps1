@@ -286,6 +286,10 @@ Assert-Diagnostic -Condition ([bool]$history.ResetJumpStartsNewSegment) `
     -Message 'Forecast reset segment'
 Assert-Diagnostic -Condition ([bool]$history.StableUsageDetected) `
     -Message 'Stable usage forecast'
+Assert-Diagnostic -Condition ([bool]$history.RecentAccelerationDetected) `
+    -Message 'Forecast follows accelerated recent drop'
+Assert-Diagnostic -Condition ([bool]$history.RecentNoiseIgnored) `
+    -Message 'Forecast ignores sub-threshold recent noise'
 Assert-Diagnostic -Condition (
     [bool]$history.TrendResetStartsNewBaseline -and
     [bool]$history.RollingWindowCarriesBoundary -and
@@ -479,6 +483,25 @@ Assert-Diagnostic -Condition (
     $transitions.KimiManualConfigWhenCodex -eq 'Collapsed' -and
     [bool]$transitions.KimiSourceChecked
 ) -Message 'Kimi provider menu state'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.KimiWslMenuVisibleOnlyForKimi -and
+    [bool]$transitions.KimiWslCheckedStatesSynced
+) -Message 'Kimi WSL toggle menu visibility and check state sync'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.KimiWslSettingRoundTrip -and
+    [bool]$transitions.KimiWslLegacyRestoreDefaultsFalse
+) -Message 'Kimi WSL setting persistence round trip'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.KimiWslHomeCandidateHit -and
+    [bool]$transitions.KimiWslRootCandidateHit -and
+    [bool]$transitions.KimiWslEmptyBaseReturnsNull -and
+    [bool]$transitions.KimiWslResolutionCached -and
+    [bool]$transitions.KimiWslEnvOverrideWins
+) -Message 'Kimi WSL data root resolution'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.KimiWslMissingDataSemantics -and
+    [bool]$transitions.KimiWslCredentialSourceLabeled
+) -Message 'Kimi WSL missing-data semantics and credential source label'
 Assert-Diagnostic -Condition (
     $transitions.KimiCompactValue -eq '90' -and
     $transitions.KimiCompactSuffix -eq '%' -and

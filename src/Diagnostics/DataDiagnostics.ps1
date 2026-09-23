@@ -1656,6 +1656,31 @@ if ($CheckUsageHistory) {
         -CurrentSample $stableSamples[-1] `
         -Now $now
 
+    $acceleratedSamples = @(
+        (New-HistoryCheckSample -HoursAgo 3 -Value 100),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 100),
+        (New-HistoryCheckSample -HoursAgo (25.0 / 60) -Value 100),
+        (New-HistoryCheckSample -HoursAgo (15.0 / 60) -Value 97),
+        (New-HistoryCheckSample -HoursAgo (5.0 / 60) -Value 94),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 91)
+    )
+    $acceleratedForecast = Get-DepletionForecast `
+        -Samples $acceleratedSamples `
+        -CurrentSample $acceleratedSamples[-1] `
+        -Now $now
+
+    $noiseOnlyRecentSamples = @(
+        (New-HistoryCheckSample -HoursAgo 3 -Value 80),
+        (New-HistoryCheckSample -HoursAgo 1 -Value 70),
+        (New-HistoryCheckSample -HoursAgo 0.5 -Value 60),
+        (New-HistoryCheckSample -HoursAgo 0.25 -Value 59.8),
+        (New-HistoryCheckSample -HoursAgo 0 -Value 59.5)
+    )
+    $noiseOnlyRecentForecast = Get-DepletionForecast `
+        -Samples $noiseOnlyRecentSamples `
+        -CurrentSample $noiseOnlyRecentSamples[-1] `
+        -Now $now
+
     $trendResetSamples = @(
         (New-HistoryCheckSample -HoursAgo 23 -Value 37),
         (New-HistoryCheckSample -HoursAgo 2 -Value 36),
@@ -2550,6 +2575,17 @@ if ($CheckUsageHistory) {
             [Math]::Abs([double]$resetForecast.HoursToEmpty - 7) -lt 0.01
         )
         StableUsageDetected = $stableForecast.Status -eq 'Stable'
+        RecentAccelerationDetected = (
+            $acceleratedForecast.Status -eq 'Depleting' -and
+            [Math]::Abs(
+                [double]$acceleratedForecast.HoursToEmpty - 4.39
+            ) -lt 0.05 -and
+            [double]$acceleratedForecast.RatePerHour -lt -15
+        )
+        RecentNoiseIgnored = (
+            $noiseOnlyRecentForecast.Status -eq 'Depleting' -and
+            [double]$noiseOnlyRecentForecast.HoursToEmpty -lt 12
+        )
         TrendResetStartsNewBaseline = $trendResetStartsNewBaseline
         RollingWindowCarriesBoundary = $rollingWindowCarriesBoundary
         MultipleResetUsesLatestBaseline = $multipleResetUsesLatestBaseline

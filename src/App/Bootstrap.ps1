@@ -475,7 +475,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.11.2'
+$script:AppVersion = '1.12.0'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -484,6 +484,7 @@ $script:EdgeRevealDurationMs = 190
 $script:EdgeHideDurationMs = 150
 $script:EdgeAlignMaxCorrectionPixels = 240
 $script:EdgeDockAnimating = $false
+$script:PendingEdgeAlignmentSamples = New-Object System.Collections.Queue
 $script:WindowPlacementWatchdogSeconds = 5
 $script:LastWindowPlacementWatchdogAt = $null
 $script:ExpandedWidth = 400.0
@@ -598,6 +599,11 @@ $script:DeepSeekSettingsMenuItem = $null
 $script:TrayDeepSeekSettingsItem = $null
 $script:KimiSettingsMenuItem = $null
 $script:TrayKimiSettingsItem = $null
+$script:KimiWslMenuItem = $null
+$script:TrayKimiWslItem = $null
+$script:KimiUseWsl = $false
+$script:KimiWslDataRootCache = $null
+$script:KimiWslDataRootResolved = $false
 $script:LowAlertsMenuItem = $null
 $script:TrayLowAlertsItem = $null
 $script:LowAlertThresholdMenuItem = $null

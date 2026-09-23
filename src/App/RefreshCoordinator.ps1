@@ -864,6 +864,16 @@ function Sync-ProviderMenuState {
     if ($script:TrayKimiSettingsItem) {
         $script:TrayKimiSettingsItem.Visible = $script:ActiveProvider -eq 'Kimi'
     }
+    if ($script:KimiWslMenuItem) {
+        $script:KimiWslMenuItem.Visibility = if (
+            $script:ActiveProvider -eq 'Kimi'
+        ) { 'Visible' } else { 'Collapsed' }
+        $script:KimiWslMenuItem.IsChecked = $script:KimiUseWsl
+    }
+    if ($script:TrayKimiWslItem) {
+        $script:TrayKimiWslItem.Visible = $script:ActiveProvider -eq 'Kimi'
+        $script:TrayKimiWslItem.Checked = $script:KimiUseWsl
+    }
 }
 
 function Set-ActiveProvider {
@@ -949,6 +959,27 @@ function Set-CodexOfficialAccess {
         Invoke-Refresh
     }
     return $true
+}
+
+function Set-KimiUseWsl {
+    param([bool]$Enabled)
+
+    if (
+        $script:AppContext.Refresh.Kimi.RequestTask -or
+        $script:AppContext.Refresh.Kimi.RetryAfter
+    ) {
+        Cancel-KimiRefresh
+    }
+    $script:KimiUseWsl = $Enabled
+    # 数据根与官方用量都可能来自另一侧环境，切换后全部重新解析。
+    $script:KimiOfficialUsageCache = $null
+    $script:KimiWslDataRootCache = $null
+    $script:KimiWslDataRootResolved = $false
+    Sync-ProviderMenuState
+    Save-Settings
+    if ($script:ActiveProvider -eq 'Kimi') {
+        Invoke-Refresh
+    }
 }
 
 function Show-DeepSeekSettings {

@@ -71,6 +71,13 @@ $script:TrayKimiSettingsItem.Add_Click((New-RmfEventHandler -Kind Event -Callbac
     Show-ExistingWindow
     [void](Show-KimiSettings)
 }))
+$script:TrayKimiWslItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayKimiWslItem.Text = '在 WSL 中使用'
+$script:TrayKimiWslItem.CheckOnClick = $true
+$script:TrayKimiWslItem.ToolTipText = '从 WSL 发行版的 ~/.kimi-code 读取 Kimi Code 凭证与本地记录'
+$script:TrayKimiWslItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Set-KimiUseWsl -Enabled ([bool]$script:TrayKimiWslItem.Checked)
+}))
 $script:TrayTopmostItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayTopmostItem.Text = '始终置顶'
 $script:TrayTopmostItem.CheckOnClick = $true
@@ -201,6 +208,7 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($script:TrayCodexOfficialAccessItem)
 [void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayKimiSettingsItem)
+[void]$script:TrayMenu.Items.Add($script:TrayKimiWslItem)
 [void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertsItem)
 [void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)

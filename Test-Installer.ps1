@@ -148,12 +148,16 @@ function Invoke-TestUninstaller {
     }
 }
 
+$installerHelperSourcePath = Join-Path $PSScriptRoot (
+    'installer\Stop-RunningInstances.ps1'
+)
 $expectedInstalledFiles = @(
     'LICENSE'
     'PRIVACY.md'
     'README.txt'
     'RemainingMarginFloat.exe'
     'RemainingMarginFloat.ps1'
+    'Stop-RunningInstances.ps1'
 )
 $installSucceeded = $false
 $uninstallCompleted = $false
@@ -182,7 +186,11 @@ try {
     $installSucceeded = $true
     foreach ($fileName in $expectedInstalledFiles) {
         $installedPath = Join-Path $installRoot $fileName
-        $packagePath = Join-Path $packageRoot $fileName
+        $packagePath = if ($fileName -eq 'Stop-RunningInstances.ps1') {
+            $installerHelperSourcePath
+        } else {
+            Join-Path $packageRoot $fileName
+        }
         if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
             throw "Installed application file is missing: $fileName"
         }
@@ -314,7 +322,11 @@ try {
     Remove-Item -LiteralPath $upgradeSentinel -Force
     foreach ($fileName in $expectedInstalledFiles) {
         $installedPath = Join-Path $installRoot $fileName
-        $packagePath = Join-Path $packageRoot $fileName
+        $packagePath = if ($fileName -eq 'Stop-RunningInstances.ps1') {
+            $installerHelperSourcePath
+        } else {
+            Join-Path $packageRoot $fileName
+        }
         if (
             (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash -ne
             (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash

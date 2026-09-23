@@ -127,27 +127,46 @@ function Align-EdgeDockToPhysicalScreenEdge {
         }
     }
     $visualPoint1 = & $sampleVisualPoint
+    # The deferred callback runs through the runspace event bridge, which
+    # cannot see function locals, so the captured state travels in script
+    # scope and is dequeued by the callback itself.
+    $script:PendingEdgeAlignmentSamples.Enqueue([pscustomobject]@{
+        ScreenArea = $capturedScreenArea
+        Helper = $capturedHelper
+        EdgeElement = $capturedEdgeElement
+        Side = $capturedSide
+        FirstPoint = $visualPoint1
+    })
     $window.Dispatcher.BeginInvoke(
         [Windows.Threading.DispatcherPriority]::Render,
         (New-RmfAction -Callback {
+            if ($script:PendingEdgeAlignmentSamples.Count -eq 0) { return }
+            $sampleState = $script:PendingEdgeAlignmentSamples.Dequeue()
             if ($script:EdgeDockAnimating -or -not $script:EdgeDockSide -or $script:IsExpanded) { return }
-            $visualPoint2 = & $sampleVisualPoint
-            if ([Math]::Abs($visualPoint2.X - $visualPoint1.X) -gt 1) {
+            $visualPoint2 = if ($sampleState.Side -eq 'Left') {
+                $sampleState.EdgeElement.PointToScreen((New-Object Windows.Point(0, 0)))
+            }
+            else {
+                $sampleState.EdgeElement.PointToScreen(
+                    (New-Object Windows.Point($sampleState.EdgeElement.ActualWidth, 0))
+                )
+            }
+            if ([Math]::Abs($visualPoint2.X - $sampleState.FirstPoint.X) -gt 1) {
                 # Still animating; skip this alignment, next animation completion will retry
                 return
             }
             # Proceed with alignment using the stable second sample
-            $screenEdge = if ($capturedSide -eq 'Left') {
-                [double]$capturedScreenArea.Left
+            $screenEdge = if ($sampleState.Side -eq 'Left') {
+                [double]$sampleState.ScreenArea.Left
             }
             else {
-                [double]$capturedScreenArea.Right
+                [double]$sampleState.ScreenArea.Right
             }
             $pixelCorrection = [int][Math]::Round(
                 $screenEdge - $visualPoint2.X,
                 [MidpointRounding]::AwayFromZero
             )
-            Invoke-EdgeAlignmentCorrection -PixelCorrection $pixelCorrection -ScreenEdge $screenEdge -VisualEdge $visualPoint2.X -Helper $capturedHelper -EdgeElement $capturedEdgeElement
+            Invoke-EdgeAlignmentCorrection -PixelCorrection $pixelCorrection -ScreenEdge $screenEdge -VisualEdge $visualPoint2.X -Helper $sampleState.Helper -EdgeElement $sampleState.EdgeElement
         })
     ) | Out-Null
     return $null

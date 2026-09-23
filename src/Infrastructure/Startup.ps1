@@ -606,6 +606,7 @@ function Get-AppSettingsSnapshot {
         Topmost = $window.Topmost
         Provider = $script:ActiveProvider
         CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
+        KimiUseWsl = $script:KimiUseWsl
         AutoUpdateEnabled = $script:AutoUpdateEnabled
         AlertSettings = $alertSettingsPayload
         # The flat keys mirror the active data source so that an older build
@@ -647,6 +648,8 @@ function Save-Settings {
 }
 
 function Restore-Settings {
+    param([string]$Path = (Get-SettingsPath))
+
     $workArea = [System.Windows.SystemParameters]::WorkArea
     $window.Width = $script:CompactWidth
     $window.Height = $script:CompactHeight
@@ -655,9 +658,8 @@ function Restore-Settings {
     $script:IsExpanded = $false
 
     try {
-        $path = Get-SettingsPath
-        if (Test-Path -LiteralPath $path) {
-            $settings = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        if (Test-Path -LiteralPath $Path) {
+            $settings = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
             if (
                 $settings.PSObject.Properties['Left'] -and
                 $settings.PSObject.Properties['Top'] -and
@@ -691,6 +693,9 @@ function Restore-Settings {
             if ($settings.PSObject.Properties['CodexOfficialAccessEnabled']) {
                 $script:CodexOfficialAccessEnabled =
                     [bool]$settings.CodexOfficialAccessEnabled
+            }
+            if ($settings.PSObject.Properties['KimiUseWsl']) {
+                $script:KimiUseWsl = [bool]$settings.KimiUseWsl
             }
             if ($settings.PSObject.Properties['AutoUpdateEnabled']) {
                 $script:AutoUpdateEnabled =

@@ -211,6 +211,47 @@ internal static class Launcher
         }
     }
 
+    private static void StartRepairParentWatchdog()
+    {
+        string value = Environment.GetEnvironmentVariable(
+            "REMAINING_MARGIN_FLOAT_REPAIR_PARENT_PID",
+            EnvironmentVariableTarget.Process
+        );
+        int parentProcessId;
+        if (!Int32.TryParse(value, out parentProcessId) || parentProcessId <= 0)
+        {
+            return;
+        }
+        Thread watchdog = new Thread(() =>
+        {
+            while (true)
+            {
+                bool parentAlive = false;
+                try
+                {
+                    using (System.Diagnostics.Process parent =
+                        System.Diagnostics.Process.GetProcessById(parentProcessId))
+                    {
+                        parentAlive = !parent.HasExited;
+                    }
+                }
+                catch
+                {
+                    // A missing or inaccessible parent means this repair host
+                    // is orphaned and must not keep the launcher file locked.
+                    parentAlive = false;
+                }
+                if (!parentAlive)
+                {
+                    Environment.Exit(0);
+                }
+                Thread.Sleep(3000);
+            }
+        });
+        watchdog.IsBackground = true;
+        watchdog.Start();
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -280,6 +321,7 @@ internal static class Launcher
                     powerShell.AddScript(scriptText, false);
                     if (repairUsageHistory)
                     {
+                        StartRepairParentWatchdog();
                         powerShell.AddParameter("RepairUsageHistory", true);
                     }
                     else if (launcherCheck)

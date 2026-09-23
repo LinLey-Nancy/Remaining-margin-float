@@ -1689,8 +1689,14 @@ if ($CheckTransitions) {
     }
     else {
         Set-EdgeDockReveal -Revealed $false -Immediate
+        # Drain samples queued by the immediate reveal so the counts below
+        # only observe this probe's own align calls.
+        while ($script:PendingEdgeAlignmentSamples.Count -gt 0) {
+            [void]$script:PendingEdgeAlignmentSamples.Dequeue()
+        }
         Set-EdgeDockReveal -Revealed $true
         $alignDuringAnimation = Align-EdgeDockToPhysicalScreenEdge
+        $queuedDuringAnimation = $script:PendingEdgeAlignmentSamples.Count
         $flightGuardWaitMs = 0
         while (
             $script:EdgeDockAnimating -and
@@ -1699,11 +1705,21 @@ if ($CheckTransitions) {
             Wait-ForUi -Milliseconds 50
             $flightGuardWaitMs += 50
         }
+        # Animation-completion callbacks during the wait may queue their own
+        # samples; drain them so the manual align is the only one pending.
+        while ($script:PendingEdgeAlignmentSamples.Count -gt 0) {
+            [void]$script:PendingEdgeAlignmentSamples.Dequeue()
+        }
         $alignAfterAnimation = Align-EdgeDockToPhysicalScreenEdge
+        $queuedAfterAnimation = $script:PendingEdgeAlignmentSamples.Count
         Set-EdgeDockReveal -Revealed $false -Immediate
+        # The align itself is deferred (returns nothing both ways): during
+        # the animation it must not even queue a sample, afterwards it must.
         $alignFlightGuarded = (
             $null -eq $alignDuringAnimation -and
-            $null -ne $alignAfterAnimation
+            $queuedDuringAnimation -eq 0 -and
+            $null -eq $alignAfterAnimation -and
+            $queuedAfterAnimation -eq 1
         )
     }
     if (
@@ -2020,6 +2036,183 @@ if ($CheckTransitions) {
         @($script:UsageHistoryCache).Count -eq $historyCountBeforeFallback
     )
 
+    # Kimi「在 WSL 中使用」开关探针：菜单可见性与勾选态、设置持久化往返、
+    # WSL 数据根解析（合成目录，不依赖真实 WSL）以及无数据时的语义。
+    # 探针期间钉住解析缓存与环境变量，结束前恢复原值，避免污染其他探针。
+    $kimiUseWslBeforeProbe = [bool]$script:KimiUseWsl
+    $kimiWslCacheBeforeProbe = $script:KimiWslDataRootCache
+    $kimiWslResolvedBeforeProbe = [bool]$script:KimiWslDataRootResolved
+    $kimiCodeHomeBeforeProbe = [string]$env:KIMI_CODE_HOME
+    $kimiWslProbeTemp = Join-Path ([IO.Path]::GetTempPath()) (
+        'rmf-kimi-wsl-{0}' -f [Guid]::NewGuid().ToString('N')
+    )
+    $kimiWslMenuVisibleOnlyForKimi = $false
+    $kimiWslCheckedStatesSynced = $false
+    $kimiWslSettingRoundTrip = $false
+    $kimiWslLegacyRestoreDefaultsFalse = $false
+    $kimiWslHomeCandidateHit = $false
+    $kimiWslRootCandidateHit = $false
+    $kimiWslEmptyBaseReturnsNull = $false
+    $kimiWslResolutionCached = $false
+    $kimiWslEnvOverrideWins = $false
+    $kimiWslMissingDataSemantics = $false
+    $kimiWslCredentialSourceLabeled = $false
+    try {
+        $env:KIMI_CODE_HOME = ''
+
+        # 菜单可见性：仅 Kimi 数据源下显示，勾选态跟随开关。托盘菜单项由
+        # TrayHost.ps1 创建，而该组件在本诊断组件之后才加载，探针运行时
+        # 托盘项尚不存在，存在时才一并断言。
+        $trayKimiWslAvailable = ($null -ne $script:TrayKimiWslItem)
+        $script:ActiveProvider = 'DeepSeek'
+        Sync-ProviderMenuState
+        $kimiWslHiddenForDeepSeek = (
+            [string]$script:KimiWslMenuItem.Visibility -eq 'Collapsed' -and
+            (
+                -not $trayKimiWslAvailable -or
+                -not [bool]$script:TrayKimiWslItem.Visible
+            )
+        )
+        $script:ActiveProvider = 'Codex'
+        Sync-ProviderMenuState
+        $kimiWslHiddenForCodex = (
+            [string]$script:KimiWslMenuItem.Visibility -eq 'Collapsed' -and
+            (
+                -not $trayKimiWslAvailable -or
+                -not [bool]$script:TrayKimiWslItem.Visible
+            )
+        )
+        $script:ActiveProvider = 'Kimi'
+        Sync-ProviderMenuState
+        $kimiWslVisibleForKimi = (
+            [string]$script:KimiWslMenuItem.Visibility -eq 'Visible' -and
+            (
+                -not $trayKimiWslAvailable -or
+                [bool]$script:TrayKimiWslItem.Visible
+            )
+        )
+        $kimiWslMenuVisibleOnlyForKimi = (
+            $kimiWslHiddenForDeepSeek -and
+            $kimiWslHiddenForCodex -and
+            $kimiWslVisibleForKimi
+        )
+        # 切回非 Kimi 再切换开关，避免触发真实 Kimi 刷新。
+        $script:ActiveProvider = 'Codex'
+        Set-KimiUseWsl -Enabled $true
+        $kimiWslCheckedStatesSynced = (
+            [bool]$script:KimiUseWsl -and
+            [bool]$script:KimiWslMenuItem.IsChecked -and
+            (
+                -not $trayKimiWslAvailable -or
+                [bool]$script:TrayKimiWslItem.Checked
+            )
+        )
+
+        # 设置往返：快照与 JSON 保留字段，Restore 恢复勾选，旧格式回退默认。
+        $kimiWslSnapshot = Get-AppSettingsSnapshot
+        $kimiWslSnapshotJson = ConvertTo-SettingsJson -Snapshot $kimiWslSnapshot
+        $kimiWslRestoreFile = Join-Path $kimiWslProbeTemp 'settings.json'
+        [void](New-Item -ItemType Directory -Path $kimiWslProbeTemp -Force)
+        Set-Content -LiteralPath $kimiWslRestoreFile `
+            -Value $kimiWslSnapshotJson -Encoding UTF8
+        $script:KimiUseWsl = $false
+        Restore-Settings -Path $kimiWslRestoreFile
+        $kimiWslSettingRoundTrip = (
+            [bool](ConvertFrom-Json $kimiWslSnapshotJson).KimiUseWsl -and
+            [bool]$script:KimiUseWsl
+        )
+        Set-Content -LiteralPath $kimiWslRestoreFile -Value '{}' -Encoding UTF8
+        $script:KimiUseWsl = $false
+        Restore-Settings -Path $kimiWslRestoreFile
+        $kimiWslLegacyRestoreDefaultsFalse = (-not [bool]$script:KimiUseWsl)
+
+        # 数据根解析单元探针：合成 home/root 候选、空目录与缓存语义。
+        $wslHomeBase = Join-Path $kimiWslProbeTemp 'home-base'
+        $wslRootBase = Join-Path $kimiWslProbeTemp 'root-base'
+        $wslEmptyBase = Join-Path $kimiWslProbeTemp 'empty-base'
+        [void](New-Item -ItemType Directory -Force -Path (
+            Join-Path $wslHomeBase 'home\testuser\.kimi-code'
+        ))
+        Set-Content -LiteralPath (
+            Join-Path $wslHomeBase 'home\testuser\.kimi-code\config.toml'
+        ) -Value 'default_model = "k2"' -Encoding UTF8
+        [void](New-Item -ItemType Directory -Force -Path (
+            Join-Path $wslRootBase 'root\.kimi-code\credentials'
+        ))
+        Set-Content -LiteralPath (
+            Join-Path $wslRootBase 'root\.kimi-code\credentials\x.json'
+        ) -Value '{}' -Encoding UTF8
+        [void](New-Item -ItemType Directory -Force -Path $wslEmptyBase)
+        $kimiWslHomeCandidateHit = (
+            (Resolve-KimiWslDataRootFromBase -BasePath $wslHomeBase) -eq
+                (Join-Path $wslHomeBase 'home\testuser\.kimi-code')
+        )
+        $kimiWslRootCandidateHit = (
+            (Resolve-KimiWslDataRootFromBase -BasePath $wslRootBase) -eq
+                (Join-Path $wslRootBase 'root\.kimi-code')
+        )
+        $kimiWslEmptyBaseReturnsNull = (
+            $null -eq (Resolve-KimiWslDataRootFromBase -BasePath $wslEmptyBase)
+        )
+        $script:KimiWslDataRootCache = $null
+        $script:KimiWslDataRootResolved = $false
+        $firstResolvedRoot = Resolve-KimiWslDataRoot
+        $secondResolvedRoot = Resolve-KimiWslDataRoot
+        $kimiWslResolutionCached = (
+            $script:KimiWslDataRootResolved -and
+            $secondResolvedRoot -eq $firstResolvedRoot
+        )
+
+        # 显式 KIMI_CODE_HOME 始终优先于 WSL 解析。
+        $script:KimiUseWsl = $true
+        $script:KimiWslDataRootCache = $wslHomeBase
+        $script:KimiWslDataRootResolved = $true
+        $env:KIMI_CODE_HOME = $wslRootBase
+        $kimiWslEnvOverrideWins = ((Get-KimiCodeDataRoot) -eq $wslRootBase)
+        $env:KIMI_CODE_HOME = ''
+
+        # WSL 模式下凭证来源标注：合成 config.toml 提供 API Key。
+        $wslConfigBase = Join-Path $kimiWslProbeTemp 'config-base'
+        [void](New-Item -ItemType Directory -Force -Path (
+            Join-Path $wslConfigBase '.kimi-code'
+        ))
+        Set-Content -LiteralPath (
+            Join-Path $wslConfigBase '.kimi-code\config.toml'
+        ) -Value (
+            "[providers.test]`n" +
+            "base_url = `"https://api.kimi.com/coding/v1`"`n" +
+            "api_key = `"sk-wsl-probe-1234`"`n"
+        ) -Encoding UTF8
+        $script:KimiWslDataRootCache = Join-Path $wslConfigBase '.kimi-code'
+        $kimiWslCredential = Get-KimiCredential
+        $kimiWslCredentialSourceLabeled = (
+            [string]$kimiWslCredential.Source -eq 'Kimi Code CLI（WSL config.toml）'
+        )
+
+        # 勾选后 WSL 无数据：显示未知/暂无记录，不回退 Windows、不伪装数据。
+        $script:KimiWslDataRootCache = $null
+        $kimiWslNullRoot = ($null -eq (Get-KimiCodeDataRoot))
+        $kimiWslEmptyUsage = Get-KimiLocalUsage
+        $kimiWslEmptyCredential = Get-KimiCredential
+        $kimiWslMissingDataSemantics = (
+            $kimiWslNullRoot -and
+            [string]$kimiWslEmptyUsage.Model -eq '暂无本地记录' -and
+            [double]$kimiWslEmptyUsage.TodayTokens -eq 0 -and
+            [string]$kimiWslEmptyCredential.AutoSource -eq ''
+        )
+    }
+    finally {
+        $env:KIMI_CODE_HOME = $kimiCodeHomeBeforeProbe
+        $script:ActiveProvider = 'Codex'
+        Set-KimiUseWsl -Enabled $kimiUseWslBeforeProbe
+        $script:KimiWslDataRootCache = $kimiWslCacheBeforeProbe
+        $script:KimiWslDataRootResolved = $kimiWslResolvedBeforeProbe
+        Sync-ProviderMenuState
+        if (Test-Path -LiteralPath $kimiWslProbeTemp) {
+            Remove-Item -LiteralPath $kimiWslProbeTemp -Recurse -Force
+        }
+    }
+
     $result = [pscustomobject]@{
         VersionText = [string]$AppVersionText.Text
         FooterTextAligned = $footerTextAligned
@@ -2046,6 +2239,17 @@ if ($CheckTransitions) {
         KimiManualConfigVisibility = $kimiManualConfigVisibility
         KimiManualConfigWhenCodex = $kimiManualConfigWhenCodex
         KimiSourceChecked = $kimiSourceChecked
+        KimiWslMenuVisibleOnlyForKimi = $kimiWslMenuVisibleOnlyForKimi
+        KimiWslCheckedStatesSynced = $kimiWslCheckedStatesSynced
+        KimiWslSettingRoundTrip = $kimiWslSettingRoundTrip
+        KimiWslLegacyRestoreDefaultsFalse = $kimiWslLegacyRestoreDefaultsFalse
+        KimiWslHomeCandidateHit = $kimiWslHomeCandidateHit
+        KimiWslRootCandidateHit = $kimiWslRootCandidateHit
+        KimiWslEmptyBaseReturnsNull = $kimiWslEmptyBaseReturnsNull
+        KimiWslResolutionCached = $kimiWslResolutionCached
+        KimiWslEnvOverrideWins = $kimiWslEnvOverrideWins
+        KimiWslMissingDataSemantics = $kimiWslMissingDataSemantics
+        KimiWslCredentialSourceLabeled = $kimiWslCredentialSourceLabeled
         KimiCompactValue = $kimiCompactValue
         KimiCompactSuffix = $kimiCompactSuffix
         KimiLabel = $kimiLabel

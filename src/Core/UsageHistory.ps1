@@ -1535,6 +1535,64 @@ function Get-DepletionForecast {
     if ($denominator -le 0) { return $insufficient }
 
     $slope = $numerator / $denominator
+
+    $recentWindowSamples = @(
+        $segment | Where-Object {
+            ([DateTimeOffset]$_.ObservedAtUtc) -ge
+                $Now.ToUniversalTime().AddMinutes(-30)
+        }
+    )
+    if ($recentWindowSamples.Count -ge 3) {
+        $recentOrigin = [DateTimeOffset]$recentWindowSamples[0].ObservedAtUtc
+        $recentSpanMinutes = (
+            ([DateTimeOffset]$recentWindowSamples[-1].ObservedAtUtc) -
+            $recentOrigin
+        ).TotalMinutes
+        if ($recentSpanMinutes -ge 10) {
+            $recentPoints = @(
+                $recentWindowSamples | ForEach-Object {
+                    [pscustomobject]@{
+                        X = (
+                            ([DateTimeOffset]$_.ObservedAtUtc) - $recentOrigin
+                        ).TotalHours
+                        Y = [double]$_.RemainingValue
+                    }
+                }
+            )
+            $recentMeanX = ($recentPoints | Measure-Object X -Average).Average
+            $recentMeanY = ($recentPoints | Measure-Object Y -Average).Average
+            $recentNumerator = 0.0
+            $recentDenominator = 0.0
+            foreach ($recentPoint in $recentPoints) {
+                $recentXDistance = [double]$recentPoint.X - [double]$recentMeanX
+                $recentNumerator += $recentXDistance * (
+                    [double]$recentPoint.Y - $recentMeanY
+                )
+                $recentDenominator += $recentXDistance * $recentXDistance
+            }
+            if ($recentDenominator -gt 0) {
+                $recentSlope = $recentNumerator / $recentDenominator
+                $recentDrop = (
+                    [double]$recentWindowSamples[0].RemainingValue -
+                    [double]$recentWindowSamples[-1].RemainingValue
+                )
+                $significantRecentDrop = if (
+                    $CurrentSample.MetricType -eq 'Percent'
+                ) {
+                    $recentDrop -ge 1.0
+                } else {
+                    $recentDrop -ge [Math]::Max(
+                        0.01,
+                        [double]$CurrentSample.RemainingValue * 0.005
+                    )
+                }
+                if ($significantRecentDrop -and $recentSlope -lt $slope) {
+                    $slope = $recentSlope
+                }
+            }
+        }
+    }
+
     $minimumRate = if ($CurrentSample.MetricType -eq 'Percent') { 0.05 } else { 0.001 }
     if ($slope -ge -$minimumRate) {
         return [pscustomobject]@{
