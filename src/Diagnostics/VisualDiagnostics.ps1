@@ -208,6 +208,27 @@
     Save-VisualPng -Element $window -Path $codexPlusCompactPath
     $captureFiles['codex-plus-compact'] = $codexPlusCompactPath
 
+    $codexUnknownSnapshot = $codexPreviewSnapshot.PSObject.Copy()
+    $codexUnknownSnapshot.HasProgress = $false
+    $codexUnknownSnapshot.RemainingPercent = 0
+    $codexUnknownSnapshot.WindowLabel = '5 小时余量未知'
+    $codexUnknownSnapshot.ResetDate = '暂无'
+    $codexUnknownSnapshot.ResetCountdown = '等待 5 小时额度数据'
+    $codexUnknownSnapshot.ResetAt = $null
+    $codexUnknownSnapshot.FiveHourAvailable = $false
+    $codexUnknownSnapshot.FiveHourUsedPercent = 0
+    $codexUnknownSnapshot.FiveHourRemainingPercent = 0
+    $codexUnknownSnapshot.FiveHourResetDate = '暂无'
+    $codexUnknownSnapshot.FiveHourResetCountdown = '等待 5 小时额度数据'
+    $codexUnknownSnapshot.FiveHourResetAt = $null
+    Update-UsageView -Snapshot $codexUnknownSnapshot -DisplayOnly
+    Set-ExpandedState -Expanded $false -Immediate
+    Wait-ForCaptureUi -Milliseconds 40
+    $codexUnknownCompactPath = Join-Path $captureRoot 'codex-compact-unknown.png'
+    Save-VisualPng -Element $window -Path $codexUnknownCompactPath
+    $captureFiles['codex-compact-unknown'] = $codexUnknownCompactPath
+    Update-UsageView -Snapshot $codexPreviewSnapshot
+
     $script:EdgeDockSide = 'Right'
     Set-EdgeDockReveal -Revealed $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
@@ -933,6 +954,7 @@ if ($CheckTransitions) {
         $RemainingValue.Text -eq '未知' -and
         $CompactSuffix.Text -eq '' -and
         $WindowLabel.Text -eq '5 小时余量未知' -and
+        [double]$WindowLabel.FontSize -eq 8 -and
         [Math]::Abs($QuotaMetricRow.Height.Value - 48) -lt 0.01 -and
         [string]$FiveHourQuotaBand.Visibility -eq 'Collapsed' -and
         [string]$QuotaDivider.Visibility -eq 'Collapsed' -and

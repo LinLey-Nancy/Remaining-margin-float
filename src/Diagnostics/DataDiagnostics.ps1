@@ -456,6 +456,25 @@ if ($CheckProviderContracts) {
     $kimiMalformedUsagesUsage = ConvertTo-KimiOfficialUsage `
         -Payload $kimiMalformedUsagesPayload `
         -SampledAt ([DateTimeOffset]'2030-01-01T12:00:00Z')
+    # 桌面端登录会写入 [providers."managed:..."] 托管条目（key 可能已过期），
+    # 显式配置的 provider 应优先；仅有托管条目时仍使用它。
+    $kimiDesktopProviders = @(
+        [pscustomobject]@{
+            Name = '"managed:kimi-code"'
+            BaseUrl = 'https://api.kimi.com/coding/v1'
+            ApiKey = 'sk-kimi-managed-stale'
+        }
+        [pscustomobject]@{
+            Name = 'kimi-for-coding'
+            BaseUrl = 'https://api.kimi.com/coding'
+            ApiKey = 'sk-kimi-explicit-key'
+        }
+    )
+    $kimiDesktopSelectedProvider = Select-KimiConfigProvider `
+        -Providers $kimiDesktopProviders
+    $kimiManagedOnlyProvider = Select-KimiConfigProvider `
+        -Providers @($kimiDesktopProviders[0])
+    $kimiEmptyProviderSelection = Select-KimiConfigProvider -Providers @()
     $currentOfficialUsage = Get-CodexCurrentUsageOverride `
         -OfficialUsage $codexUsage `
         -Now ([DateTimeOffset]'2030-01-01T12:00:00Z')
@@ -625,6 +644,17 @@ if ($CheckProviderContracts) {
         )
         KimiMalformedUsagesSummaryRejected = (
             $null -eq $kimiMalformedUsagesUsage
+        )
+        KimiConfigPrefersExplicitProviderOverManaged = (
+            $null -ne $kimiDesktopSelectedProvider -and
+            $kimiDesktopSelectedProvider.Name -eq 'kimi-for-coding'
+        )
+        KimiConfigManagedProviderUsedWhenOnlyOption = (
+            $null -ne $kimiManagedOnlyProvider -and
+            $kimiManagedOnlyProvider.ApiKey -eq 'sk-kimi-managed-stale'
+        )
+        KimiConfigEmptySelectionReturnsNull = (
+            $null -eq $kimiEmptyProviderSelection
         )
         KimiWireEventCount = $kimiWireEvents.Count
         KimiWireLatestTokens = (

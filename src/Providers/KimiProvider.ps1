@@ -117,6 +117,23 @@ function Read-KimiConfigProviders {
     return @($providers)
 }
 
+function Select-KimiConfigProvider {
+    param([object[]]$Providers)
+
+    $withKey = @($Providers | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_.ApiKey)
+    })
+    $coding = @($withKey | Where-Object { $_.BaseUrl -match 'coding' })
+    # 桌面端登录会写入 [providers."managed:..."] 托管条目，其中的 key 可能是
+    # 已过期的令牌；同机存在显式配置的 provider 时优先使用后者。
+    $selected = $coding | Where-Object {
+        $_.Name.Trim('"') -notlike 'managed:*'
+    } | Select-Object -First 1
+    if (-not $selected) { $selected = $coding | Select-Object -First 1 }
+    if (-not $selected) { $selected = $withKey | Select-Object -First 1 }
+    return $selected
+}
+
 function Get-KimiDefaultModel {
     param([string]$DataRoot = (Get-KimiCodeDataRoot))
 
@@ -164,6 +181,14 @@ function Get-KimiCredential {
         [string]::IsNullOrWhiteSpace($env:KIMI_CODE_HOME) -and
         -not [string]::IsNullOrWhiteSpace($dataRoot)
     )
+    $manualConfiguration = Get-KimiConfiguration
+    $manualKey = Unprotect-LocalSecret -Value $manualConfiguration.EncryptedApiKey
+    # 自动读取的 OAuth/config.toml 凭证被服务端判定失效（401）后，进程内改用手动
+    # 配置的 Key；没有手动 Key 时仍回退到自动凭证，保持原有的“重新登录”提示。
+    $skipAutoToken = (
+        $script:KimiAutoCredentialRejected -and
+        -not [string]::IsNullOrWhiteSpace($manualKey)
+    )
     if (-not [string]::IsNullOrWhiteSpace($dataRoot)) {
         $credentialsRoot = Join-Path $dataRoot 'credentials'
         if (Test-Path -LiteralPath $credentialsRoot) {
@@ -179,12 +204,15 @@ function Get-KimiCredential {
                         -Object $payload `
                         -Name 'access_token' `
                         -Default '')
-                    if (-not [string]::IsNullOrWhiteSpace($accessToken)) {
+                    if (
+                        -not $skipAutoToken -and
+                        -not [string]::IsNullOrWhiteSpace($accessToken)
+                    ) {
                         $result.Token = $accessToken
                         $result.Source = if ($usingWslRoot) {
                             'Kimi Code CLI（WSL · OAuth 登录）'
                         } else {
-                            'Kimi Code CLI（OAuth 登录）'
+                            'Kimi Code（OAuth 登录）'
                         }
                         $result.AuthMethod = 'OAuth'
                         $result.AutoSource = 'OAuth 登录'
@@ -197,17 +225,8 @@ function Get-KimiCredential {
             }
         }
 
-        $configProvider = $null
         $providers = @(Read-KimiConfigProviders -DataRoot $dataRoot)
-        $configProvider = $providers | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.ApiKey) -and
-            $_.BaseUrl -match 'coding'
-        } | Select-Object -First 1
-        if (-not $configProvider) {
-            $configProvider = $providers | Where-Object {
-                -not [string]::IsNullOrWhiteSpace($_.ApiKey)
-            } | Select-Object -First 1
-        }
+        $configProvider = Select-KimiConfigProvider -Providers $providers
         if ($configProvider) {
             $result.BaseUrl = $configProvider.BaseUrl
             $autoKey = $configProvider.ApiKey.Trim()
@@ -216,21 +235,19 @@ function Get-KimiCredential {
                 $autoKey.Substring($autoKey.Length - 4)
             } else { $autoKey }
         }
-        if (-not $result.Token -and $configProvider) {
+        if (-not $skipAutoToken -and -not $result.Token -and $configProvider) {
             $result.Token = $configProvider.ApiKey.Trim()
             $result.Source = if ($usingWslRoot) {
                 'Kimi Code CLI（WSL config.toml）'
             } else {
-                'Kimi Code CLI（config.toml）'
+                'Kimi Code（config.toml）'
             }
             $result.AuthMethod = 'ApiKey'
             $result.Hint = $result.AutoHint
         }
     }
 
-    # 自动读取不可用时，回退到用户手动配置并加密保存的 API Key。
-    $manualConfiguration = Get-KimiConfiguration
-    $manualKey = Unprotect-LocalSecret -Value $manualConfiguration.EncryptedApiKey
+    # 自动读取不可用（或已被 401 拒绝）时，回退到用户手动配置并加密保存的 API Key。
     if ($manualKey) {
         $result.ManualHint = $manualConfiguration.KeyHint
     }
@@ -242,6 +259,17 @@ function Get-KimiCredential {
     }
     $result.UsageUrl = Resolve-KimiUsageUrl -BaseUrl $result.BaseUrl
     return [pscustomobject]$result
+}
+
+function Test-KimiManualCredentialFallback {
+    # 当前使用的是自动凭证且手动 Key 存在且不同，401 后才值得改用手动 Key 重试。
+    $credential = Get-KimiCredential
+    if ([string]::IsNullOrWhiteSpace($credential.Token)) { return $false }
+    if ($credential.Source -eq '手动配置') { return $false }
+    $manualKey = Unprotect-LocalSecret `
+        -Value (Get-KimiConfiguration).EncryptedApiKey
+    if ([string]::IsNullOrWhiteSpace($manualKey)) { return $false }
+    return ($manualKey.Trim() -ne ([string]$credential.Token).Trim())
 }
 
 function Get-KimiHttpClient {
@@ -535,6 +563,15 @@ function Get-KimiOfficialUsage {
         return $usage
     }
     catch {
+        if (
+            $_.Exception.Message -match 'HTTP 401' -and
+            (Test-KimiManualCredentialFallback)
+        ) {
+            # 自动凭证被服务端拒绝后标记为失效，立即改用手动 Key 重试一次；
+            # 手动 Key 再失败时 Source 已是“手动配置”，不会递归重试。
+            $script:KimiAutoCredentialRejected = $true
+            return Get-KimiOfficialUsage
+        }
         $currentOfficialUsage = Get-KimiCurrentUsageOverride -Now $now
         if (
             $currentOfficialUsage -and
@@ -767,7 +804,7 @@ function Get-KimiUsageSnapshot {
 
     $accountName = '本地 Kimi Code'
     $accountEmail = switch ($credential.AuthMethod) {
-        'OAuth' { 'OAuth 登录 · Kimi Code CLI' }
+        'OAuth' { 'OAuth 登录 · Kimi Code' }
         'ApiKey' {
             if ($credential.Hint) {
                 '密钥 ••••{0} · {1}' -f $credential.Hint, $credential.Source
@@ -940,7 +977,7 @@ function Get-KimiUsageSnapshot {
 }
 
 function Get-KimiUnavailableSnapshot {
-    param([string]$Reason = '请先在 Kimi Code CLI 中登录')
+    param([string]$Reason = '请先在 Kimi Code 中登录')
 
     return [pscustomobject]@{
         ProviderId = 'Kimi'

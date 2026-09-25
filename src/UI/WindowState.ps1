@@ -3187,6 +3187,11 @@ function Update-UsageView {
     $displayWindowLabel = [string]$Snapshot.WindowLabel
     $WindowLabel.Text = $displayWindowLabel
     $ExpandedWindowLabel.Text = $displayWindowLabel
+    # 紧凑态标签可用宽度约 66 DIP：超过 6 个字符（如“5 小时余量未知”）
+    # 会溢出并被窗口两缘裁切，缩到 8pt 保证完整显示。
+    $WindowLabel.FontSize = if (
+        -not $script:IsExpanded -and $displayWindowLabel.Length -gt 6
+    ) { 8 } else { 9 }
     # The reset row follows whatever the header displays, so a depleted weekly
     # window reports when quota actually returns rather than when the
     # five-hour window rolls over.

@@ -73,14 +73,21 @@ Plus 的 `RemainingPercent` / `HasProgress` 代表 5 小时窗口；`pro` / `pro
 与托盘文本改绑每周窗口（`Get-CodexQuotaBinding`），但快照字段保持不变，以免把
 每周的 0 写进 5 小时趋势通道。低余量提醒与快速下降提醒按各自配额窗口独立判断。
 
-KimiProvider（`Providers\KimiProvider.ps1`）从 Kimi Code CLI 本地配置解析
+KimiProvider（`Providers\KimiProvider.ps1`）从本机 Kimi Code（CLI 或
+Windows 桌面端，两者共用同一数据目录）的本地配置解析
 凭证：优先 `credentials\*.json` 的 OAuth 访问令牌（只读 access token，不刷新），
-回退 `config.toml` 中 `[providers.*]` 段的 `api_key` 与 `base_url`，并尊重
-`KIMI_CODE_HOME` 环境变量。自动读取不可用时，回退到用户在“Kimi Code
+回退 `config.toml` 中 `[providers.*]` 段的 `api_key` 与 `base_url`
+（`Select-KimiConfigProvider` 在多个候选中优先选择显式配置的 provider，
+桌面端登录写入的 `[providers."managed:..."]` 托管条目仅在没有其他候选时
+使用，因为其 key 可能是已过期的令牌），并尊重
+`KIMI_CODE_HOME` 环境变量。自动凭证被官方接口判定失效（401）且存在不同的
+手动 Key 时，进程内将自动凭证标记为拒绝并立即改用手动 Key 重试
+（`Test-KimiManualCredentialFallback`，重启后重新优先尝试自动凭证）；
+其余自动读取不可用的情况，回退到用户在“Kimi Code
 手动配置…”窗口中输入的 API Key：手动 Key 使用 DPAPI `CurrentUser` 加密，
 与 KeyHint 后四位一起保存在 `%LOCALAPPDATA%\RemainingMarginFloat\kimi.json`，
 并已加入旧目录 `CodexMarginFloat` 的迁移白名单；快照账号行注明凭证来源
-（Kimi Code CLI（OAuth 登录）/ Kimi Code CLI（config.toml）/ 手动配置）。
+（Kimi Code（OAuth 登录）/ Kimi Code（config.toml）/ 手动配置）。
 Kimi 数据根有两种定位模式：默认读取 `%USERPROFILE%\.kimi-code`（或
 `KIMI_CODE_HOME` 环境变量，该变量始终最优先）；勾选「在 WSL 中使用」
 （`KimiUseWsl` 设置，菜单项仅 Kimi 数据源激活时可见）后，
@@ -220,7 +227,7 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   阈值限制为 0.01–1,000,000,000。Codex 与 Kimi Code 固定使用百分比点，
   DeepSeek 可在百分比点与余额金额之间切换，所有规则均原子校验后写入
   `settings.json`。
-- Kimi Code 的 CLI 凭证只读使用本地配置（OAuth 访问令牌不刷新），不得写入
+- Kimi Code 的自动凭证只读使用本地配置（CLI 与 Windows 桌面端共用数据目录，OAuth 访问令牌不刷新），不得写入
   应用设置、日志、趋势历史或完整状态；手动配置的 API Key 只能以 DPAPI
   `CurrentUser` 加密形式保存在 `kimi.json`，同样不得进入日志或历史。官方
   `usages` 接口与 Codex 共用有界退避重试（上限 30 秒，尊重 `Retry-After`），

@@ -181,6 +181,11 @@ Assert-Diagnostic -Condition (
     $contracts.KimiWireLatestTokens -eq 108010 -and
     $contracts.KimiWireLatestModel -eq 'kimi-for-coding/k3'
 ) -Message 'Kimi wire.jsonl usage records contract fixture'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.KimiConfigPrefersExplicitProviderOverManaged -and
+    [bool]$contracts.KimiConfigManagedProviderUsedWhenOnlyOption -and
+    [bool]$contracts.KimiConfigEmptySelectionReturnsNull
+) -Message 'Kimi config.toml provider selection prefers explicit entries over desktop managed ones'
 foreach ($propertyName in @(
     'FreshnessStatesClassified'
     'FallbackSnapshotPreservesSample'

@@ -692,13 +692,21 @@ function Complete-KimiRefresh {
         $statusCode = [int]$response.StatusCode
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode) {
-            $message = switch ($statusCode) {
-                401 { '登录信息无效或已过期，请在 Kimi Code 中重新登录。' }
-                403 { '当前账号无权访问 Kimi Code 用量接口。' }
-                429 { '请求过于频繁，稍后会自动重试。' }
-                default { 'Kimi 返回 HTTP {0}。' -f $statusCode }
+            if ($statusCode -eq 401 -and (Test-KimiManualCredentialFallback)) {
+                # 自动凭证失效但存在手动 Key：进程内标记拒绝并立即用手动 Key 重试。
+                $script:KimiAutoCredentialRejected = $true
+                $retryStarted = $true
+                [void](Start-KimiOfficialRequest)
             }
-            throw $message
+            else {
+                $message = switch ($statusCode) {
+                    401 { '登录信息无效或已过期，请在 Kimi Code 中重新登录。' }
+                    403 { '当前账号无权访问 Kimi Code 用量接口。' }
+                    429 { '请求过于频繁，稍后会自动重试。' }
+                    default { 'Kimi 返回 HTTP {0}。' -f $statusCode }
+                }
+                throw $message
+            }
         }
 
         $payload = $body | ConvertFrom-Json
@@ -973,6 +981,7 @@ function Set-KimiUseWsl {
     $script:KimiUseWsl = $Enabled
     # 数据根与官方用量都可能来自另一侧环境，切换后全部重新解析。
     $script:KimiOfficialUsageCache = $null
+    $script:KimiAutoCredentialRejected = $false
     $script:KimiWslDataRootCache = $null
     $script:KimiWslDataRootResolved = $false
     Sync-ProviderMenuState
@@ -1189,13 +1198,13 @@ function Show-KimiSettings {
     $saveButton = $dialog.FindName('SaveButton')
 
     if ($credential.AutoSource -eq 'OAuth 登录') {
-        $autoDetectText.Text = '已自动读取本机 Kimi Code CLI 的 OAuth 登录。'
+        $autoDetectText.Text = '已自动读取本机 Kimi Code 的 OAuth 登录。'
     }
     elseif ($credential.AutoHint) {
-        $autoDetectText.Text = '已自动读取本机 Kimi Code CLI 配置（••••{0}）。' -f $credential.AutoHint
+        $autoDetectText.Text = '已自动读取本机 Kimi Code 配置（••••{0}）。' -f $credential.AutoHint
     }
     else {
-        $autoDetectText.Text = '未检测到本机 Kimi Code CLI 配置，请手动输入 API Key。'
+        $autoDetectText.Text = '未检测到本机 Kimi Code 配置，请手动输入 API Key。'
     }
     if ($credential.ManualHint) {
         $keyHelp.Text = '已保存手动密钥（••••{0}，Windows DPAPI 加密）。留空会保留原密钥。' -f $credential.ManualHint

@@ -5,8 +5,9 @@
 项目只依赖 Windows PowerShell 5.1 与 WPF。Codex 模式默认读取本地 Codex
 会话中的最近余量快照并汇总 Token；用户明确启用后，才会优先从官方账户用量
 接口读取周期额度。DeepSeek 模式向官方余额接口发起请求，并从 Claude Code
-本地日志汇总 DeepSeek Token。Kimi Code 模式零配置，直接读取 Kimi Code CLI
-的本地凭据请求官方配额接口，并从本地会话日志汇总 Kimi Token。应用不会输出
+本地日志汇总 DeepSeek Token。Kimi Code 模式零配置，直接读取本机 Kimi Code
+（CLI 或 Windows 桌面端，两者共用 `~/.kimi-code` 数据目录）的本地凭据请求
+官方配额接口，并从本地会话日志汇总 Kimi Token。应用不会输出
 访问令牌。
 
 目前适配`ChatGPT(Codex)、DeepSeek(Claude Code)、Kimi Code`
@@ -46,7 +47,7 @@
 - 接口失败时明确显示上次成功数据的采样年龄与失败原因，不把回退数据重复写入历史或用于提醒判断
 - Codex、DeepSeek 与 Kimi Code 对限流、超时和服务端暂时错误使用一致的有界退避重试（上限 30 秒，尊重 `Retry-After`）
 - Kimi Code 与 Codex 共用双周期额度布局：5 小时窗口为主额度、每周配额为补充；5 小时窗口在空闲或刚重置时从 `usages.limit_5h` 摘要继续显示，不会退化为未知；官方接口失败时沿用上次成功数据，过期后显示“余量未知”，不伪装 0%
-- 从 Kimi Code 本地会话日志汇总今日 Token、最近一轮用量与缓存命中率；401 时提示重新登录 Kimi Code CLI
+- 从 Kimi Code 本地会话日志汇总今日 Token、最近一轮用量与缓存命中率；401 时提示重新登录 Kimi Code
 - 读取 DeepSeek 官方余额、赠金和充值余额
 - 从 Claude Code 本地日志去重统计 DeepSeek 今日与本月累计 Token；未变化的日志直接复用聚合缓存
 - 按 DeepSeek 官方余额的真实变化统计今日花费与本月花费：充值只抬高基线、不计入也不冲抵花费，应用未运行时跨日的余额变化会标注“含断档”
@@ -72,7 +73,7 @@
 - Windows PowerShell 5.1
 - Codex 模式：已运行过至少一次 Codex 任务
 - DeepSeek 模式：DeepSeek API Key；本地 Token 统计需要运行过 Claude Code + DeepSeek
-- Kimi Code 模式：已安装并登录 Kimi Code CLI，无需在应用内填写任何密钥
+- Kimi Code 模式：已安装并登录 Kimi Code（CLI 或 Windows 桌面端均可），无需在应用内填写任何密钥
 
 无需安装第三方模块或运行时。
 
@@ -161,19 +162,22 @@ GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创�
 
 ## Kimi Code 配置
 
-Kimi Code 模式默认零配置：应用优先自动读取本机 Kimi Code CLI 的凭据（OAuth
-访问令牌或 `config.toml` 中的 `api_key`）请求官方配额接口，只需在“数据源”
-中选择 Kimi Code 即可；重新登录 Kimi Code CLI 后，应用会在下一次刷新时自动
-使用新凭据。
+Kimi Code 模式默认零配置：应用优先自动读取本机 Kimi Code 的凭据（OAuth
+访问令牌或 `config.toml` 中的 `api_key`）请求官方配额接口，CLI 与
+Windows 桌面端共用 `~/.kimi-code` 数据目录，两种登录方式都能识别；只需在
+“数据源”中选择 Kimi Code 即可。桌面端登录写入的
+`[providers."managed:..."]` 托管条目可能含有已过期的 key，存在其他显式
+配置的 provider 时应用会优先使用后者。重新登录 Kimi Code 后，应用会在
+下一次刷新时自动使用新凭据。
 
 自动读取不可用时可以手动配置备用：在悬浮窗或通知区域右键菜单中选择
 “Kimi Code 手动配置…”（Kimi Code 为当前数据源时才显示），输入 Kimi
-API Key。这适合没有安装 Kimi Code CLI、但把 Kimi 接入了其他工具（如
+API Key。这适合没有安装 Kimi Code、但把 Kimi 接入了其他工具（如
 Codex）的用户。手动 Key 通过 Windows DPAPI `CurrentUser` 加密后保存在本机；
 配置窗口会同时显示当前的自动检测结果，也可以勾选“清除手动配置的 API Key”
 恢复为仅自动读取。切换到 Kimi Code 数据源时如果完全检测不到凭证，会自动
-打开该窗口；保存手动配置后自动刷新，账号行会注明凭证来源（Kimi Code
-CLI（OAuth 登录）/ Kimi Code CLI（config.toml）/ 手动配置）。
+打开该窗口；保存手动配置后自动刷新，账号行会注明凭证来源（Kimi
+Code（OAuth 登录）/ Kimi Code（config.toml）/ 手动配置）。
 
 如果 Kimi Code CLI 运行在 WSL 里，可以在悬浮窗或通知区域右键菜单勾选
 “在 WSL 中使用”（Kimi Code 为当前数据源时才显示）。勾选后应用改从 WSL
@@ -223,7 +227,7 @@ Codex 详情中的今日 Token、输入、输出和缓存均按本机当天可�
 
 DeepSeek 模式每 1 分钟最多请求一次官方 `https://api.deepseek.com/user/balance`。API Key 优先从 `DEEPSEEK_API_KEY` 读取；通过设置窗口保存时，使用 Windows DPAPI `CurrentUser` 加密后写入 `%LOCALAPPDATA%\RemainingMarginFloat\deepseek.json`。首次运行新命名版本时会从旧的 `%LOCALAPPDATA%\CodexMarginFloat` 复制现有配置。应用不读取 CC Switch 密钥或数据库。
 
-Kimi Code 模式每 1 分钟最多请求一次官方配额接口 `{base_url}/usages`（默认 `https://api.kimi.com/coding/v1`，国际区为 `https://api.kimi.ai/coding/v1`），官方接口另有 15 秒快缓存。应用只读使用 Kimi Code CLI 本地的 OAuth 访问令牌或 `config.toml` 中的 API Key 作为 Bearer 凭证，不刷新令牌，也不会把凭据写入应用设置、日志或历史；设置 `KIMI_CODE_HOME` 环境变量时以该目录为准。本地 Token 统计来自 Kimi Code 会话日志 `wire.jsonl` 中的 `usage.record` 记录，并跳过子代理目录。
+Kimi Code 模式每 1 分钟最多请求一次官方配额接口 `{base_url}/usages`（默认 `https://api.kimi.com/coding/v1`，国际区为 `https://api.kimi.ai/coding/v1`），官方接口另有 15 秒快缓存。应用只读使用 Kimi Code（CLI 或 Windows 桌面端）本地的 OAuth 访问令牌或 `config.toml` 中的 API Key 作为 Bearer 凭证，不刷新令牌，也不会把凭据写入应用设置、日志或历史；设置 `KIMI_CODE_HOME` 环境变量时以该目录为准。本地 Token 统计来自 Kimi Code 会话日志 `wire.jsonl` 中的 `usage.record` 记录，并跳过子代理目录。
 
 DeepSeek 公开余额接口不提供 Codex 式周期重置数据。未设置预算基准时，小窗直接显示货币余额，不推导虚假的百分比。
 
@@ -277,8 +281,9 @@ ChatGPT。
 
 ### Kimi Code 显示“等待登录”或“余量未知”
 
-“等待登录”表示应用未找到 Kimi Code CLI 的本地凭据，或凭据已失效（官方
-配额接口返回 401）；请先运行并登录 Kimi Code CLI，应用会在下一次刷新时
+“等待登录”表示应用未找到 Kimi Code 的本地凭据，或凭据已失效（官方
+配额接口返回 401）；请先运行并登录 Kimi Code（CLI 或 Windows 桌面端），
+应用会在下一次刷新时
 自动使用新凭据。“余量未知”表示官方接口暂时不可用且本地没有可用的历史
 数据；限流（429）、服务端错误和超时会自动按有界退避重试，期间沿用上次
 成功数据并标明采样时间，恢复后自动更新。

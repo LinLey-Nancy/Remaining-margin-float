@@ -475,7 +475,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.12.0'
+$script:AppVersion = '1.12.1'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -515,6 +515,7 @@ $script:CodexHttpClient = $null
 $script:CodexOfficialUsageCache = $null
 $script:KimiHttpClient = $null
 $script:KimiOfficialUsageCache = $null
+$script:KimiAutoCredentialRejected = $false
 $script:DeepSeekHttpClient = $null
 $script:UpdateHttpClient = $null
 $script:UpdateMenuItem = $null
