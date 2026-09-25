@@ -604,46 +604,42 @@ function Read-SessionSnapshot {
             -ObservedAt $previousSnapshot.RateLimitObservedAt
     }
     try {
-        $stream = [System.IO.File]::Open(
-            $File.FullName,
-            [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::Read,
-            [System.IO.FileShare]::ReadWrite
-        )
-        try {
-            # Token counters are append-only and normally appear near the end.
-            # Reading a bounded tail keeps the one-minute refresh responsive
-            # even when an active session log grows to tens of megabytes.
-            $tailLimit = 64KB
-            $startOffset = [Math]::Max(0L, $stream.Length - $tailLimit)
-            [void]$stream.Seek($startOffset, [System.IO.SeekOrigin]::Begin)
-            $byteCount = [int]($stream.Length - $startOffset)
-            $buffer = New-Object byte[] $byteCount
-            $totalRead = 0
-            while ($totalRead -lt $byteCount) {
-                $read = $stream.Read($buffer, $totalRead, $byteCount - $totalRead)
-                if ($read -le 0) { break }
-                $totalRead += $read
-            }
+        # Token counters are append-only and normally appear near the end.
+        # Reading a bounded tail keeps the one-minute refresh responsive
+        # even when an active session log grows to tens of megabytes.
+        $text = Read-FileTailText -Path $File.FullName -TailBytes 64KB
 
-            $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $totalRead)
-            if ($startOffset -gt 0) {
-                $firstLineBreak = $text.IndexOf("`n", [StringComparison]::Ordinal)
-                if ($firstLineBreak -ge 0) {
-                    $text = $text.Substring($firstLineBreak + 1)
-                }
-                else {
-                    $text = ''
+        $lines = $text -split "`r?`n"
+        $foundTokenCount = $false
+        foreach ($line in $lines) {
+            if ($line.IndexOf('"type":"token_count"', [StringComparison]::Ordinal) -lt 0) {
+                continue
+            }
+            $foundTokenCount = $true
+            try {
+                $usageEvent = $line | ConvertFrom-Json
+                if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
+                    $lastPayload = $usageEvent.payload
+                    $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime
+                    Add-CodexRateLimitSample `
+                        -Candidates $rateLimitCandidates `
+                        -Payload $usageEvent.payload `
+                        -ObservedAt $lastObservedAt
                 }
             }
+            catch {
+                continue
+            }
+        }
 
-            $lines = $text -split "`r?`n"
-            $foundTokenCount = $false
-            foreach ($line in $lines) {
+        # Lightweight fallback: if tail had no token_count, scan last 200 lines only
+        # (avoids full file scan while still catching recent quota updates)
+        if (-not $foundTokenCount -and $lines.Count -gt 0) {
+            $fallbackLines = $lines | Select-Object -Last 200
+            foreach ($line in $fallbackLines) {
                 if ($line.IndexOf('"type":"token_count"', [StringComparison]::Ordinal) -lt 0) {
                     continue
                 }
-                $foundTokenCount = $true
                 try {
                     $usageEvent = $line | ConvertFrom-Json
                     if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
@@ -659,59 +655,31 @@ function Read-SessionSnapshot {
                     continue
                 }
             }
-
-            # Lightweight fallback: if tail had no token_count, scan last 200 lines only
-            # (avoids full file scan while still catching recent quota updates)
-            if (-not $foundTokenCount -and $lines.Count -gt 0) {
-                $fallbackLines = $lines | Select-Object -Last 200
-                foreach ($line in $fallbackLines) {
-                    if ($line.IndexOf('"type":"token_count"', [StringComparison]::Ordinal) -lt 0) {
-                        continue
-                    }
-                    try {
-                        $usageEvent = $line | ConvertFrom-Json
-                        if ($usageEvent.type -eq 'event_msg' -and $usageEvent.payload.type -eq 'token_count') {
-                            $lastPayload = $usageEvent.payload
-                            $lastObservedAt = Get-CodexEventObservedAt -UsageEvent $usageEvent -Fallback $File.LastWriteTime
-                            Add-CodexRateLimitSample `
-                                -Candidates $rateLimitCandidates `
-                                -Payload $usageEvent.payload `
-                                -ObservedAt $lastObservedAt
-                        }
-                    }
-                    catch {
-                        continue
-                    }
-                }
-                if ($foundTokenCount -eq $false) {
-                    Write-RuntimeLog `
-                        -Level 'Debug' `
-                        -Event 'Codex.Session.TailFallbackUsed' `
-                        -Message '64KB tail had no token_count; scanned last 200 lines' `
-                        -Data @{ File = $File.Name; FileSize = $File.Length }
-                }
-            }
-
-            $stableRateLimit = Select-CodexStableRateLimitSample `
-                -Candidates $rateLimitCandidates
-            if (
-                -not $stableRateLimit -and
-                $previousSnapshot -and
-                $previousSnapshot.RateLimitPayload
-            ) {
-                $lastRateLimitPayload = $previousSnapshot.RateLimitPayload
-                $lastRateLimitObservedAt = $previousSnapshot.RateLimitObservedAt
-            }
-            # Never fall back to scanning the entire log when the bounded tail
-            # has no token_count event. Older session files can be tens of
-            # megabytes, and a full scan would block the WPF refresh timer.
-            if ($stableRateLimit) {
-                $lastRateLimitPayload = $stableRateLimit.Payload
-                $lastRateLimitObservedAt = $stableRateLimit.ObservedAt
+            if ($foundTokenCount -eq $false) {
+                Write-RuntimeLog `
+                    -Level 'Debug' `
+                    -Event 'Codex.Session.TailFallbackUsed' `
+                    -Message '64KB tail had no token_count; scanned last 200 lines' `
+                    -Data @{ File = $File.Name; FileSize = $File.Length }
             }
         }
-        finally {
-            $stream.Dispose()
+
+        $stableRateLimit = Select-CodexStableRateLimitSample `
+            -Candidates $rateLimitCandidates
+        if (
+            -not $stableRateLimit -and
+            $previousSnapshot -and
+            $previousSnapshot.RateLimitPayload
+        ) {
+            $lastRateLimitPayload = $previousSnapshot.RateLimitPayload
+            $lastRateLimitObservedAt = $previousSnapshot.RateLimitObservedAt
+        }
+        # Never fall back to scanning the entire log when the bounded tail
+        # has no token_count event. Older session files can be tens of
+        # megabytes, and a full scan would block the WPF refresh timer.
+        if ($stableRateLimit) {
+            $lastRateLimitPayload = $stableRateLimit.Payload
+            $lastRateLimitObservedAt = $stableRateLimit.ObservedAt
         }
     }
     catch {

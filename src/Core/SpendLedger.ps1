@@ -334,49 +334,17 @@ function Enter-SpendLedgerWriteLock {
         [int]$TimeoutMilliseconds = 10000
     )
 
-    $normalizedPath = [IO.Path]::GetFullPath($Path).ToLowerInvariant()
-    $pathBytes = [Text.Encoding]::UTF8.GetBytes($normalizedPath)
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try {
-        $pathHash = ([BitConverter]::ToString(
-            $algorithm.ComputeHash($pathBytes)
-        )).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $algorithm.Dispose()
-        [Array]::Clear($pathBytes, 0, $pathBytes.Length)
-    }
-    $mutex = New-Object Threading.Mutex(
-        $false,
-        "Local\RemainingMarginFloat.SpendLedger.$pathHash"
-    )
-    $acquired = $false
-    try {
-        try {
-            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
-        }
-        catch [Threading.AbandonedMutexException] {
-            $acquired = $true
-        }
-        if (-not $acquired) {
-            throw '等待花费台账写入锁超时。'
-        }
-        return $mutex
-    }
-    catch {
-        $mutex.Dispose()
-        throw
-    }
+    return Enter-FileWriteLock `
+        -Path $Path `
+        -LockName 'SpendLedger' `
+        -TimeoutErrorMessage '等待花费台账写入锁超时。' `
+        -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
 function Exit-SpendLedgerWriteLock {
     param($Mutex)
 
-    if (-not $Mutex) { return }
-    try { $Mutex.ReleaseMutex() } catch {
-        # Releasing is best-effort; ownership may already be gone.
-    }
-    $Mutex.Dispose()
+    Exit-FileWriteLock -Mutex $Mutex
 }
 
 function Save-SpendLedger {

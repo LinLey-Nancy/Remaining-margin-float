@@ -45,29 +45,80 @@ function Set-RefreshBusy {
     $RefreshButton.Content = if ($Busy) { '读取中…' } else { '立即刷新' }
 }
 
-function Cancel-CodexRefresh {
-    $codex = $script:AppContext.Refresh.Codex
-    if ($codex.RequestTask -and -not $codex.RequestTask.IsCompleted) {
-        if ($script:CodexHttpClient) {
-            $script:CodexHttpClient.CancelPendingRequests()
+function Stop-ProviderRefreshTask {
+    param(
+        $State,
+        $Client
+    )
+
+    if ($State.RequestTask -and -not $State.RequestTask.IsCompleted) {
+        if ($Client) {
+            $Client.CancelPendingRequests()
         }
     }
     elseif (
-        $codex.RequestTask -and
-        -not $codex.RequestTask.IsCanceled -and
-        -not $codex.RequestTask.IsFaulted
+        $State.RequestTask -and
+        -not $State.RequestTask.IsCanceled -and
+        -not $State.RequestTask.IsFaulted
     ) {
-        $abandonedResponse = $codex.RequestTask.GetAwaiter().GetResult()
+        $abandonedResponse = $State.RequestTask.GetAwaiter().GetResult()
         if ($abandonedResponse) { $abandonedResponse.Dispose() }
     }
-    if ($codex.Request) {
-        $codex.Request.Dispose()
+    if ($State.Request) {
+        $State.Request.Dispose()
     }
-    $codex.Request = $null
-    $codex.RequestTask = $null
-    $codex.Attempt = 0
-    $codex.RetryAfter = $null
+    $State.Request = $null
+    $State.RequestTask = $null
+    $State.Attempt = 0
+    $State.RetryAfter = $null
     Set-RefreshBusy -Busy $false
+}
+
+function Resolve-RefreshRetryDecision {
+    param(
+        $State,
+        $Response
+    )
+
+    $serverDelaySeconds = 0.0
+    if (
+        $Response -and
+        $Response.Headers.RetryAfter -and
+        $Response.Headers.RetryAfter.Delta
+    ) {
+        $serverDelaySeconds =
+            $Response.Headers.RetryAfter.Delta.Value.TotalSeconds
+    }
+    $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
+        -Attempt $State.Attempt `
+        -ServerDelaySeconds $serverDelaySeconds
+    $State.RetryAfter =
+        [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+    return $retryDelaySeconds
+}
+
+function Complete-RefreshTaskCleanup {
+    param(
+        $State,
+        $Response,
+        $Request,
+        [bool]$RetryStarted
+    )
+
+    if ($Response) { $Response.Dispose() }
+    if ($Request) { $Request.Dispose() }
+    if (-not $RetryStarted) {
+        $State.Attempt = 0
+        $State.RetryAfter = $null
+        Set-RefreshBusy -Busy $false
+        Reset-RefreshCountdown
+    }
+}
+
+function Cancel-CodexRefresh {
+    Stop-ProviderRefreshTask `
+        -State $script:AppContext.Refresh.Codex `
+        -Client $script:CodexHttpClient
 }
 
 function Start-CodexOfficialRequest {
@@ -238,20 +289,9 @@ function Complete-CodexRefresh {
             $script:ActiveProvider -eq 'Codex' -and
             -not $script:IsClosing
         ) {
-            $serverDelaySeconds = 0.0
-            if (
-                $response -and
-                $response.Headers.RetryAfter -and
-                $response.Headers.RetryAfter.Delta
-            ) {
-                $serverDelaySeconds =
-                    $response.Headers.RetryAfter.Delta.Value.TotalSeconds
-            }
-            $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
-                -Attempt $codex.Attempt `
-                -ServerDelaySeconds $serverDelaySeconds
-            $codex.RetryAfter =
-                [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+            $retryDelaySeconds = Resolve-RefreshRetryDecision `
+                -State $codex `
+                -Response $response
             $retryStarted = $true
         }
         if (
@@ -298,14 +338,11 @@ function Complete-CodexRefresh {
         }
     }
     finally {
-        if ($response) { $response.Dispose() }
-        if ($request) { $request.Dispose() }
-        if (-not $retryStarted) {
-            $codex.Attempt = 0
-            $codex.RetryAfter = $null
-            Set-RefreshBusy -Busy $false
-            Reset-RefreshCountdown
-        }
+        Complete-RefreshTaskCleanup `
+            -State $codex `
+            -Response $response `
+            -Request $request `
+            -RetryStarted:$retryStarted
     }
 }
 
@@ -323,28 +360,9 @@ function Get-DeepSeekHttpClient {
 }
 
 function Cancel-DeepSeekRefresh {
-    $deepSeek = $script:AppContext.Refresh.DeepSeek
-    if ($deepSeek.RequestTask -and -not $deepSeek.RequestTask.IsCompleted) {
-        if ($script:DeepSeekHttpClient) {
-            $script:DeepSeekHttpClient.CancelPendingRequests()
-        }
-    }
-    elseif (
-        $deepSeek.RequestTask -and
-        -not $deepSeek.RequestTask.IsCanceled -and
-        -not $deepSeek.RequestTask.IsFaulted
-    ) {
-        $abandonedResponse = $deepSeek.RequestTask.GetAwaiter().GetResult()
-        if ($abandonedResponse) { $abandonedResponse.Dispose() }
-    }
-    if ($deepSeek.Request) {
-        $deepSeek.Request.Dispose()
-    }
-    $deepSeek.Request = $null
-    $deepSeek.RequestTask = $null
-    $deepSeek.Attempt = 0
-    $deepSeek.RetryAfter = $null
-    Set-RefreshBusy -Busy $false
+    Stop-ProviderRefreshTask `
+        -State $script:AppContext.Refresh.DeepSeek `
+        -Client $script:DeepSeekHttpClient
 }
 
 function Start-DeepSeekRefresh {
@@ -499,20 +517,9 @@ function Complete-DeepSeekRefresh {
             $script:ActiveProvider -eq 'DeepSeek' -and
             -not $script:IsClosing
         ) {
-            $serverDelaySeconds = 0.0
-            if (
-                $response -and
-                $response.Headers.RetryAfter -and
-                $response.Headers.RetryAfter.Delta
-            ) {
-                $serverDelaySeconds =
-                    $response.Headers.RetryAfter.Delta.Value.TotalSeconds
-            }
-            $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
-                -Attempt $deepSeek.Attempt `
-                -ServerDelaySeconds $serverDelaySeconds
-            $deepSeek.RetryAfter =
-                [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+            $retryDelaySeconds = Resolve-RefreshRetryDecision `
+                -State $deepSeek `
+                -Response $response
             $retryStarted = $true
         }
         if (
@@ -539,40 +546,18 @@ function Complete-DeepSeekRefresh {
         }
     }
     finally {
-        if ($response) { $response.Dispose() }
-        if ($request) { $request.Dispose() }
-        if (-not $retryStarted) {
-            $deepSeek.Attempt = 0
-            $deepSeek.RetryAfter = $null
-            Set-RefreshBusy -Busy $false
-            Reset-RefreshCountdown
-        }
+        Complete-RefreshTaskCleanup `
+            -State $deepSeek `
+            -Response $response `
+            -Request $request `
+            -RetryStarted:$retryStarted
     }
 }
 
 function Cancel-KimiRefresh {
-    $kimi = $script:AppContext.Refresh.Kimi
-    if ($kimi.RequestTask -and -not $kimi.RequestTask.IsCompleted) {
-        if ($script:KimiHttpClient) {
-            $script:KimiHttpClient.CancelPendingRequests()
-        }
-    }
-    elseif (
-        $kimi.RequestTask -and
-        -not $kimi.RequestTask.IsCanceled -and
-        -not $kimi.RequestTask.IsFaulted
-    ) {
-        $abandonedResponse = $kimi.RequestTask.GetAwaiter().GetResult()
-        if ($abandonedResponse) { $abandonedResponse.Dispose() }
-    }
-    if ($kimi.Request) {
-        $kimi.Request.Dispose()
-    }
-    $kimi.Request = $null
-    $kimi.RequestTask = $null
-    $kimi.Attempt = 0
-    $kimi.RetryAfter = $null
-    Set-RefreshBusy -Busy $false
+    Stop-ProviderRefreshTask `
+        -State $script:AppContext.Refresh.Kimi `
+        -Client $script:KimiHttpClient
 }
 
 function Start-KimiOfficialRequest {
@@ -753,20 +738,9 @@ function Complete-KimiRefresh {
             $script:ActiveProvider -eq 'Kimi' -and
             -not $script:IsClosing
         ) {
-            $serverDelaySeconds = 0.0
-            if (
-                $response -and
-                $response.Headers.RetryAfter -and
-                $response.Headers.RetryAfter.Delta
-            ) {
-                $serverDelaySeconds =
-                    $response.Headers.RetryAfter.Delta.Value.TotalSeconds
-            }
-            $retryDelaySeconds = Get-RefreshRetryDelaySeconds `
-                -Attempt $kimi.Attempt `
-                -ServerDelaySeconds $serverDelaySeconds
-            $kimi.RetryAfter =
-                [DateTimeOffset]::Now.AddSeconds($retryDelaySeconds)
+            $retryDelaySeconds = Resolve-RefreshRetryDecision `
+                -State $kimi `
+                -Response $response
             $retryStarted = $true
         }
         if (
@@ -813,14 +787,11 @@ function Complete-KimiRefresh {
         }
     }
     finally {
-        if ($response) { $response.Dispose() }
-        if ($request) { $request.Dispose() }
-        if (-not $retryStarted) {
-            $kimi.Attempt = 0
-            $kimi.RetryAfter = $null
-            Set-RefreshBusy -Busy $false
-            Reset-RefreshCountdown
-        }
+        Complete-RefreshTaskCleanup `
+            -State $kimi `
+            -Response $response `
+            -Request $request `
+            -RetryStarted:$retryStarted
     }
 }
 
@@ -1387,41 +1358,26 @@ function Invoke-Refresh {
     }
 }
 
+function Reset-ProviderRefreshState {
+    param($State)
+
+    if ($State.Request) {
+        try { $State.Request.Dispose() } catch {
+            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
+        }
+    }
+    $State.Request = $null
+    $State.RequestTask = $null
+    $State.Attempt = 0
+    $State.RetryAfter = $null
+}
+
 function Reset-FailedRefreshOperation {
     param([string]$Message)
 
-    $codex = $script:AppContext.Refresh.Codex
-    $deepSeek = $script:AppContext.Refresh.DeepSeek
-    $kimi = $script:AppContext.Refresh.Kimi
-    if ($codex.Request) {
-        try { $codex.Request.Dispose() } catch {
-            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
-        }
-    }
-    $codex.Request = $null
-    $codex.RequestTask = $null
-    $codex.RetryAfter = $null
-    $codex.Attempt = 0
-
-    if ($deepSeek.Request) {
-        try { $deepSeek.Request.Dispose() } catch {
-            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
-        }
-    }
-    $deepSeek.Request = $null
-    $deepSeek.RequestTask = $null
-    $deepSeek.Attempt = 0
-    $deepSeek.RetryAfter = $null
-
-    if ($kimi.Request) {
-        try { $kimi.Request.Dispose() } catch {
-            # Cancelling mid-flight can invalidate the request; disposal is best-effort.
-        }
-    }
-    $kimi.Request = $null
-    $kimi.RequestTask = $null
-    $kimi.Attempt = 0
-    $kimi.RetryAfter = $null
+    Reset-ProviderRefreshState -State $script:AppContext.Refresh.Codex
+    Reset-ProviderRefreshState -State $script:AppContext.Refresh.DeepSeek
+    Reset-ProviderRefreshState -State $script:AppContext.Refresh.Kimi
 
     try {
         Set-RefreshBusy -Busy $false
@@ -1454,17 +1410,23 @@ function Set-AutoRefreshStatusText {
             )
         }
         else { 0 }
-        $AutoRefreshText.Text = '正在刷新 · 已等待 {0} 秒' -f $elapsedSeconds
+        $newText = '正在刷新 · 已等待 {0} 秒' -f $elapsedSeconds
+        if ($AutoRefreshText.Text -ne $newText) {
+            $AutoRefreshText.Text = $newText
+        }
         if ($releaseGuiCheck -and $elapsedSeconds -ge 1) {
             $script:RmfRefreshTimerProbePassed = $true
         }
         return
     }
 
-    $AutoRefreshText.Text = '{0} 秒后自动刷新' -f [Math]::Max(
+    $newText = '{0} 秒后自动刷新' -f [Math]::Max(
         0,
         $script:AppContext.Refresh.RemainingSeconds
     )
+    if ($AutoRefreshText.Text -ne $newText) {
+        $AutoRefreshText.Text = $newText
+    }
 }
 
 function Invoke-RefreshTimerTick {

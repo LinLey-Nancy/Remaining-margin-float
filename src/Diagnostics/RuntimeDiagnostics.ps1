@@ -8,46 +8,44 @@ foreach ($area in @('Codex', 'DeepSeek', 'Kimi', 'History', 'StateHistory', 'Ref
         LastFailureAt = $null
     }
 }
+$script:RuntimeDiagnosticRedactCredentialKeyRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\b(?:api[_\s-]?key|access[_\s-]?token|refresh[_\s-]?token|authorization)\b\s*[:=]\s*(?:bearer\s+)?["'']?[^\s,;"'']+'
+)
+$script:RuntimeDiagnosticRedactBearerTokenRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}=*'
+)
+$script:RuntimeDiagnosticRedactApiTokenRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\b(?:bearer\s+)?(?:sk-[A-Za-z0-9_-]{8,}|[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b'
+)
+$script:RuntimeDiagnosticRedactEmailRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b'
+)
 
 function Protect-RuntimeDiagnosticText {
     param([AllowEmptyString()][string]$Text)
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
     $safe = $Text
-    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        $safe = [regex]::Replace(
-            $safe,
-            [regex]::Escape($env:USERPROFILE),
-            '%USERPROFILE%',
-            [Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
+    if ($null -ne $script:RmfRedactUserProfileRegex) {
+        $safe = $script:RmfRedactUserProfileRegex.Replace($safe, '%USERPROFILE%')
     }
-    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        $safe = [regex]::Replace(
-            $safe,
-            [regex]::Escape($env:LOCALAPPDATA),
-            '%LOCALAPPDATA%',
-            [Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
+    if ($null -ne $script:RmfRedactLocalAppDataRegex) {
+        $safe = $script:RmfRedactLocalAppDataRegex.Replace($safe, '%LOCALAPPDATA%')
     }
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeDiagnosticRedactCredentialKeyRegex.Replace(
         $safe,
-        '(?i)\b(?:api[_\s-]?key|access[_\s-]?token|refresh[_\s-]?token|authorization)\b\s*[:=]\s*(?:bearer\s+)?["'']?[^\s,;"'']+',
         '[已隐藏凭据]'
     )
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeDiagnosticRedactBearerTokenRegex.Replace(
         $safe,
-        '(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}=*',
         '[已隐藏凭据]'
     )
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeDiagnosticRedactApiTokenRegex.Replace(
         $safe,
-        '(?i)\b(?:bearer\s+)?(?:sk-[A-Za-z0-9_-]{8,}|[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b',
         '[已隐藏凭据]'
     )
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeDiagnosticRedactEmailRegex.Replace(
         $safe,
-        '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',
         '[已隐藏邮箱]'
     )
     if ($safe.Length -gt 300) {

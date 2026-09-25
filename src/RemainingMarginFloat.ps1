@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$CheckData,
     [switch]$CheckDeepSeekData,
     [switch]$CheckDeepSeekUsage,
@@ -81,7 +81,6 @@ $script:RmfRefreshTimerProbePassed = $false
 $script:RmfRefreshDataProbePassed = $false
 $script:RmfRefreshDataProbeDetails = ''
 $script:RmfActivatedExistingInstance = $false
-$script:RmfProcessStartedAt = [DateTimeOffset]::Now
 $script:RmfStartupStopwatch = [Diagnostics.Stopwatch]::StartNew()
 
 # RMF_BUNDLE_HEADER_END

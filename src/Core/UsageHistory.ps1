@@ -2,6 +2,63 @@
     return Join-Path (Get-AppDataDirectory) 'usage-history.jsonl'
 }
 
+$script:FileWriteLockCache = @{}
+$script:UsageHistoryUtf8NoBomEncoding = New-Object Text.UTF8Encoding($false)
+
+function Enter-FileWriteLock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$LockName,
+        [Parameter(Mandatory = $true)]
+        [string]$TimeoutErrorMessage,
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $normalizedPath = [IO.Path]::GetFullPath($Path).ToLowerInvariant()
+    $cacheKey = '{0}|{1}' -f $LockName, $normalizedPath
+    $mutex = $script:FileWriteLockCache[$cacheKey]
+    if (-not $mutex) {
+        $pathBytes = [Text.Encoding]::UTF8.GetBytes($normalizedPath)
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $pathHash = ([BitConverter]::ToString(
+                $algorithm.ComputeHash($pathBytes)
+            )).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $algorithm.Dispose()
+            [Array]::Clear($pathBytes, 0, $pathBytes.Length)
+        }
+        $mutex = New-Object Threading.Mutex(
+            $false,
+            "Local\RemainingMarginFloat.$LockName.$pathHash"
+        )
+        $script:FileWriteLockCache[$cacheKey] = $mutex
+    }
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne($TimeoutMilliseconds)
+    }
+    catch [Threading.AbandonedMutexException] {
+        $acquired = $true
+    }
+    if (-not $acquired) {
+        throw $TimeoutErrorMessage
+    }
+    return $mutex
+}
+
+function Exit-FileWriteLock {
+    param($Mutex)
+
+    if (-not $Mutex) { return }
+    try { $Mutex.ReleaseMutex() } catch {
+        # Releasing is best-effort; ownership may already be gone.
+    }
+}
+
 function Enter-UsageHistoryWriteLock {
     param(
         [Parameter(Mandatory = $true)]
@@ -9,49 +66,17 @@ function Enter-UsageHistoryWriteLock {
         [int]$TimeoutMilliseconds = 10000
     )
 
-    $normalizedPath = [IO.Path]::GetFullPath($Path).ToLowerInvariant()
-    $pathBytes = [Text.Encoding]::UTF8.GetBytes($normalizedPath)
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try {
-        $pathHash = ([BitConverter]::ToString(
-            $algorithm.ComputeHash($pathBytes)
-        )).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $algorithm.Dispose()
-        [Array]::Clear($pathBytes, 0, $pathBytes.Length)
-    }
-    $mutex = New-Object Threading.Mutex(
-        $false,
-        "Local\RemainingMarginFloat.UsageHistory.$pathHash"
-    )
-    $acquired = $false
-    try {
-        try {
-            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
-        }
-        catch [Threading.AbandonedMutexException] {
-            $acquired = $true
-        }
-        if (-not $acquired) {
-            throw '等待使用历史写入锁超时。'
-        }
-        return $mutex
-    }
-    catch {
-        $mutex.Dispose()
-        throw
-    }
+    return Enter-FileWriteLock `
+        -Path $Path `
+        -LockName 'UsageHistory' `
+        -TimeoutErrorMessage '等待使用历史写入锁超时。' `
+        -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
 function Exit-UsageHistoryWriteLock {
     param($Mutex)
 
-    if (-not $Mutex) { return }
-    try { $Mutex.ReleaseMutex() } catch {
-        # Releasing is best-effort; ownership may already be gone.
-    }
-    $Mutex.Dispose()
+    Exit-FileWriteLock -Mutex $Mutex
 }
 
 function Get-UsageQuotaPeriod {
@@ -82,104 +107,6 @@ function Get-UsageHistoryCalendarMetadata {
         UtcOffsetMinutes = [int][Math]::Round(
             $localObservedAt.Offset.TotalMinutes
         )
-    }
-}
-
-function ConvertFrom-UsageHistoryRecord {
-    param(
-        $Saved,
-        [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
-    )
-
-    if (-not $Saved) { return $null }
-    $providerId = [string]$Saved.ProviderId
-    $metricType = [string]$Saved.MetricType
-    $recordVersion = if ($Saved.PSObject.Properties['v']) {
-        try { [int]$Saved.v } catch { 0 }
-    } else { 0 }
-    $hasQuotaPeriod = $null -ne $Saved.PSObject.Properties['QuotaPeriod']
-    $quotaPeriod = if ($hasQuotaPeriod) {
-        [string]$Saved.QuotaPeriod
-    } else { '' }
-    if (
-        $providerId -notin @('Codex', 'DeepSeek', 'Kimi') -or
-        $metricType -notin @('Percent', 'Balance')
-    ) {
-        return $null
-    }
-    if ($providerId -eq 'Codex' -and $metricType -eq 'Percent') {
-        if (
-            -not $hasQuotaPeriod -and
-            $recordVersion -ge 1 -and
-            $recordVersion -le 2
-        ) {
-            # Before v1.9.0, Codex percent history always represented the
-            # weekly allowance. Tag it during schema migration so Pro keeps
-            # its trend while Plus still isolates the new five-hour period.
-            $quotaPeriod = 'Weekly'
-        }
-        elseif ($quotaPeriod -notin @('FiveHour', 'Weekly')) {
-            return $null
-        }
-    }
-    if (
-        $providerId -eq 'Kimi' -and
-        $metricType -eq 'Percent' -and
-        $quotaPeriod -notin @('FiveHour', 'Weekly')
-    ) {
-        return $null
-    }
-
-    $observedAt = [DateTimeOffset]::Parse(
-        [string]$Saved.ObservedAtUtc,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [Globalization.DateTimeStyles]::RoundtripKind
-    ).ToUniversalTime()
-    $remainingValue = [double]$Saved.RemainingValue
-    if (
-        [double]::IsNaN($remainingValue) -or
-        [double]::IsInfinity($remainingValue) -or
-        $remainingValue -lt 0 -or
-        ($metricType -eq 'Percent' -and $remainingValue -gt 100)
-    ) {
-        return $null
-    }
-
-    $resetAtUtc = ''
-    if (
-        $Saved.PSObject.Properties['ResetAtUtc'] -and
-        -not [string]::IsNullOrWhiteSpace([string]$Saved.ResetAtUtc)
-    ) {
-        try {
-            $resetAtUtc = [DateTimeOffset]::Parse(
-                [string]$Saved.ResetAtUtc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind
-            ).ToUniversalTime().ToString(
-                'o',
-                [Globalization.CultureInfo]::InvariantCulture
-            )
-        }
-        catch {
-            $resetAtUtc = ''
-        }
-    }
-
-    $calendar = Get-UsageHistoryCalendarMetadata `
-        -ObservedAt $observedAt `
-        -TimeZone $TimeZone
-    return [pscustomobject]@{
-        Version = 3
-        ProviderId = $providerId
-        ObservedAtUtc = $observedAt
-        LocalDate = $calendar.LocalDate
-        TimeZoneId = $calendar.TimeZoneId
-        UtcOffsetMinutes = $calendar.UtcOffsetMinutes
-        MetricType = $metricType
-        QuotaPeriod = $quotaPeriod
-        RemainingValue = [Math]::Round($remainingValue, 4)
-        Unit = [string]$Saved.Unit
-        ResetAtUtc = $resetAtUtc
     }
 }
 
@@ -451,14 +378,6 @@ function Save-UsageHistory {
             -Now $Now `
             -TimeZone $TimeZone
     )
-    $temporaryPath = '{0}.tmp.{1}.{2}' -f
-        $path,
-        $PID,
-        [Guid]::NewGuid().ToString('N')
-    $backupPath = '{0}.bak.{1}.{2}' -f
-        $path,
-        $PID,
-        [Guid]::NewGuid().ToString('N')
     $lines = @(
         $retainedSamples | Sort-Object ObservedAtUtc | ForEach-Object {
             $calendar = Get-UsageHistoryCalendarMetadata `
@@ -490,38 +409,12 @@ function Save-UsageHistory {
         Enter-UsageHistoryWriteLock -Path $path
     }
     try {
-        [IO.File]::WriteAllLines(
-            $temporaryPath,
-            $lines,
-            (New-Object Text.UTF8Encoding($false))
-        )
-        # Retry atomic replace on IOException (e.g., AV scanning the file)
-        $maxRetries = 3
-        $retryDelayMs = 50
-        for ($attempt = 0; $attempt -le $maxRetries; $attempt++) {
-            try {
-                if (Test-Path -LiteralPath $path -PathType Leaf) {
-                    [IO.File]::Replace($temporaryPath, $path, $backupPath, $true)
-                }
-                else {
-                    Move-Item -LiteralPath $temporaryPath -Destination $path -Force
-                }
-                break
-            }
-            catch [System.IO.IOException] {
-                if ($attempt -ge $maxRetries) { throw }
-                Start-Sleep -Milliseconds $retryDelayMs
-                $retryDelayMs *= 2
-            }
-        }
+        $text = if ($lines.Count -gt 0) {
+            ($lines -join [Environment]::NewLine) + [Environment]::NewLine
+        } else { '' }
+        Write-UsageStateAtomicText -Path $path -Text $text
     }
     finally {
-        if (Test-Path -LiteralPath $temporaryPath) {
-            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
-        }
-        if (Test-Path -LiteralPath $backupPath) {
-            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
-        }
         Exit-UsageHistoryWriteLock -Mutex $writeLock
     }
 }
@@ -571,7 +464,7 @@ function Add-UsageHistoryLines {
     )
     $writeLock = Enter-UsageHistoryWriteLock -Path $path
     try {
-        $encoding = New-Object Text.UTF8Encoding($false)
+        $encoding = $script:UsageHistoryUtf8NoBomEncoding
         $newBytes = 0L
         foreach ($line in $lines) {
             $newBytes += $encoding.GetByteCount($line + [Environment]::NewLine)
@@ -1088,7 +981,7 @@ function Add-UsageHistorySample {
         -Snapshot $Snapshot `
         -ObservedAt $ObservedAt
     )
-    $currentSample = $currentSamples | Select-Object -First 1
+    $currentSample = $currentSamples[0]
     $usesDefaultPath = [string]::IsNullOrWhiteSpace($Path)
     $history = @(if (
         $isDiagnosticRun -and
@@ -1129,6 +1022,7 @@ function Add-UsageHistorySample {
     }
 
     $changed = $false
+    $appendedSamples = New-Object Collections.Generic.List[object]
     foreach ($sample in $currentSamples) {
         $previousForMetric = Get-PreviousUsageHistorySample `
             -Samples $history `
@@ -1137,8 +1031,11 @@ function Add-UsageHistorySample {
             $previousSample = $previousForMetric
         }
 
-        $history = @($history + $sample)
+        [void]$appendedSamples.Add($sample)
         $changed = $true
+    }
+    if ($appendedSamples.Count -gt 0) {
+        $history = @($history + $appendedSamples.ToArray())
     }
 
     if ($usesDefaultPath -and $history.Count -gt 4320) {
@@ -1960,6 +1857,7 @@ function Select-UsageHistoryAnalysisSamples {
     if ($matching.Count -le 2880) { return $matching }
 
     $selected = New-Object Collections.Generic.List[object]
+    $selectedSet = New-Object 'Collections.Generic.HashSet[object]'
     $previous = $null
     $bucketFirst = $null
     $bucketLast = $null
@@ -1976,12 +1874,16 @@ function Select-UsageHistoryAnalysisSamples {
         }
         $sampleBucket = [long][Math]::Floor($observedAt.UtcDateTime.Ticks / $ticksPerBucket)
         if ($sampleBucket -ne $bucketKey) {
-            if ($bucketFirst) { [void]$selected.Add($bucketFirst) }
+            if ($bucketFirst) {
+                [void]$selected.Add($bucketFirst)
+                [void]$selectedSet.Add($bucketFirst)
+            }
             if (
                 $bucketLast -and
                 -not [object]::ReferenceEquals($bucketLast, $bucketFirst)
             ) {
                 [void]$selected.Add($bucketLast)
+                [void]$selectedSet.Add($bucketLast)
             }
             $bucketKey = $sampleBucket
             $bucketFirst = $sample
@@ -1998,20 +1900,24 @@ function Select-UsageHistoryAnalysisSamples {
                 [double]$previous.RemainingValue
             ) -gt 0.0001
         ) {
-            if (-not $selected.Contains($previous)) {
+            if (-not $selectedSet.Contains($previous)) {
                 [void]$selected.Add($previous)
+                [void]$selectedSet.Add($previous)
             }
-            if (-not $selected.Contains($sample)) {
+            if (-not $selectedSet.Contains($sample)) {
                 [void]$selected.Add($sample)
+                [void]$selectedSet.Add($sample)
             }
         }
         $previous = $sample
     }
-    if ($bucketFirst -and -not $selected.Contains($bucketFirst)) {
+    if ($bucketFirst -and -not $selectedSet.Contains($bucketFirst)) {
         [void]$selected.Add($bucketFirst)
+        [void]$selectedSet.Add($bucketFirst)
     }
-    if ($bucketLast -and -not $selected.Contains($bucketLast)) {
+    if ($bucketLast -and -not $selectedSet.Contains($bucketLast)) {
         [void]$selected.Add($bucketLast)
+        [void]$selectedSet.Add($bucketLast)
     }
     return @($selected.ToArray() | Sort-Object ObservedAtUtc -Unique)
 }

@@ -1,7 +1,36 @@
-$script:RuntimeLogPath = $null
+﻿$script:RuntimeLogPath = $null
 $script:RuntimeLogSessionId = [Guid]::NewGuid().ToString('N')
 $script:RuntimeLogMaxBytes = 2MB
 $script:RuntimeLogBackupCount = 4
+$script:RuntimeLogUtf8NoBomEncoding = New-Object Text.UTF8Encoding($false)
+$script:RmfRedactUserProfileRegex = if (
+    -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)
+) {
+    New-Object Text.RegularExpressions.Regex -ArgumentList @(
+        [regex]::Escape($env:USERPROFILE),
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+} else { $null }
+$script:RmfRedactLocalAppDataRegex = if (
+    -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)
+) {
+    New-Object Text.RegularExpressions.Regex -ArgumentList @(
+        [regex]::Escape($env:LOCALAPPDATA),
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+} else { $null }
+$script:RuntimeLogRedactCredentialKeyRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\b(?:api[_\s-]?key|access[_\s-]?token|refresh[_\s-]?token|authorization|password)\b\s*[:=]\s*(?:bearer\s+)?["'']?[^\s,;"'']+'
+)
+$script:RuntimeLogRedactBearerTokenRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}=*'
+)
+$script:RuntimeLogRedactApiTokenRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\b(?:sk-[A-Za-z0-9_-]{8,}|[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b'
+)
+$script:RuntimeLogRedactEmailRegex = New-Object Text.RegularExpressions.Regex(
+    '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b'
+)
 
 function Get-RuntimeLogDirectory {
     param([string]$RootPath = '')
@@ -23,38 +52,26 @@ function Protect-RuntimeLogText {
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
     $safe = $Text
-    foreach ($path in @($env:USERPROFILE, $env:LOCALAPPDATA)) {
-        if ([string]::IsNullOrWhiteSpace($path)) { continue }
-        $replacement = if ($path -eq $env:USERPROFILE) {
-            '%USERPROFILE%'
-        } else {
-            '%LOCALAPPDATA%'
-        }
-        $safe = [regex]::Replace(
-            $safe,
-            [regex]::Escape($path),
-            $replacement,
-            [Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
+    if ($null -ne $script:RmfRedactUserProfileRegex) {
+        $safe = $script:RmfRedactUserProfileRegex.Replace($safe, '%USERPROFILE%')
     }
-    $safe = [regex]::Replace(
+    if ($null -ne $script:RmfRedactLocalAppDataRegex) {
+        $safe = $script:RmfRedactLocalAppDataRegex.Replace($safe, '%LOCALAPPDATA%')
+    }
+    $safe = $script:RuntimeLogRedactCredentialKeyRegex.Replace(
         $safe,
-        '(?i)\b(?:api[_\s-]?key|access[_\s-]?token|refresh[_\s-]?token|authorization|password)\b\s*[:=]\s*(?:bearer\s+)?["'']?[^\s,;"'']+',
         '[redacted-credential]'
     )
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeLogRedactBearerTokenRegex.Replace(
         $safe,
-        '(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}=*',
         '[redacted-credential]'
     )
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeLogRedactApiTokenRegex.Replace(
         $safe,
-        '(?i)\b(?:sk-[A-Za-z0-9_-]{8,}|[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b',
         '[redacted-credential]'
     )
-    $safe = [regex]::Replace(
+    $safe = $script:RuntimeLogRedactEmailRegex.Replace(
         $safe,
-        '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',
         '[redacted-email]'
     )
     if ($safe.Length -gt 500) {
@@ -177,7 +194,7 @@ function Write-RuntimeLog {
         }
         $line = ($record | ConvertTo-Json -Depth 4 -Compress) +
             [Environment]::NewLine
-        $encoding = New-Object Text.UTF8Encoding($false)
+        $encoding = $script:RuntimeLogUtf8NoBomEncoding
         $lineBytes = $encoding.GetByteCount($line)
         if (
             (Test-Path -LiteralPath $script:RuntimeLogPath -PathType Leaf) -and

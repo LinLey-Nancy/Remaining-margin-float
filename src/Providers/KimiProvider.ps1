@@ -134,21 +134,6 @@ function Select-KimiConfigProvider {
     return $selected
 }
 
-function Get-KimiDefaultModel {
-    param([string]$DataRoot = (Get-KimiCodeDataRoot))
-
-    if ([string]::IsNullOrWhiteSpace($DataRoot)) { return '' }
-    $configPath = Join-Path $DataRoot 'config.toml'
-    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return '' }
-    foreach ($line in (Get-Content -LiteralPath $configPath)) {
-        if ($line -match '^\s*\[') { break }
-        if ($line -match '^\s*default_model\s*=\s*"(?<value>[^"]+)"') {
-            return $Matches['value']
-        }
-    }
-    return ''
-}
-
 function Resolve-KimiUsageUrl {
     param([string]$BaseUrl)
 
@@ -328,6 +313,54 @@ function ConvertTo-KimiWindowMinutes {
     return [int][Math]::Round($minutes)
 }
 
+function ConvertTo-QuotaWindowValue {
+    param(
+        $UsedValue,
+        [string]$ResetText,
+        [int]$WindowMinutes,
+        [double]$PercentScale,
+        [switch]$RejectNegative
+    )
+
+    $usedNumber = 0.0
+    if ($UsedValue -is [string]) {
+        if (-not [double]::TryParse(
+            $UsedValue,
+            [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$usedNumber
+        )) {
+            return $null
+        }
+    }
+    else {
+        try { $usedNumber = [double]$UsedValue } catch { return $null }
+    }
+    $resetAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        $ResetText,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$resetAt
+    )) {
+        return $null
+    }
+    if (
+        [double]::IsNaN($usedNumber) -or
+        [double]::IsInfinity($usedNumber) -or
+        ($RejectNegative -and $usedNumber -lt 0) -or
+        $resetAt -le [DateTimeOffset]::MinValue
+    ) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        UsedPercent = [Math]::Max(0.0, [Math]::Min(100.0, $usedNumber * $PercentScale))
+        WindowMinutes = $WindowMinutes
+        ResetsAt = $resetAt.ToUnixTimeSeconds()
+    }
+}
+
 function ConvertTo-KimiQuotaWindow {
     param(
         $Detail,
@@ -342,37 +375,11 @@ function ConvertTo-KimiQuotaWindow {
         return $null
     }
 
-    $usedPercent = 0.0
-    if (-not [double]::TryParse(
-        $usedText,
-        [Globalization.NumberStyles]::Float,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [ref]$usedPercent
-    )) {
-        return $null
-    }
-    $resetAt = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse(
-        $resetText,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [Globalization.DateTimeStyles]::RoundtripKind,
-        [ref]$resetAt
-    )) {
-        return $null
-    }
-    if (
-        [double]::IsNaN($usedPercent) -or
-        [double]::IsInfinity($usedPercent) -or
-        $resetAt -le [DateTimeOffset]::MinValue
-    ) {
-        return $null
-    }
-
-    return [pscustomobject]@{
-        UsedPercent = [Math]::Max(0.0, [Math]::Min(100.0, $usedPercent))
-        WindowMinutes = $WindowMinutes
-        ResetsAt = $resetAt.ToUnixTimeSeconds()
-    }
+    return ConvertTo-QuotaWindowValue `
+        -UsedValue $usedText `
+        -ResetText $resetText `
+        -WindowMinutes $WindowMinutes `
+        -PercentScale 1.0
 }
 
 function ConvertTo-KimiUsagesQuotaWindow {
@@ -395,43 +402,12 @@ function ConvertTo-KimiUsagesQuotaWindow {
         return $null
     }
 
-    $usedRatio = 0.0
-    if ($ratioValue -is [string]) {
-        if (-not [double]::TryParse(
-            $ratioValue,
-            [Globalization.NumberStyles]::Float,
-            [Globalization.CultureInfo]::InvariantCulture,
-            [ref]$usedRatio
-        )) {
-            return $null
-        }
-    }
-    else {
-        try { $usedRatio = [double]$ratioValue } catch { return $null }
-    }
-    $resetAt = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse(
-        $resetText,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [Globalization.DateTimeStyles]::RoundtripKind,
-        [ref]$resetAt
-    )) {
-        return $null
-    }
-    if (
-        [double]::IsNaN($usedRatio) -or
-        [double]::IsInfinity($usedRatio) -or
-        $usedRatio -lt 0 -or
-        $resetAt -le [DateTimeOffset]::MinValue
-    ) {
-        return $null
-    }
-
-    return [pscustomobject]@{
-        UsedPercent = [Math]::Max(0.0, [Math]::Min(100.0, $usedRatio * 100))
-        WindowMinutes = $WindowMinutes
-        ResetsAt = $resetAt.ToUnixTimeSeconds()
-    }
+    return ConvertTo-QuotaWindowValue `
+        -UsedValue $ratioValue `
+        -ResetText $resetText `
+        -WindowMinutes $WindowMinutes `
+        -PercentScale 100.0 `
+        -RejectNegative
 }
 
 function ConvertTo-KimiOfficialUsage {
@@ -634,6 +610,46 @@ function ConvertFrom-KimiWireUsageLine {
     }
 }
 
+function Read-FileTailText {
+    param(
+        [string]$Path,
+        [long]$TailBytes
+    )
+
+    $stream = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try {
+        $startOffset = [Math]::Max(0L, $stream.Length - $TailBytes)
+        [void]$stream.Seek($startOffset, [System.IO.SeekOrigin]::Begin)
+        $byteCount = [int]($stream.Length - $startOffset)
+        $buffer = New-Object byte[] $byteCount
+        $totalRead = 0
+        while ($totalRead -lt $byteCount) {
+            $read = $stream.Read($buffer, $totalRead, $byteCount - $totalRead)
+            if ($read -le 0) { break }
+            $totalRead += $read
+        }
+        $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $totalRead)
+        if ($startOffset -gt 0) {
+            $firstLineBreak = $text.IndexOf("`n", [StringComparison]::Ordinal)
+            if ($firstLineBreak -ge 0) {
+                $text = $text.Substring($firstLineBreak + 1)
+            }
+            else {
+                $text = ''
+            }
+        }
+        return $text
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Read-KimiSessionUsageEvents {
     param([System.IO.FileInfo]$File)
 
@@ -643,49 +659,17 @@ function Read-KimiSessionUsageEvents {
         if ($cached.Key -eq $cacheKey) { return $cached.Value }
     }
 
-    $events = @()
+    $events = [Collections.Generic.List[object]]::new()
     try {
-        $stream = [System.IO.File]::Open(
-            $File.FullName,
-            [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::Read,
-            [System.IO.FileShare]::ReadWrite
-        )
-        try {
-            # Usage records are append-only and normally appear near the end.
-            $tailLimit = 256KB
-            $startOffset = [Math]::Max(0L, $stream.Length - $tailLimit)
-            [void]$stream.Seek($startOffset, [System.IO.SeekOrigin]::Begin)
-            $byteCount = [int]($stream.Length - $startOffset)
-            $buffer = New-Object byte[] $byteCount
-            $totalRead = 0
-            while ($totalRead -lt $byteCount) {
-                $read = $stream.Read($buffer, $totalRead, $byteCount - $totalRead)
-                if ($read -le 0) { break }
-                $totalRead += $read
-            }
-            $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $totalRead)
-            if ($startOffset -gt 0) {
-                $firstLineBreak = $text.IndexOf("`n", [StringComparison]::Ordinal)
-                if ($firstLineBreak -ge 0) {
-                    $text = $text.Substring($firstLineBreak + 1)
-                }
-                else {
-                    $text = ''
-                }
-            }
-
-            foreach ($line in ($text -split "`r?`n")) {
-                $usageEvent = ConvertFrom-KimiWireUsageLine -Line $line
-                if ($usageEvent) { $events += $usageEvent }
-            }
-        }
-        finally {
-            $stream.Dispose()
+        # Usage records are append-only and normally appear near the end.
+        $text = Read-FileTailText -Path $File.FullName -TailBytes 256KB
+        foreach ($line in ($text -split "`r?`n")) {
+            $usageEvent = ConvertFrom-KimiWireUsageLine -Line $line
+            if ($usageEvent) { [void]$events.Add($usageEvent) }
         }
     }
     catch {
-        $events = @()
+        $events = [Collections.Generic.List[object]]::new()
     }
 
     $value = [pscustomobject]@{ Events = $events }
@@ -741,9 +725,15 @@ function Get-KimiLocalUsage {
                     $result.TodayCachedTokens += $usageEvent.CachedTokens
                 }
                 if ($file.LastWriteTime.Date -ne $todayDate -and $latest) { continue }
-                $fileLatest = $summary.Events |
-                    Sort-Object Timestamp -Descending |
-                    Select-Object -First 1
+                $fileLatest = $null
+                foreach ($usageEvent in $summary.Events) {
+                    if (
+                        -not $fileLatest -or
+                        $usageEvent.Timestamp -gt $fileLatest.Timestamp
+                    ) {
+                        $fileLatest = $usageEvent
+                    }
+                }
                 if ($fileLatest -and (-not $latest -or $fileLatest.Timestamp -gt $latest.Timestamp)) {
                     $latest = $fileLatest
                 }

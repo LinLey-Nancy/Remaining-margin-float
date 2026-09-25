@@ -1,4 +1,6 @@
-﻿function Get-UsageStateHistoryDirectory {
+﻿$script:UsageStateUtf8NoBomEncoding = New-Object Text.UTF8Encoding($false)
+
+function Get-UsageStateHistoryDirectory {
     param([string]$RootPath = '')
 
     if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
@@ -162,7 +164,7 @@ function Write-UsageStateAtomicText {
         [IO.File]::WriteAllText(
             $temporaryPath,
             $Text,
-            (New-Object Text.UTF8Encoding($false))
+            $script:UsageStateUtf8NoBomEncoding
         )
         # Retry atomic replace on IOException (e.g., AV scanning the file)
         $maxRetries = 3
@@ -482,7 +484,7 @@ function Add-UsageStateJournalEntry {
     [IO.File]::AppendAllText(
         $path,
         $line + [Environment]::NewLine,
-        (New-Object Text.UTF8Encoding($false))
+        $script:UsageStateUtf8NoBomEncoding
     )
 }
 
@@ -879,26 +881,6 @@ function Get-LatestUsageStateSnapshot {
         }
     }
     return $null
-}
-
-function Invoke-UsageStateMaintenance {
-    param(
-        [string]$RootPath = '',
-        [DateTimeOffset]$Now = [DateTimeOffset]::Now,
-        [switch]$AllowDiagnosticWrite
-    )
-
-    if ($isDiagnosticRun -and -not $AllowDiagnosticWrite) { return @() }
-    $root = Get-UsageStateHistoryDirectory -RootPath $RootPath
-    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-        return @()
-    }
-    $entries = @(Read-UsageStateEntries -RootPath $root -Now $Now)
-    $retained = @(
-        Write-UsageStateIndexes -Entries $entries -RootPath $root -Now $Now
-    )
-    Remove-UnreferencedUsageStatePayloads -Entries $retained -RootPath $root
-    return $retained
 }
 
 function Restore-LatestUsageState {

@@ -95,23 +95,29 @@ function Unprotect-LocalSecret {
     }
 }
 
-function Get-DeepSeekConfiguration {
+function Get-ProviderKeyConfiguration {
+    param(
+        [string]$Path,
+        [switch]$IncludeBudget
+    )
+
     $result = [ordered]@{
         EncryptedApiKey = ''
         KeyHint = ''
-        Budget = 0.0
+    }
+    if ($IncludeBudget) {
+        $result.Budget = 0.0
     }
     try {
-        $path = Get-DeepSeekConfigPath
-        if (Test-Path -LiteralPath $path) {
-            $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($Path -and (Test-Path -LiteralPath $Path)) {
+            $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($saved.PSObject.Properties['EncryptedApiKey']) {
                 $result.EncryptedApiKey = [string]$saved.EncryptedApiKey
             }
             if ($saved.PSObject.Properties['KeyHint']) {
                 $result.KeyHint = [string]$saved.KeyHint
             }
-            if ($saved.PSObject.Properties['Budget']) {
+            if ($IncludeBudget -and $saved.PSObject.Properties['Budget']) {
                 $result.Budget = [Math]::Max(0.0, [double]$saved.Budget)
             }
         }
@@ -122,15 +128,17 @@ function Get-DeepSeekConfiguration {
     return [pscustomobject]$result
 }
 
-function Save-DeepSeekConfiguration {
+function Save-ProviderKeyConfiguration {
     param(
+        [string]$Path,
         [AllowEmptyString()]
         [string]$ApiKey,
         [double]$Budget,
+        [switch]$IncludeBudget,
         [switch]$RemoveKey
     )
 
-    $current = Get-DeepSeekConfiguration
+    $current = Get-ProviderKeyConfiguration -Path $Path -IncludeBudget:$IncludeBudget
     $encryptedApiKey = $current.EncryptedApiKey
     $keyHint = $current.KeyHint
     if ($RemoveKey) {
@@ -147,34 +155,40 @@ function Save-DeepSeekConfiguration {
         }
     }
 
-    [ordered]@{
+    $content = [ordered]@{
         EncryptedApiKey = $encryptedApiKey
         KeyHint = $keyHint
-        Budget = [Math]::Max(0.0, $Budget)
-    } | ConvertTo-Json | Set-Content -LiteralPath (Get-DeepSeekConfigPath) -Encoding UTF8
+    }
+    if ($IncludeBudget) {
+        $content.Budget = [Math]::Max(0.0, $Budget)
+    }
+    $content | ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Get-DeepSeekConfiguration {
+    $path = try { Get-DeepSeekConfigPath } catch { $null }
+    return Get-ProviderKeyConfiguration -Path $path -IncludeBudget
+}
+
+function Save-DeepSeekConfiguration {
+    param(
+        [AllowEmptyString()]
+        [string]$ApiKey,
+        [double]$Budget,
+        [switch]$RemoveKey
+    )
+
+    Save-ProviderKeyConfiguration `
+        -Path (Get-DeepSeekConfigPath) `
+        -ApiKey $ApiKey `
+        -Budget $Budget `
+        -IncludeBudget `
+        -RemoveKey:$RemoveKey
 }
 
 function Get-KimiConfiguration {
-    $result = [ordered]@{
-        EncryptedApiKey = ''
-        KeyHint = ''
-    }
-    try {
-        $path = Get-KimiConfigPath
-        if (Test-Path -LiteralPath $path) {
-            $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($saved.PSObject.Properties['EncryptedApiKey']) {
-                $result.EncryptedApiKey = [string]$saved.EncryptedApiKey
-            }
-            if ($saved.PSObject.Properties['KeyHint']) {
-                $result.KeyHint = [string]$saved.KeyHint
-            }
-        }
-    }
-    catch {
-        # A damaged optional configuration must not prevent the widget starting.
-    }
-    return [pscustomobject]$result
+    $path = try { Get-KimiConfigPath } catch { $null }
+    return Get-ProviderKeyConfiguration -Path $path
 }
 
 function Save-KimiConfiguration {
@@ -184,25 +198,8 @@ function Save-KimiConfiguration {
         [switch]$RemoveKey
     )
 
-    $current = Get-KimiConfiguration
-    $encryptedApiKey = $current.EncryptedApiKey
-    $keyHint = $current.KeyHint
-    if ($RemoveKey) {
-        $encryptedApiKey = ''
-        $keyHint = ''
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
-        $trimmedKey = $ApiKey.Trim()
-        $encryptedApiKey = Protect-LocalSecret -Value $trimmedKey
-        $keyHint = if ($trimmedKey.Length -gt 4) {
-            $trimmedKey.Substring($trimmedKey.Length - 4)
-        } else {
-            $trimmedKey
-        }
-    }
-
-    [ordered]@{
-        EncryptedApiKey = $encryptedApiKey
-        KeyHint = $keyHint
-    } | ConvertTo-Json | Set-Content -LiteralPath (Get-KimiConfigPath) -Encoding UTF8
+    Save-ProviderKeyConfiguration `
+        -Path (Get-KimiConfigPath) `
+        -ApiKey $ApiKey `
+        -RemoveKey:$RemoveKey
 }

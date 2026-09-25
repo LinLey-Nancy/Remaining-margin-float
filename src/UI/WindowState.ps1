@@ -1091,13 +1091,30 @@ function Select-TrendDisplaySamples {
             ($bucketIndex + 1) * $interiorCount / $bucketCount
         ) - 1
         if ($end -lt $start) { continue }
-        $bucket = @($series[$start..$end])
-        $minimumSample = $bucket |
-            Sort-Object RemainingValue, ObservedAtUtc |
-            Select-Object -First 1
-        $maximumSample = $bucket |
-            Sort-Object RemainingValue -Descending |
-            Select-Object -First 1
+        $minimumSample = $null
+        $maximumSample = $null
+        foreach ($bucketSample in $series[$start..$end]) {
+            if (
+                $null -eq $minimumSample -or
+                $bucketSample.RemainingValue -lt $minimumSample.RemainingValue -or
+                (
+                    $bucketSample.RemainingValue -eq $minimumSample.RemainingValue -and
+                    $bucketSample.ObservedAtUtc -lt $minimumSample.ObservedAtUtc
+                )
+            ) {
+                $minimumSample = $bucketSample
+            }
+            if (
+                $null -eq $maximumSample -or
+                $bucketSample.RemainingValue -gt $maximumSample.RemainingValue -or
+                (
+                    $bucketSample.RemainingValue -eq $maximumSample.RemainingValue -and
+                    $bucketSample.ObservedAtUtc -lt $maximumSample.ObservedAtUtc
+                )
+            ) {
+                $maximumSample = $bucketSample
+            }
+        }
         foreach ($sample in @($minimumSample, $maximumSample) |
             Sort-Object ObservedAtUtc) {
             if (
@@ -1249,11 +1266,17 @@ function Set-TrendChart {
     }
     if ($allDisplaySamples.Count -lt 2) { return }
 
-    $values = @($allDisplaySamples | ForEach-Object {
-        [double]$_.RemainingValue
-    })
-    $minimum = ($values | Measure-Object -Minimum).Minimum
-    $maximum = ($values | Measure-Object -Maximum).Maximum
+    $minimum = $null
+    $maximum = $null
+    foreach ($displaySample in $allDisplaySamples) {
+        $displayValue = [double]$displaySample.RemainingValue
+        if ($null -eq $minimum -or $displayValue -lt $minimum) {
+            $minimum = $displayValue
+        }
+        if ($null -eq $maximum -or $displayValue -gt $maximum) {
+            $maximum = $displayValue
+        }
+    }
     $range = [double]$maximum - [double]$minimum
     $minimumRange = if ($allDisplaySamples[0].MetricType -eq 'Percent') {
         10.0
@@ -1612,13 +1635,6 @@ function Reset-ProviderRapidDropSession {
     else {
         $script:UsageSyncSession.RapidChannels[$ProviderId] = $Channel
     }
-}
-
-function Get-RapidDropDisplayWindowMinutes {
-    if ($script:RapidDropAlertsEnabled) {
-        return $script:RapidDropWindowMinutes
-    }
-    return 60
 }
 
 function Set-RapidDropInsightValues {
@@ -3176,14 +3192,6 @@ function Update-UsageView {
             -Name 'FiveHourRemainingPercent' `
             -Default 0)
     } else { 0.0 }
-    $codexPrimaryQuota = if ($isQuotaLayout) {
-        Get-CodexQuotaPresentation -Snapshot $Snapshot
-    } else { $null }
-    $codexQuotaBinding = if ($isQuotaLayout) {
-        Get-CodexQuotaBinding `
-            -Snapshot $Snapshot `
-            -PrimaryQuota $codexPrimaryQuota
-    } else { $null }
     $displayWindowLabel = [string]$Snapshot.WindowLabel
     $WindowLabel.Text = $displayWindowLabel
     $ExpandedWindowLabel.Text = $displayWindowLabel
