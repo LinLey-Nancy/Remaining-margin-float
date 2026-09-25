@@ -475,7 +475,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.12.1'
+$script:AppVersion = '1.12.2'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
