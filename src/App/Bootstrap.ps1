@@ -227,6 +227,7 @@ public sealed class UsageHistoryRecordData
     public int UtcOffsetMinutes { get; set; }
     public string MetricType { get; set; }
     public string QuotaPeriod { get; set; }
+    public string AccountId { get; set; }
     public double RemainingValue { get; set; }
     public string Unit { get; set; }
     public string ResetAtUtc { get; set; }
@@ -239,6 +240,7 @@ public static class UsageHistoryLogScanner
     private static readonly Regex Observed = Create("\\\"ObservedAtUtc\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
     private static readonly Regex Metric = Create("\\\"MetricType\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
     private static readonly Regex Period = Create("\\\"QuotaPeriod\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
+    private static readonly Regex Account = Create("\\\"AccountId\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
     private static readonly Regex Remaining = Create("\\\"RemainingValue\\\"\\s*:\\s*(?<value>[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?)");
     private static readonly Regex Unit = Create("\\\"Unit\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
     private static readonly Regex Reset = Create("\\\"ResetAtUtc\\\"\\s*:\\s*\\\"(?<value>[^\\\"]*)\\\"");
@@ -347,6 +349,7 @@ public static class UsageHistoryLogScanner
             UtcOffsetMinutes = (int)Math.Round(localObservedAt.Offset.TotalMinutes),
             MetricType = metric,
             QuotaPeriod = quotaPeriod,
+            AccountId = Capture(Account, line),
             RemainingValue = Math.Round(remainingValue, 4),
             Unit = Capture(Unit, line),
             ResetAtUtc = resetAtUtc
@@ -387,6 +390,7 @@ public static class UsageHistoryLogScanner
                     sample.ProviderId,
                     sample.MetricType,
                     sample.QuotaPeriod,
+                    sample.AccountId,
                     sample.Unit,
                     sample.ObservedAtUtc.ToString("o", CultureInfo.InvariantCulture)
                 });
@@ -416,6 +420,7 @@ public static class UsageHistoryLogScanner
                 sample.ProviderId,
                 sample.MetricType,
                 sample.QuotaPeriod,
+                sample.AccountId,
                 sample.Unit
             });
             List<UsageHistoryRecordData> group;
@@ -475,7 +480,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.12.2'
+$script:AppVersion = '1.13.0'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -489,6 +494,9 @@ $script:WindowPlacementWatchdogSeconds = 5
 $script:LastWindowPlacementWatchdogAt = $null
 $script:ExpandedWidth = 400.0
 $script:ExpandedHeight = 560.0
+# The blank state has no quota band and no token summary, so the expanded card
+# only needs the account row, the trend strip and the footer.
+$script:EmptyExpandedHeight = 220.0
 $script:CodexPlusExpandedHeight = 522.0
 $script:CodexProExpandedHeight = 474.0
 $script:RefreshIntervalSeconds = 60
@@ -504,7 +512,14 @@ $script:TrayTopmostItem = $null
 $script:TrayEdgeDockItem = $null
 $script:TrayStartupItems = @{}
 $script:IsClosing = $false
-$script:ActiveProvider = 'Codex'
+# No data source is preselected on a fresh install: the user picks one from the
+# menu, and until then the window stays blank instead of quietly reading Codex.
+$script:ActiveProvider = ''
+$script:ConfigProfileEntries = $null
+$script:ActiveConfigIds = [ordered]@{}
+$script:OnboardingCompleted = $false
+$script:BudgetAlertState = @{}
+$script:BudgetBaselineMenuItem = $null
 $script:KimiUsageCache = @{}
 $script:DeepSeekUsageCache = @{}
 $script:DeepSeekLatestUsageCache = @{}
@@ -519,6 +534,8 @@ $script:KimiAutoCredentialRejected = $false
 $script:DeepSeekHttpClient = $null
 $script:UpdateHttpClient = $null
 $script:UpdateMenuItem = $null
+$script:ConfigProfileMenuItem = $null
+$script:TrayConfigProfileItem = $null
 $script:TrayUpdateItem = $null
 $script:AutoUpdateMenuItem = $null
 $script:TrayAutoUpdateItem = $null
@@ -642,6 +659,10 @@ $script:AppContext = [pscustomobject]@{
             Attempt = 0
             MaxAttempts = 2
             RetryAfter = $null
+            # Which configuration the in-flight request was started for. A
+            # response that arrives after the user switched profiles is dropped
+            # instead of being painted over the new account's view.
+            AccountId = ''
         }
         Kimi = [pscustomobject]@{
             Request = $null
@@ -649,6 +670,7 @@ $script:AppContext = [pscustomobject]@{
             Attempt = 0
             MaxAttempts = 2
             RetryAfter = $null
+            AccountId = ''
         }
     }
 }

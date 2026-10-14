@@ -635,6 +635,16 @@
                                        TextTrimming="CharacterEllipsis"/>
                         </Grid>
 
+                        <TextBlock x:Name="BudgetText"
+                                   Grid.Row="1"
+                                   Margin="0,4,0,0"
+                                   HorizontalAlignment="Right"
+                                   FontFamily="Microsoft YaHei UI"
+                                   FontSize="9.5"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource StatusStrong}"
+                                   TextTrimming="CharacterEllipsis"/>
+
                         <Grid Grid.Row="2">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>

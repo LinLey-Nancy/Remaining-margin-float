@@ -245,6 +245,10 @@ function ConvertTo-UsageHistorySample {
         QuotaPeriod = if ([string]$Snapshot.ProviderId -in @('Codex', 'Kimi')) {
             $codexQuotaPeriod
         } else { '' }
+        AccountId = [string](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'AccountId' `
+                -Default '')
         RemainingValue = [Math]::Round($remainingValue, 4)
         Unit = $unit
         ResetAtUtc = $resetAtUtc
@@ -296,6 +300,10 @@ function ConvertTo-UsageHistorySamples {
                 UtcOffsetMinutes = $calendar.UtcOffsetMinutes
                 MetricType = 'Balance'
                 QuotaPeriod = ''
+                AccountId = [string](Get-ObjectPropertyValue `
+                        -Object $Snapshot `
+                        -Name 'AccountId' `
+                        -Default '')
                 RemainingValue = [Math]::Round($balance, 4)
                 Unit = $currency
                 ResetAtUtc = ''
@@ -303,6 +311,39 @@ function ConvertTo-UsageHistorySamples {
         }
     }
     return $samples.ToArray()
+}
+
+function Sync-UsageHistoryAccountContext {
+    # Records written before multiple profiles existed have no AccountId and
+    # cannot be attributed to one. They are adopted by the active profile only
+    # while that profile has no own records; once it does, the unattributed ones
+    # stay out, so two accounts can never be mixed into one curve.
+    param(
+        $Samples,
+        [string]$ProviderId,
+        [string]$AccountId
+    )
+
+    if (-not $Samples) { return }
+    $target = [string]$AccountId
+    if ([string]::IsNullOrWhiteSpace($target)) { return }
+
+    $providerSamples = @(
+        $Samples | Where-Object { $_.ProviderId -eq $ProviderId }
+    )
+    $hasOwn = @(
+        $providerSamples | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.AccountId) -and
+            [string]$_.AccountId -eq $target
+        }
+    ).Count -gt 0
+    if ($hasOwn) { return }
+
+    foreach ($sample in $providerSamples) {
+        if ([string]::IsNullOrWhiteSpace([string]$sample.AccountId)) {
+            $sample.AccountId = $target
+        }
+    }
 }
 
 function Read-UsageHistory {
@@ -346,6 +387,14 @@ function Read-UsageHistory {
             )
         }
     }
+    if ($usesDefaultPath) {
+        foreach ($profileProvider in (Get-ConfigProfileProviders)) {
+            Sync-UsageHistoryAccountContext `
+                -Samples $history `
+                -ProviderId $profileProvider `
+                -AccountId (Get-ActiveConfigProfileId -Provider $profileProvider)
+        }
+    }
     if ($usesDefaultPath -and $ForAnalysis) {
         $script:UsageHistoryCache = $history
     }
@@ -386,6 +435,9 @@ function Save-UsageHistory {
             [ordered]@{
                 v = 3
                 ProviderId = [string]$_.ProviderId
+                AccountId = if ($_.PSObject.Properties['AccountId']) {
+                    [string]$_.AccountId
+                } else { '' }
                 ObservedAtUtc = ([DateTimeOffset]$_.ObservedAtUtc).
                     ToUniversalTime().
                     ToString('o', [Globalization.CultureInfo]::InvariantCulture)
@@ -446,6 +498,9 @@ function Add-UsageHistoryLines {
             [ordered]@{
                 v = 3
                 ProviderId = [string]$_.ProviderId
+                AccountId = if ($_.PSObject.Properties['AccountId']) {
+                    [string]$_.AccountId
+                } else { '' }
                 ObservedAtUtc = ([DateTimeOffset]$_.ObservedAtUtc).
                     ToUniversalTime().
                     ToString('o', [Globalization.CultureInfo]::InvariantCulture)
@@ -569,10 +624,11 @@ function Add-UsageHistoryBackfillIndexSample {
     $key = if ($ProviderOnly) {
         '{0}|{1}' -f $providerId, $bucket
     } else {
-        '{0}|{1}|{2}|{3}' -f
+        '{0}|{1}|{2}|{3}|{4}' -f
             $providerId,
             [string]$Sample.MetricType,
             [string]$Sample.Unit,
+            [string]$Sample.AccountId,
             $bucket
     }
     if (-not $Index.ContainsKey($key)) {
@@ -588,6 +644,7 @@ function Test-UsageHistoryBackfillIndexMatch {
         [DateTimeOffset]$ObservedAt,
         [string]$MetricType = '',
         [string]$Unit = '',
+        [string]$CandidateAccountId = '',
         [switch]$ProviderOnly
     )
 
@@ -597,10 +654,11 @@ function Test-UsageHistoryBackfillIndexMatch {
         $key = if ($ProviderOnly) {
             '{0}|{1}' -f $ProviderId, $candidateBucket
         } else {
-            '{0}|{1}|{2}|{3}' -f
+            '{0}|{1}|{2}|{3}|{4}' -f
                 $ProviderId,
                 $MetricType,
                 $Unit,
+                [string]$CandidateAccountId,
                 $candidateBucket
         }
         if (-not $Index.ContainsKey($key)) { continue }
@@ -2016,6 +2074,31 @@ function Test-UsageAlertThresholdCrossed {
     return [double]$PreviousValue -gt $Threshold
 }
 
+function ConvertTo-BudgetBaselinePercent {
+    # 0 means "no budget set": the widget then draws no budget marker and sends
+    # no budget alert, which is different from a budget of 0%.
+    param(
+        $Value,
+        [double]$Fallback = 0.0,
+        [switch]$Strict
+    )
+
+    if ($null -eq $Value -or $Value -eq '') { return 0.0 }
+    try {
+        $parsed = [double]$Value
+    }
+    catch {
+        if ($Strict) { throw '预算基准必须是数字。' }
+        return $Fallback
+    }
+    if ([double]::IsNaN($parsed) -or [double]::IsInfinity($parsed)) {
+        if ($Strict) { throw '预算基准必须是有限数字。' }
+        return $fallback
+    }
+    if ($parsed -le 0) { return 0.0 }
+    return [Math]::Min(100.0, $parsed)
+}
+
 function Get-UsageAlertProviderIds {
     return @('Codex', 'Kimi', 'DeepSeek')
 }
@@ -2036,6 +2119,7 @@ function New-DefaultUsageAlertSettings {
             RapidMode = 'Percent'
             RapidPercent = 10.0
             RapidAmount = 10.0
+            BudgetAmount = 0.0
         }
     }
     return [pscustomobject][ordered]@{
@@ -2047,6 +2131,8 @@ function New-DefaultUsageAlertSettings {
         RapidWindowMinutes = 30
         RapidFiveHourPercent = 10.0
         RapidWeeklyPercent = 10.0
+        BudgetPercentFiveHour = 0.0
+        BudgetPercentWeekly = 0.0
     }
 }
 
@@ -2113,6 +2199,13 @@ function ConvertTo-UsageAlertSettings {
                     -Default $defaults.RapidAmount) `
                 -Fallback $defaults.RapidAmount `
                 -Strict:$Strict
+            BudgetAmount = ConvertTo-BudgetBaselinePercent `
+                -Value (Get-ObjectPropertyValue `
+                    -Object $Value `
+                    -Name 'BudgetAmount' `
+                    -Default $defaults.BudgetAmount) `
+                -Fallback $defaults.BudgetAmount `
+                -Strict:$Strict
         }
     }
 
@@ -2148,6 +2241,20 @@ function ConvertTo-UsageAlertSettings {
                 -Name 'RapidWeeklyPercent' `
                 -Default $defaults.RapidWeeklyPercent) `
             -Fallback $defaults.RapidWeeklyPercent `
+            -Strict:$Strict
+        BudgetPercentFiveHour = ConvertTo-BudgetBaselinePercent `
+            -Value (Get-ObjectPropertyValue `
+                -Object $Value `
+                -Name 'BudgetPercentFiveHour' `
+                -Default $defaults.BudgetPercentFiveHour) `
+            -Fallback $defaults.BudgetPercentFiveHour `
+            -Strict:$Strict
+        BudgetPercentWeekly = ConvertTo-BudgetBaselinePercent `
+            -Value (Get-ObjectPropertyValue `
+                -Object $Value `
+                -Name 'BudgetPercentWeekly' `
+                -Default $defaults.BudgetPercentWeekly) `
+            -Fallback $defaults.BudgetPercentWeekly `
             -Strict:$Strict
     }
 }
@@ -2203,6 +2310,9 @@ function ConvertTo-UsageAlertSettingsMap {
             -Object $Value `
             -Name 'CodexRapidDropPercent' `
             -Default 10.0
+        BudgetAmount = 0.0
+        BudgetPercentFiveHour = 0.0
+        BudgetPercentWeekly = 0.0
     }
     $nested = Get-ObjectPropertyValue -Object $Value -Name 'AlertSettings'
     $map = [ordered]@{}

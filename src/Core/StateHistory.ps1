@@ -228,6 +228,9 @@ function ConvertFrom-UsageStateEntry {
         Version = 1
         EntryId = [string]$Saved.EntryId
         ProviderId = $providerId
+        AccountId = if ($Saved.PSObject.Properties['AccountId']) {
+            [string]$Saved.AccountId
+        } else { '' }
         ObservedAtUtc = $observedAt
         SampledAtUtc = $sampledAt
         PayloadHash = $payloadHash
@@ -416,6 +419,7 @@ function ConvertTo-UsageStateEntryDocument {
         v = 1
         EntryId = [string]$Entry.EntryId
         ProviderId = [string]$Entry.ProviderId
+        AccountId = [string]$Entry.AccountId
         ObservedAtUtc = ([DateTimeOffset]$Entry.ObservedAtUtc).
             ToUniversalTime().ToString(
                 'o',
@@ -442,11 +446,23 @@ function Write-UsageStateCurrentIndex {
     $retained = @(Select-UsageStateRetentionWindow -Entries $Entries -Now $Now)
     $latest = New-Object Collections.Generic.List[object]
     foreach ($providerId in @('Codex', 'DeepSeek', 'Kimi')) {
-        $entry = @(
-            $retained | Where-Object { $_.ProviderId -eq $providerId }
-        ) | Select-Object -Last 1
-        if ($entry) {
-            $latest.Add((ConvertTo-UsageStateEntryDocument -Entry $entry))
+        # One pointer per provider *and* account: restoring the previous run
+        # must not put another account's numbers on screen.
+        foreach ($accountId in @(
+            $retained |
+                Where-Object { $_.ProviderId -eq $providerId } |
+                ForEach-Object { [string]$_.AccountId } |
+                Sort-Object -Unique
+        )) {
+            $entry = @(
+                $retained | Where-Object {
+                    $_.ProviderId -eq $providerId -and
+                    [string]$_.AccountId -eq $accountId
+                }
+            ) | Select-Object -Last 1
+            if ($entry) {
+                $latest.Add((ConvertTo-UsageStateEntryDocument -Entry $entry))
+            }
         }
     }
     $current = [ordered]@{
@@ -721,6 +737,10 @@ function Save-UsageStateSnapshot {
         Version = 1
         EntryId = [Guid]::NewGuid().ToString('N')
         ProviderId = $providerId
+        AccountId = [string](Get-ObjectPropertyValue `
+                -Object $Snapshot `
+                -Name 'AccountId' `
+                -Default '')
         ObservedAtUtc = $ObservedAt.ToUniversalTime()
         SampledAtUtc = $sampledAt
         PayloadHash = $payloadHash
@@ -732,7 +752,12 @@ function Save-UsageStateSnapshot {
     Add-UsageStateJournalEntry -Entry $entry -RootPath $root
     $currentEntries = @(
         Read-UsageStateCurrentEntries -RootPath $root -Now $ObservedAt |
-            Where-Object { $_.ProviderId -ne $providerId }
+            Where-Object {
+                -not (
+                    $_.ProviderId -eq $providerId -and
+                    [string]$_.AccountId -eq [string]$entry.AccountId
+                )
+            }
     )
     [void](Write-UsageStateCurrentIndex `
         -Entries @($currentEntries + $entry) `
@@ -844,6 +869,7 @@ function Get-LatestUsageStateSnapshot {
     param(
         [ValidateSet('Codex', 'DeepSeek', 'Kimi')]
         [string]$ProviderId,
+        [string]$AccountId = '',
         [string]$RootPath = '',
         [DateTimeOffset]$Now = [DateTimeOffset]::Now
     )
@@ -859,7 +885,17 @@ function Get-LatestUsageStateSnapshot {
         try {
             $attempted[[string]$entry.EntryId] = $true
             $snapshot = Read-UsageStatePayload -Entry $entry -RootPath $root
-            if ($snapshot) { return $snapshot }
+            # Only the account this profile owns may be restored; entries from
+            # another account are recorded but never shown here.
+            if (
+                $snapshot -and
+                [string](Get-ObjectPropertyValue `
+                    -Object $snapshot `
+                    -Name 'AccountId' `
+                    -Default '') -eq $AccountId
+            ) {
+                return $snapshot
+            }
         }
         catch {
             # Fall back to the next valid retained snapshot.
@@ -885,9 +921,15 @@ function Get-LatestUsageStateSnapshot {
 
 function Restore-LatestUsageState {
     if ($isDiagnosticRun) { return $false }
+    # With no data source selected there is no profile to restore: the blank
+    # window must not be filled with the previous run's numbers.
+    if ([string]::IsNullOrWhiteSpace([string]$script:ActiveProvider)) {
+        return $false
+    }
     try {
         $snapshot = Get-LatestUsageStateSnapshot `
-            -ProviderId $script:ActiveProvider
+            -ProviderId $script:ActiveProvider `
+            -AccountId (Get-ActiveConfigProfileId -Provider $script:ActiveProvider)
         if (-not $snapshot) { return $false }
 
         $script:LastSnapshot = $snapshot

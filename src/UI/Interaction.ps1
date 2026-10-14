@@ -33,6 +33,19 @@ $startupPhase = [Diagnostics.Stopwatch]::StartNew()
 Restore-Settings
 if (-not $isDiagnosticRun) {
     Sync-PackagedStartupLauncher
+    # The old single-slot kimi.json/deepseek.json keys become real profiles so
+    # an upgrade never loses a key the user already typed in.
+    try {
+        [void](Invoke-ConfigProfileMigration)
+    }
+    catch {
+        if (Get-Command Write-RuntimeLog -ErrorAction SilentlyContinue) {
+            Write-RuntimeLog `
+                -Level 'Warning' `
+                -Event 'ConfigProfiles.MigrationFailed' `
+                -Message $_.Exception.Message
+        }
+    }
 }
 $script:StartupMode = Get-StartupMode
 Set-ExpandedState -Expanded $script:IsExpanded -Immediate -DeferEdgeDock
@@ -117,6 +130,16 @@ if (-not $CheckTransitions -and -not $releaseGuiCheck) {
             -Event 'App.Startup.WindowLoaded' `
             -Message '主窗口已加载' `
             -ElapsedMilliseconds $script:RmfStartupStopwatch.ElapsedMilliseconds
+        # First run only: the window is intentionally blank until a data source
+        # is picked, so explain the next step once.
+        if (-not $script:OnboardingCompleted) {
+            $script:OnboardingCompleted = $true
+            Save-Settings
+            $window.Dispatcher.BeginInvoke(
+                [Windows.Threading.DispatcherPriority]::ApplicationIdle,
+                (New-RmfAction -Callback { [void](Show-OnboardingDialog) })
+            ) | Out-Null
+        }
     }))
     $window.Add_ContentRendered((New-RmfEventHandler -Kind Event -Callback {
         if ($script:RmfStartupStopwatch.IsRunning) {
@@ -292,20 +315,25 @@ $script:CodexSourceMenuItem = New-Object Windows.Controls.MenuItem
 $script:CodexSourceMenuItem.Header = 'Codex'
 $script:CodexSourceMenuItem.IsCheckable = $true
 $script:CodexSourceMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    # Selecting the data source that is already active is a no-op: a repeated
+    # click must not force a refresh or re-open a dialog.
+    if ($script:ActiveProvider -eq 'Codex') { return }
     Set-ActiveProvider -Provider 'Codex' -Refresh
 }))
 $script:DeepSeekSourceMenuItem = New-Object Windows.Controls.MenuItem
 $script:DeepSeekSourceMenuItem.Header = 'DeepSeek'
 $script:DeepSeekSourceMenuItem.IsCheckable = $true
 $script:DeepSeekSourceMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    if ($script:ActiveProvider -eq 'DeepSeek') { return }
     Set-ActiveProvider -Provider 'DeepSeek'
     $credential = Get-DeepSeekCredential
     if ($credential.ApiKey) {
         Invoke-Refresh
     }
     else {
-        $saved = Show-DeepSeekSettings
-        if (-not $saved) { Invoke-Refresh }
+        # Nothing usable yet: guide the user straight to the add dialog.
+        [void](Show-ConfigProfileDialog -Provider 'DeepSeek' -Mode 'Add')
+        Invoke-Refresh
         Sync-ProviderMenuState
     }
 }))
@@ -313,14 +341,15 @@ $script:KimiSourceMenuItem = New-Object Windows.Controls.MenuItem
 $script:KimiSourceMenuItem.Header = 'Kimi Code'
 $script:KimiSourceMenuItem.IsCheckable = $true
 $script:KimiSourceMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    if ($script:ActiveProvider -eq 'Kimi') { return }
     Set-ActiveProvider -Provider 'Kimi'
     $credential = Get-KimiCredential
     if ($credential.Token) {
         Invoke-Refresh
     }
     else {
-        $saved = Show-KimiSettings
-        if (-not $saved) { Invoke-Refresh }
+        [void](Show-ConfigProfileDialog -Provider 'Kimi' -Mode 'Add')
+        Invoke-Refresh
         Sync-ProviderMenuState
     }
 }))
@@ -334,20 +363,15 @@ $script:CodexOfficialAccessMenuItem.Add_Click((New-RmfEventHandler -Kind Routed 
     $enabled = [bool]$script:CodexOfficialAccessMenuItem.IsChecked
     [void](Set-CodexOfficialAccess -Enabled $enabled -Confirm:$enabled)
 }))
-$script:DeepSeekSettingsMenuItem = New-Object Windows.Controls.MenuItem
-$script:DeepSeekSettingsMenuItem.Header = 'DeepSeek 设置…'
-$script:DeepSeekSettingsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
-    [void](Show-DeepSeekSettings)
-}))
-$script:KimiSettingsMenuItem = New-Object Windows.Controls.MenuItem
-$script:KimiSettingsMenuItem.Header = 'Kimi Code 手动配置…'
-$script:KimiSettingsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
-    [void](Show-KimiSettings)
-}))
+# The header of this submenu *is* the current configuration, so the user always
+# knows which account is live without expanding anything.
+$script:ConfigProfileMenuItem = New-Object Windows.Controls.MenuItem
+$script:ConfigProfileMenuItem.Header = '当前配置：空'
+$script:ConfigProfileMenuItem.IsEnabled = $false
 $script:KimiWslMenuItem = New-Object Windows.Controls.MenuItem
 $script:KimiWslMenuItem.Header = '在 WSL 中使用'
 $script:KimiWslMenuItem.IsCheckable = $true
-$script:KimiWslMenuItem.ToolTip = '从 WSL 发行版的 ~/.kimi-code 读取 Kimi Code 凭证与本地记录'
+$script:KimiWslMenuItem.ToolTip = '从 WSL 发行版的 ~/.kimi-code 读取本机读取配置与本地记录'
 $script:KimiWslMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Set-KimiUseWsl -Enabled ([bool]$script:KimiWslMenuItem.IsChecked)
 }))
@@ -370,12 +394,24 @@ $script:LowAlertsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback 
     Set-LowRemainingAlertsEnabled -Enabled $script:LowAlertsMenuItem.IsChecked
 }))
 $script:LowAlertThresholdMenuItem = New-Object Windows.Controls.MenuItem
-$script:LowAlertThresholdMenuItem.Header = Get-UsageAlertSettingsMenuText
+$script:LowAlertThresholdMenuItem.Header = '快速下降阈值…'
 $script:LowAlertThresholdMenuItem.Add_Click((
     New-RmfEventHandler -Kind Routed -Callback {
         [void](Show-LowRemainingAlertSettings)
     }
 ))
+$script:BudgetBaselineMenuItem = New-Object Windows.Controls.MenuItem
+$script:BudgetBaselineMenuItem.Header = '预算基准…'
+$script:BudgetBaselineMenuItem.Add_Click((
+    New-RmfEventHandler -Kind Routed -Callback {
+        [void](Show-BudgetBaselineDialog)
+    }
+))
+$alertMenu = New-Object Windows.Controls.MenuItem
+$alertMenu.Header = '提醒'
+[void]$alertMenu.Items.Add($script:LowAlertsMenuItem)
+[void]$alertMenu.Items.Add($script:LowAlertThresholdMenuItem)
+[void]$alertMenu.Items.Add($script:BudgetBaselineMenuItem)
 $script:EdgeDockMenuItem = New-Object Windows.Controls.MenuItem
 $script:EdgeDockMenuItem.Header = '贴边隐藏'
 $script:EdgeDockMenuItem.IsCheckable = $true
@@ -385,11 +421,16 @@ $script:EdgeDockMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Set-EdgeDockEnabled -Enabled $script:EdgeDockMenuItem.IsChecked
 }))
 $dataMenu = New-Object Windows.Controls.MenuItem
-$dataMenu.Header = '数据与诊断'
+$dataMenu.Header = '数据'
 $diagnosticsMenuItem = New-Object Windows.Controls.MenuItem
 $diagnosticsMenuItem.Header = '查看脱敏诊断…'
 $diagnosticsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Show-RuntimeDiagnostics
+}))
+$openLogsMenuItem = New-Object Windows.Controls.MenuItem
+$openLogsMenuItem.Header = '打开运行日志目录'
+$openLogsMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    Open-RuntimeLogDirectory
 }))
 $exportHistoryMenuItem = New-Object Windows.Controls.MenuItem
 $exportHistoryMenuItem.Header = '导出使用记录…'
@@ -402,11 +443,19 @@ $importHistoryMenuItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     Show-UsageHistoryImportDialog
 }))
 [void]$dataMenu.Items.Add($diagnosticsMenuItem)
+[void]$dataMenu.Items.Add($openLogsMenuItem)
 [void]$dataMenu.Items.Add((New-Object Windows.Controls.Separator))
 [void]$dataMenu.Items.Add($exportHistoryMenuItem)
 [void]$dataMenu.Items.Add($importHistoryMenuItem)
-$updateMenu = New-Object Windows.Controls.MenuItem
-$updateMenu.Header = '软件更新'
+$displayMenu = New-Object Windows.Controls.MenuItem
+$displayMenu.Header = '显示'
+[void]$displayMenu.Items.Add($topmostMenu)
+[void]$displayMenu.Items.Add($script:EdgeDockMenuItem)
+$moreMenu = New-Object Windows.Controls.MenuItem
+$moreMenu.Header = '更多'
+[void]$moreMenu.Items.Add($script:CodexOfficialAccessMenuItem)
+[void]$moreMenu.Items.Add($script:KimiWslMenuItem)
+[void]$moreMenu.Items.Add((New-Object Windows.Controls.Separator))
 $script:UpdateMenuItem = New-Object Windows.Controls.MenuItem
 $script:UpdateMenuItem.Header = '检查更新…'
 $script:UpdateMenuItem.Add_Click((
@@ -427,9 +476,8 @@ $script:AutoUpdateMenuItem.Add_Click((
         [void](Set-AutoUpdateEnabled -Enabled $enabled -Confirm:$enabled)
     }
 ))
-[void]$updateMenu.Items.Add($script:UpdateMenuItem)
-[void]$updateMenu.Items.Add((New-Object Windows.Controls.Separator))
-[void]$updateMenu.Items.Add($script:AutoUpdateMenuItem)
+[void]$moreMenu.Items.Add($script:UpdateMenuItem)
+[void]$moreMenu.Items.Add($script:AutoUpdateMenuItem)
 $startupMenu = New-Object Windows.Controls.MenuItem
 $startupMenu.Header = '设置开机启动'
 $startupClickHandler = {
@@ -458,6 +506,7 @@ $startupServiceItem.IsEnabled = $false
 $startupServiceItem.ToolTip = '服务运行在隔离会话中，无法显示悬浮窗'
 [void]$startupMenu.Items.Add((New-Object Windows.Controls.Separator))
 [void]$startupMenu.Items.Add($startupServiceItem)
+[void]$moreMenu.Items.Add($startupMenu)
 Sync-StartupMenuState
 $resetPositionMenu = New-Object Windows.Controls.MenuItem
 $resetPositionMenu.Header = '重置位置'
@@ -479,6 +528,7 @@ $resetPositionMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
     }
     Save-Settings
 }))
+[void]$displayMenu.Items.Add($resetPositionMenu)
 $separator = New-Object Windows.Controls.Separator
 $exitMenu = New-Object Windows.Controls.MenuItem
 $exitMenu.Header = '退出'
@@ -488,21 +538,19 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 }))
 [void]$contextMenu.Items.Add($refreshMenu)
 [void]$contextMenu.Items.Add($sourceMenu)
-[void]$contextMenu.Items.Add($script:CodexOfficialAccessMenuItem)
-[void]$contextMenu.Items.Add($script:DeepSeekSettingsMenuItem)
-[void]$contextMenu.Items.Add($script:KimiSettingsMenuItem)
-[void]$contextMenu.Items.Add($script:KimiWslMenuItem)
-[void]$contextMenu.Items.Add($topmostMenu)
-[void]$contextMenu.Items.Add($script:LowAlertsMenuItem)
-[void]$contextMenu.Items.Add($script:LowAlertThresholdMenuItem)
-[void]$contextMenu.Items.Add($script:EdgeDockMenuItem)
+[void]$contextMenu.Items.Add($script:ConfigProfileMenuItem)
+[void]$contextMenu.Items.Add((New-Object Windows.Controls.Separator))
+[void]$contextMenu.Items.Add($alertMenu)
+[void]$contextMenu.Items.Add($displayMenu)
 [void]$contextMenu.Items.Add($dataMenu)
-[void]$contextMenu.Items.Add($updateMenu)
-[void]$contextMenu.Items.Add($startupMenu)
-[void]$contextMenu.Items.Add($resetPositionMenu)
-[void]$contextMenu.Items.Add($separator)
+[void]$contextMenu.Items.Add($moreMenu)
+[void]$contextMenu.Items.Add((New-Object Windows.Controls.Separator))
 [void]$contextMenu.Items.Add($exitMenu)
 $Surface.ContextMenu = $contextMenu
+$contextMenu.Add_Opened((New-RmfEventHandler -Kind Routed -Callback {
+    # The stored file may have changed since the menu was built.
+    Sync-ProviderMenuState
+}))
 $contextMenu.Add_Closed((New-RmfEventHandler -Kind Routed -Callback {
     Request-InactiveDetailsCollapse
     Request-EdgeDockHide

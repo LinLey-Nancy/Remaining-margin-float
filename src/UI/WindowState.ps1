@@ -1942,10 +1942,12 @@ function Sync-LowAlertMenuState {
     }
     $settingsMenuText = Get-UsageAlertSettingsMenuText
     if ($script:LowAlertThresholdMenuItem) {
-        $script:LowAlertThresholdMenuItem.Header = $settingsMenuText
+        # The header is a fixed action label now; the configured window is shown
+        # inside the dialog instead of in the menu text.
+        $script:LowAlertThresholdMenuItem.ToolTip = $settingsMenuText
     }
     if ($script:TrayLowAlertThresholdItem) {
-        $script:TrayLowAlertThresholdItem.Text = $settingsMenuText
+        $script:TrayLowAlertThresholdItem.ToolTipText = $settingsMenuText
     }
 }
 
@@ -1985,6 +1987,9 @@ function Set-UsageAlertSettings {
         $LowAmountThreshold,
         $RapidFiveHourPercent,
         $RapidWeeklyPercent,
+        $BudgetPercentFiveHour,
+        $BudgetPercentWeekly,
+        $BudgetAmount,
         [ValidateSet('', 'Percent', 'Amount')]
         [string]$RapidMode = '',
         $RapidPercent,
@@ -2015,6 +2020,9 @@ function Set-UsageAlertSettings {
         LowAmountThreshold = $LowAmountThreshold
         RapidFiveHourPercent = $RapidFiveHourPercent
         RapidWeeklyPercent = $RapidWeeklyPercent
+        BudgetPercentFiveHour = $BudgetPercentFiveHour
+        BudgetPercentWeekly = $BudgetPercentWeekly
+        BudgetAmount = $BudgetAmount
         RapidMode = $RapidMode
         RapidPercent = $RapidPercent
         RapidAmount = $RapidAmount
@@ -2431,15 +2439,21 @@ function Get-UsageAlertScopeKey {
     )
 
     $providerId = [string]$Snapshot.ProviderId
+    # Alerts are tracked per account: one account going quiet must not silence
+    # another, and switching must start a fresh baseline.
+    $accountId = [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'AccountId' `
+            -Default '')
     if ($providerId -in @('Codex', 'Kimi')) {
         $period = if ($QuotaPeriod -in @('FiveHour', 'Weekly')) {
             $QuotaPeriod
         } else {
             (Get-CodexQuotaPresentation -Snapshot $Snapshot).Period
         }
-        return "${providerId}|${period}"
+        return "${providerId}|${accountId}|${period}"
     }
-    return $providerId
+    return "${providerId}|${accountId}"
 }
 
 function Get-UsageAlertLowChecks {
@@ -2453,6 +2467,12 @@ function Get-UsageAlertLowChecks {
     # the primary window used to do.
     $checks = New-Object Collections.Generic.List[object]
     $providerId = [string]$Snapshot.ProviderId
+    # The dedup key carries the account: switching to an account that is already
+    # low must alert on its own, and must not re-alert for the previous one.
+    $accountId = [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'AccountId' `
+            -Default '')
     # Always read the thresholds of the source the snapshot came from rather
     # than the active one: monitoring must not follow a stale data source.
     $settings = Get-UsageAlertSettings -ProviderId $providerId
@@ -2476,7 +2496,7 @@ function Get-UsageAlertLowChecks {
                 $settings.LowFiveHourThreshold
             }
             $checks.Add([pscustomobject]@{
-                Key = "${providerId}|${period}|Low"
+                Key = "${providerId}|${accountId}|${period}|Low"
                 Title = "$providerDisplayName ${label}余量偏低"
                 Available = (
                     $Snapshot.PSObject.Properties[$availableProperty] -and
@@ -2498,7 +2518,7 @@ function Get-UsageAlertLowChecks {
     }
 
     $checks.Add([pscustomobject]@{
-        Key = "${providerId}|Percent|Low"
+        Key = "${providerId}|${accountId}|Percent|Low"
         Title = "$providerDisplayName 预算余量偏低"
         Available = [bool]$Snapshot.HasProgress
         Value = [double]$Snapshot.RemainingPercent
@@ -2514,7 +2534,7 @@ function Get-UsageAlertLowChecks {
         # The balance check works without a budget baseline, which the
         # percentage check cannot: that is the gap this closes.
         $checks.Add([pscustomobject]@{
-            Key = "${providerId}|Amount|Low"
+            Key = "${providerId}|${accountId}|Amount|Low"
             Title = "$providerDisplayName 余额偏低"
             Available = $true
             Value = [double]$Snapshot.TotalBalance
@@ -2525,6 +2545,132 @@ function Get-UsageAlertLowChecks {
         })
     }
     return $checks
+}
+
+function Get-UsageBudgetChecks {
+    # The budget baseline is a plan the user sets per quota window ("I expect to
+    # spend at most 40% of this week's allowance"), so it is evaluated per window
+    # exactly like the low-remaining threshold is.
+    param($Snapshot)
+
+    $checks = New-Object Collections.Generic.List[object]
+    $providerId = [string]$Snapshot.ProviderId
+    if ($providerId -notin (Get-UsageAlertProviderIds)) { return $checks }
+    $accountId = [string](Get-ObjectPropertyValue `
+            -Object $Snapshot `
+            -Name 'AccountId' `
+            -Default '')
+    $settings = Get-UsageAlertSettings -ProviderId $providerId
+
+    if ($providerId -eq 'DeepSeek') {
+        $budgetAmount = [double]$settings.BudgetAmount
+        $checks.Add([pscustomobject]@{
+            Key = "${providerId}|${accountId}|Budget|Amount"
+            Title = 'DeepSeek 本月花费超出预算'
+            Available = $budgetAmount -gt 0
+            BudgetAmount = $budgetAmount
+            SpentAmount = 0.0
+            IsExceeded = $false
+            Summary = ''
+        })
+        return $checks
+    }
+
+    foreach ($period in @('FiveHour', 'Weekly')) {
+        $availableProperty = "${period}Available"
+        $usedProperty = "${period}UsedPercent"
+        $label = if ($period -eq 'Weekly') { '每周' } else { '5 小时' }
+        $budgetPercent = if ($period -eq 'Weekly') {
+            [double]$settings.BudgetPercentWeekly
+        } else {
+            [double]$settings.BudgetPercentFiveHour
+        }
+        $available = (
+            $Snapshot.PSObject.Properties[$availableProperty] -and
+            [bool]$Snapshot.$availableProperty
+        )
+        $usedPercent = if ($available) {
+            [double](Get-ObjectPropertyValue `
+                    -Object $Snapshot `
+                    -Name $usedProperty `
+                    -Default 0)
+        } else { 0.0 }
+        $difference = [Math]::Round($usedPercent - $budgetPercent, 1)
+        $isBudgeted = $available -and $budgetPercent -gt 0
+        $title = '{0} {1}额度超出预算' -f $providerId, $label
+        $summary = if (-not $isBudgeted) { '' }
+            elseif ($difference -gt 0) {
+                '预算 {0:0.#}% · 已超 {1:0.#}pp' -f $budgetPercent, $difference
+            } else {
+                '预算 {0:0.#}% · 还能用 {1:0.#}pp' -f $budgetPercent, -$difference
+            }
+        $checks.Add([pscustomobject]@{
+            Key = "${providerId}|${accountId}|${period}|Budget"
+            Title = $title
+            Available = $isBudgeted
+            BudgetPercent = $budgetPercent
+            UsedPercent = $usedPercent
+            DifferencePercent = $difference
+            IsExceeded = ($isBudgeted -and $difference -gt 0)
+            Summary = $summary
+        })
+    }
+    return $checks
+}
+
+function Get-UsageBudgetSummaryText {
+    param($Snapshot)
+
+    $parts = @(
+        foreach ($check in @(Get-UsageBudgetChecks -Snapshot $Snapshot)) {
+            if ($check.PSObject.Properties['Summary'] -and $check.Summary) {
+                $check.Summary
+            }
+        }
+    )
+    if ($parts.Count -eq 0) { return '' }
+    return ($parts -join '　')
+}
+
+function Invoke-BudgetBaselineAlert {
+    param($Snapshot)
+
+    if (
+        $isDiagnosticRun -or
+        $Demo -or
+        -not $script:TrayNotifyIcon -or
+        -not $Snapshot.Available
+    ) {
+        return $false
+    }
+    if (-not $script:BudgetAlertState) {
+        $script:BudgetAlertState = @{}
+    }
+    $shown = $false
+    foreach ($check in @(Get-UsageBudgetChecks -Snapshot $Snapshot)) {
+        $key = [string]$check.Key
+        if (-not $check.Available -or -not $check.IsExceeded) {
+            $script:BudgetAlertState[$key] = $false
+            continue
+        }
+        if ($script:BudgetAlertState[$key]) { continue }
+        $script:BudgetAlertState[$key] = $true
+        $summary = Get-UsageBudgetSummaryText -Snapshot $Snapshot
+        try {
+            $script:TrayNotifyIcon.ShowBalloonTip(
+                8000,
+                [string]$check.Title,
+                ('{0}（按当前数据源配置的预算基准）' -f $summary),
+                [System.Windows.Forms.ToolTipIcon]::Warning
+            )
+            $shown = $true
+        }
+        catch {
+            # A failed balloon must not break the refresh loop.
+            $script:BudgetAlertState[$key] = $false
+        }
+    }
+    return $shown
 }
 
 function Invoke-LowRemainingAlert {
@@ -2981,6 +3127,9 @@ function Invoke-PendingUsageHistoryUpdate {
                 -ObservationContext $observationContext)
         }
         elseif ($observationContext -eq 'Normal') {
+            # Budget, low-remaining and rapid-drop each alert once on their own
+            # schedule; exhausting one never suppresses the others.
+            [void](Invoke-BudgetBaselineAlert -Snapshot $snapshot)
             $lowAlertShown = Invoke-LowRemainingAlert `
                 -Snapshot $snapshot `
                 -Insights $insights
@@ -3049,6 +3198,92 @@ function Queue-UsageHistoryUpdate {
     ) | Out-Null
 }
 
+function Clear-UsageView {
+    # Renders the three empty states: a blank data area with nothing but the
+    # window chrome. Only the status line may carry a message, and a fresh
+    # install with no data source chosen stays completely silent.
+    param([string]$Message = '')
+
+    $script:LastSnapshot = $null
+    $script:LastUsageInsights = $null
+    $script:LastRapidDropInsight = $null
+
+    foreach ($element in @(
+        $CompactPrefix,
+        $RemainingValue,
+        $CompactSuffix,
+        $WindowLabel,
+        $ExpandedWindowLabel,
+        $DetailsResetPrefix,
+        $DetailsResetDate,
+        $DetailsResetCountdown,
+        $AccountName,
+        $PlanBadge,
+        $AccountEmail,
+        $UsageTrendTitle,
+        $PredictionText,
+        $BudgetText,
+        $RapidDropText,
+        $SampleTime,
+        $FooterStatusText,
+        $ResetCount,
+        $SecondaryMetricTitle,
+        $BreakdownTitle,
+        $TokenBreakdown,
+        $MetricOneTitle,
+        $PrimaryMetricValue,
+        $PrimaryMetricHint,
+        $MetricTwoTitle,
+        $TodayTokens,
+        $MetricTwoHint,
+        $MetricThreeTitle,
+        $LastTurnTokens,
+        $ContextText,
+        $MetricFourTitle,
+        $CacheHit,
+        $CacheTokenText,
+        $FiveHourResetText,
+        $FiveHourUsedValue,
+        $FiveHourRemainingValue,
+        $WeeklyResetText,
+        $WeeklyUsedValue,
+        $WeeklyRemainingValue
+    )) {
+        if ($element) { $element.Text = '' }
+    }
+
+    $SourceText.Text = $Message
+    $RapidDropStatusDot.Visibility = 'Collapsed'
+    $ResetSummaryPanel.Visibility = 'Collapsed'
+    $CodexQuotaPanel.Visibility = 'Collapsed'
+    $ProviderMetricPanel.Visibility = 'Collapsed'
+    $TokenSummaryCard.Visibility = 'Collapsed'
+    $QuotaMetricRow.Height = New-Object Windows.GridLength(0)
+    # Clear-TrendChartVisuals works on a canvas passed in by its caller, so the
+    # empty state clears the two trend series through their own elements.
+    foreach ($element in @(
+        @{ Points = $Trend5HLine.Points; Area = $Trend5HArea },
+        @{ Points = $Trend7Line.Points; Area = $Trend7Area }
+    )) {
+        $element.Points.Clear()
+        $element.Area.Visibility = 'Collapsed'
+    }
+    $Trend5HStartMarker.Visibility = 'Collapsed'
+    $Trend5HEndMarker.Visibility = 'Collapsed'
+    $Trend7StartMarker.Visibility = 'Collapsed'
+    $Trend7EndMarker.Visibility = 'Collapsed'
+    $Trend5HMetaText.Text = ''
+    $Trend7MetaText.Text = ''
+    Set-Progress -Percent 0 -Available:$false
+
+    if ($script:IsExpanded) {
+        $placement = Get-ExpandedPlacement -TargetHeight $script:EmptyExpandedHeight
+        $window.Left = $placement.Left
+        $window.Top = $placement.Top
+        $window.Height = $script:EmptyExpandedHeight
+    }
+}
+
 function Update-UsageView {
     param(
         $Snapshot,
@@ -3064,6 +3299,16 @@ function Update-UsageView {
 
     $codexPrimaryQuota = $null
     $codexQuotaBinding = $null
+    # A data source without a usable credential shares the blank layout: the
+    # only thing it may show is the reason in the status line.
+    if (
+        $Snapshot.PSObject.Properties['IsEmptyState'] -and
+        [bool]$Snapshot.IsEmptyState
+    ) {
+        Clear-UsageView -Message ([string]$Snapshot.Source)
+        if (-not $DisplayOnly) { $script:LastSnapshot = $null }
+        return
+    }
     $isQuotaLayout = [string]$Snapshot.ProviderId -in @('Codex', 'Kimi')
     if ($isQuotaLayout) {
         $codexPrimaryQuota = Get-CodexQuotaPresentation -Snapshot $Snapshot
@@ -3212,6 +3457,13 @@ function Update-UsageView {
     $AccountName.Text = $Snapshot.AccountName
     $PlanBadge.Text = $Snapshot.Plan
     $AccountEmail.Text = $Snapshot.AccountEmail
+    $BudgetText.Text = if (
+        $Snapshot.PSObject.Properties['AccountId'] -or
+        [string]$Snapshot.ProviderId -ne ''
+    ) {
+        Get-UsageBudgetSummaryText -Snapshot $Snapshot
+    } else { '' }
+    $BudgetText.Visibility = if ($BudgetText.Text) { 'Visible' } else { 'Collapsed' }
     [void](Set-UsageSnapshotProvenance -Snapshot $Snapshot)
     $ResetSummaryPanel.Visibility = if (
         $script:IsExpanded -and
@@ -3269,6 +3521,7 @@ function Update-UsageView {
         $spendSummary = Get-SpendSummary `
             -Ledger (Read-SpendLedger) `
             -ProviderId 'DeepSeek' `
+            -AccountId ([string]$Snapshot.AccountId) `
             -Now $observedAt
         $spendCurrency = $spendSummary.Unit
         $todaySpendText = '--'

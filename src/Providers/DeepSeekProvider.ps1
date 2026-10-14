@@ -1,4 +1,49 @@
-﻿function Get-DeepSeekCredential {
+﻿function Get-DeepSeekBalanceUrl {
+    param([AllowEmptyString()][string]$BaseUrl)
+
+    $base = Resolve-ConfigProfileBaseUrl -Provider 'DeepSeek' -BaseUrl $BaseUrl
+    return $base + '/user/balance'
+}
+
+function Get-DeepSeekCredential {
+    $result = [ordered]@{
+        ApiKey = ''
+        Hint = ''
+        Source = '未配置'
+        BaseUrl = ''
+        BalanceUrl = (Get-DeepSeekBalanceUrl -BaseUrl '')
+        ProfileId = ''
+        ProfileLabel = ''
+        Fault = ''
+    }
+
+    $profile = Get-ResolvedConfigProfile -Provider 'DeepSeek'
+    if ($profile) {
+        $result.ProfileId = [string]$profile.Id
+        $result.ProfileLabel = [string]$profile.Label
+    }
+
+    # A saved profile is an explicit choice and outranks the environment
+    # variable, otherwise a second account could never be used.
+    if ($profile -and $profile.Kind -ne 'Auto') {
+        $result.Source = '配置 · {0}' -f $profile.Label
+        $result.BaseUrl = Resolve-ConfigProfileBaseUrl `
+            -Provider 'DeepSeek' `
+            -BaseUrl $profile.BaseUrl
+        $result.BalanceUrl = Get-DeepSeekBalanceUrl -BaseUrl $result.BaseUrl
+        $secret = Get-ConfigProfileSecret -Profile $profile
+        if ($null -eq $secret) {
+            # Stored but undecryptable: a fault the user has to see, not an
+            # ordinary "no configuration".
+            $result.Fault = 'KeyUnreadable'
+        }
+        else {
+            $result.ApiKey = $secret
+            $result.Hint = [string]$profile.KeyHint
+        }
+        return [pscustomobject]$result
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY)) {
         $environmentKey = $env:DEEPSEEK_API_KEY.Trim()
         $hint = if ($environmentKey.Length -gt 4) {
@@ -6,20 +51,13 @@
         } else {
             $environmentKey
         }
-        return [pscustomobject]@{
-            ApiKey = $environmentKey
-            Hint = $hint
-            Source = '环境变量'
-        }
+        $result.ApiKey = $environmentKey
+        $result.Hint = $hint
+        $result.Source = '环境变量'
+        return [pscustomobject]$result
     }
 
-    $configuration = Get-DeepSeekConfiguration
-    $savedKey = Unprotect-LocalSecret -Value $configuration.EncryptedApiKey
-    return [pscustomobject]@{
-        ApiKey = $savedKey
-        Hint = $configuration.KeyHint
-        Source = if ($savedKey) { 'DPAPI 加密存储' } else { '未配置' }
-    }
+    return [pscustomobject]$result
 }
 
 function Get-ObjectPropertyValue {
@@ -365,6 +403,7 @@ function ConvertTo-DeepSeekSnapshot {
         [double]$Budget,
         [string]$KeyHint,
         [string]$SourceLabel,
+        [string]$AccountLabel = '',
         [datetime]$SampledAt = (Get-Date)
     )
 
@@ -400,6 +439,7 @@ function ConvertTo-DeepSeekSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'DeepSeek'
+        AccountId = (Get-ActiveConfigProfileId -Provider 'DeepSeek')
         Available = $isAvailable
         RemainingPercent = if ($null -ne $budgetPercent) { $budgetPercent } else { 0 }
         HasProgress = $null -ne $budgetPercent
@@ -410,7 +450,13 @@ function ConvertTo-DeepSeekSnapshot {
             Format-CurrencyAmount -Amount $Budget -Currency $currency
         } else { '未设置' }
         Plan = '按量计费'
-        AccountName = 'DeepSeek API'
+        # The account row names the configuration the user picked, so two
+        # accounts are never visually identical.
+        AccountName = if ($AccountLabel) {
+            'DeepSeek · {0}' -f $AccountLabel
+        } else {
+            'DeepSeek'
+        }
         AccountEmail = if ($KeyHint) {
             '密钥 ••••{0} · {1}' -f $KeyHint, $SourceLabel
         } else { '尚未配置 API Key' }
@@ -441,20 +487,54 @@ function ConvertTo-DeepSeekSnapshot {
 }
 
 function Get-DeepSeekUnavailableSnapshot {
-    param([string]$Reason = '请通过右键菜单配置 DeepSeek')
+    param(
+        [string]$Reason = '',
+        $Credential
+    )
+
+    # An empty state is the rule, not the exception: the data area stays blank
+    # and only the status line explains what is missing.
+    $message = $Reason
+    $accountName = 'DeepSeek'
+    $accountEmail = ''
+    $fault = ''
+    if ($Credential) {
+        $fault = [string]$Credential.Fault
+        if ($credentialProfileLabel = [string]$Credential.ProfileLabel) {
+            $accountName = '配置 · {0}' -f $credentialProfileLabel
+        }
+        if ($fault -eq 'KeyUnreadable') {
+            $message = '密钥无法解密，请重新输入'
+        }
+        elseif ($credentialProfileLabel) {
+            $message = '尚未添加配置'
+        }
+        else {
+            $message = '尚未添加配置'
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        $message = '尚未添加配置'
+    }
+    if ([string]::IsNullOrWhiteSpace($accountEmail)) {
+        $accountEmail = $message
+    }
 
     return [pscustomobject]@{
         ProviderId = 'DeepSeek'
+        AccountId = (Get-ActiveConfigProfileId -Provider 'DeepSeek')
         Available = $false
+        # Renders through the blank layout instead of a "no data" placeholder.
+        IsEmptyState = $true
         RemainingPercent = 0
         HasProgress = $false
         WindowLabel = '余额'
-        ResetDate = '暂无'
-        ResetCountdown = $Reason
-        ResetCount = '未设置'
-        Plan = '按量计费'
-        AccountName = 'DeepSeek API'
-        AccountEmail = '尚未配置 API Key'
+        ResetDate = ''
+        ResetCountdown = ''
+        ResetCount = ''
+        Plan = ''
+        AccountName = $accountName
+        AccountEmail = $accountEmail
         TodayTokens = 0
         MonthlyTokens = 0
         MonthlyEstimatedCostCny = 0
@@ -467,15 +547,74 @@ function Get-DeepSeekUnavailableSnapshot {
         SampledAt = Get-Date
         UsageSampledAt = Get-Date
         ResetAt = $null
-        Status = '等待配置'
-        Source = $Reason
+        Status = $message
+        Source = $message
+        Fault = $fault
         Currency = 'CNY'
         TotalBalance = 0
         GrantedBalance = 0
         ToppedUpBalance = 0
         Budget = 0
         BudgetPercent = $null
-        Model = '暂无本地记录'
+        Model = ''
+    }
+}
+
+function Get-DeepSeekLocalOnlySnapshot {
+    # A relay endpoint that does not implement /user/balance answers 404. That
+    # is a permanent answer, not a transient failure, so the widget keeps the
+    # local Claude Code statistics instead of showing nothing at all.
+    param(
+        $Credential,
+        [string]$Reason = '该服务不提供余额接口，仅显示本机用量'
+    )
+
+    $usage = $null
+    try {
+        $usage = Get-DeepSeekLocalUsage
+    }
+    catch {
+        $usage = $null
+    }
+
+    $label = [string]$Credential.ProfileLabel
+    return [pscustomobject]@{
+        ProviderId = 'DeepSeek'
+        AccountId = (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+        Available = $false
+        RemainingPercent = 0
+        HasProgress = $false
+        WindowLabel = '余额'
+        ResetDate = ''
+        ResetCountdown = ''
+        ResetCount = ''
+        Plan = ''
+        AccountName = if ($label) { '配置 · {0}' -f $label } else { 'DeepSeek' }
+        AccountEmail = if ([string]$Credential.Hint) {
+            '••••{0}' -f $Credential.Hint
+        } else { '' }
+        TodayTokens = if ($usage) { $usage.TodayTokens } else { 0 }
+        MonthlyTokens = if ($usage) { $usage.MonthlyTokens } else { 0 }
+        MonthlyEstimatedCostCny = 0
+        LastTurnTokens = if ($usage) { $usage.LastTurnTokens } else { 0 }
+        InputTokens = if ($usage) { $usage.LastInputTokens } else { 0 }
+        OutputTokens = if ($usage) { $usage.LastOutputTokens } else { 0 }
+        CachedTokens = if ($usage) { $usage.LastCachedTokens } else { 0 }
+        CacheHitPercent = if ($usage) { $usage.CacheHitPercent } else { 0 }
+        ContextPercent = 0
+        SampledAt = Get-Date
+        UsageSampledAt = Get-Date
+        ResetAt = $null
+        Status = $Reason
+        Source = $Reason
+        Fault = ''
+        Currency = 'CNY'
+        TotalBalance = 0
+        GrantedBalance = 0
+        ToppedUpBalance = 0
+        Budget = 0
+        BudgetPercent = $null
+        Model = if ($usage) { $usage.Model } else { '' }
     }
 }
 

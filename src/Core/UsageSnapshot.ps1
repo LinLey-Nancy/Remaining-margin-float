@@ -1,4 +1,38 @@
-﻿function Assert-UsageSnapshotContract {
+﻿function New-EmptyUsageSnapshot {
+    # The three empty states share one blank data area and differ only in the
+    # status line: no configuration at all stays silent, a missing credential or
+    # an undecryptable key says so.
+    param([string]$Message = '')
+
+    return [pscustomobject][ordered]@{
+        ProviderId = ''
+        AccountId = ''
+        Available = $false
+        IsEmptyState = $true
+        Fault = ''
+        HasProgress = $false
+        RemainingPercent = 0
+        WindowLabel = ''
+        Plan = ''
+        AccountName = ''
+        AccountEmail = ''
+        SampledAt = Get-Date
+        Status = $Message
+        Source = $Message
+        TodayTokens = 0
+        InputTokens = 0
+        OutputTokens = 0
+        CachedTokens = 0
+        CacheHitPercent = 0
+        ContextPercent = 0
+        ResetAt = $null
+        ResetDate = ''
+        ResetCountdown = ''
+        ResetCount = ''
+    }
+}
+
+function Assert-UsageSnapshotContract {
     param($Snapshot)
 
     if (-not $Snapshot) {

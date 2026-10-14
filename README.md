@@ -151,44 +151,99 @@ GitHub Release。手动运行该工作流时只生成 Actions Artifact，不创�
 组件职责、Provider 快照契约和维护约束见
 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-## DeepSeek 配置
+## 多配置（多账号）
 
-1. 在悬浮窗或通知区域右键菜单的“数据源”中选择 DeepSeek。
-2. 首次切换会自动打开设置窗口；切换成功后，右键菜单才显示“DeepSeek 设置…”。
-3. 输入 DeepSeek API Key。
-4. 可选填写“预算基准”；设置后小窗显示当前余额相对该金额的百分比，留空则直接显示金额。
+DeepSeek 与 Kimi Code 都支持保存多套配置。选中其中任一数据源后，右键菜单会出现
+一行「当前配置：XXX」——这行文字本身就是当前正在使用的配置名，展开即可切换、添加
+或编辑，不必逐级点进去确认。托盘菜单与它保持一致。
 
-也可以通过 `DEEPSEEK_API_KEY` 环境变量提供密钥；环境变量优先于本地加密配置。DeepSeek 模式不依赖 CC Switch。
+| 菜单项 | 作用 |
+|---|---|
+| 各配置条目 | 点击切换到该配置，勾选表示正在使用 |
+| 添加配置… | 新建一套配置，可自填接口地址与 API Key |
+| 编辑当前配置… | 修改名称、地址、密钥，或删除该配置 |
 
-## Kimi Code 配置
+「本机读取」是列表里固定的第一条：它从本机 Kimi Code CLI、Claude Code 或环境变量
+自动获取地址与密钥，无法编辑或删除。手动配置被选中后，自动读取不再覆盖它；想切回
+自动读取时点一下第一条即可。
 
-Kimi Code 模式默认零配置：应用优先自动读取本机 Kimi Code 的凭据（OAuth
-访问令牌或 `config.toml` 中的 `api_key`）请求官方配额接口，CLI 与
-Windows 桌面端共用 `~/.kimi-code` 数据目录，两种登录方式都能识别；只需在
-“数据源”中选择 Kimi Code 即可。桌面端登录写入的
-`[providers."managed:..."]` 托管条目可能含有已过期的 key，存在其他显式
-配置的 provider 时应用会优先使用后者。重新登录 Kimi Code 后，应用会在
-下一次刷新时自动使用新凭据。
+Kimi Code 模式默认零配置：应用优先自动读取本机 Kimi Code CLI 的凭据（OAuth
+访问令牌或 `config.toml` 中的 `api_key`）。`config.toml` 里存在多个 provider 时
+优先使用显式配置的条目——Windows 桌面端登录会写入 `[providers."managed:..."]`
+托管条目，其中的 key 可能是已过期的令牌；同机存在显式配置的 provider 时优先
+使用后者。重新登录后，下一次刷新会自动使用新凭据。
 
-自动读取不可用时可以手动配置备用：在悬浮窗或通知区域右键菜单中选择
-“Kimi Code 手动配置…”（Kimi Code 为当前数据源时才显示），输入 Kimi
-API Key。这适合没有安装 Kimi Code、但把 Kimi 接入了其他工具（如
-Codex）的用户。手动 Key 通过 Windows DPAPI `CurrentUser` 加密后保存在本机；
-配置窗口会同时显示当前的自动检测结果，也可以勾选“清除手动配置的 API Key”
-恢复为仅自动读取。切换到 Kimi Code 数据源时如果完全检测不到凭证，会自动
-打开该窗口；保存手动配置后自动刷新，账号行会注明凭证来源（Kimi
-Code（OAuth 登录）/ Kimi Code（config.toml）/ 手动配置）。
+若服务端把自动读取的凭证判定为失效（HTTP 401），且另一条已保存配置中存在不同的
+Key，应用会在进程内改用它重试一次，而不必退出重登。
 
-如果 Kimi Code CLI 运行在 WSL 里，可以在悬浮窗或通知区域右键菜单勾选
-“在 WSL 中使用”（Kimi Code 为当前数据源时才显示）。勾选后应用改从 WSL
-发行版内的 `~/.kimi-code` 读取凭据（OAuth 令牌、`config.toml`）和本地会话
-统计：依次枚举注册表中已安装的发行版，通过 `\\wsl.localhost\<发行版>`（旧版
-Windows 回退 `\\wsl$\<发行版>`）在 `root` 与 `home` 下定位数据目录。勾选后
-在 WSL 里找不到数据时会显示“余量未知 / 暂无本地记录”，不会回退读取
-Windows 侧的数据；账号行会注明凭证来源（Kimi Code CLI（WSL · OAuth 登录）/
-Kimi Code CLI（WSL config.toml））。手动配置的 API Key 兜底逻辑两种模式下
-完全相同。设置了 `KIMI_CODE_HOME` 环境变量时始终以该目录为准（也可以手动
-指向 `\\wsl$` 路径，无需勾选开关）。
+添加配置时三个字段：
+
+「检测本机已有配置」按钮会扫描并列出本机已保存的地址与密钥，选中即可一键填入，
+来源包括 Kimi Code CLI 的 `config.toml`、Claude Code 的 `settings.json`、
+Codex 的 `config.toml` 以及 `DEEPSEEK_API_KEY` 环境变量。检测到的密钥只填进输入框，
+不会被记录。
+
+删除一条配置后会回到「本机读取」。删除「本机读取」不被提供。
+
+### 各数据源的凭证来源
+
+| 数据源 | 「本机读取」读取什么 |
+|---|---|
+| Codex | 本机 ChatGPT 登录（OAuth），不提供手动配置 |
+| Kimi Code | Kimi Code CLI 的 OAuth 登录或 `config.toml` 中的 `api_key` |
+| DeepSeek | `DEEPSEEK_API_KEY` 环境变量 |
+
+旧版本保存在 `kimi.json` / `deepseek.json` 里的手写密钥，升级后会自动变成一条名为
+「配置 1」的条目，密钥本身不丢失。旧文件保留不删除，因此回退旧版本依然可用。
+
+### WSL
+
+「在 WSL 中使用」在任意数据源下都可见（位于「更多」分组）。它决定「本机读取」
+从哪里读，以及「今日 Token」等本地统计从哪里读：
+
+- 关闭 → Windows 用户目录下的 `.kimi-code`
+- 打开 → WSL 发行版内的 `~/.kimi-code`（枚举注册表已安装的发行版，通过
+  `\\wsl.localhost\` 前缀定位，旧版 Windows 回退 `\\wsl$\` 前缀，在 `root`
+  与 `home` 下查找）
+
+在 WSL 里找不到数据时显示「余量未知 / 暂无本地记录」，不会回退去读 Windows 侧的
+数据；账号行会注明来源（Kimi Code CLI（WSL · OAuth 登录）/ Kimi Code CLI
+（WSL config.toml））。设置了 `KIMI_CODE_HOME` 环境变量时始终以该目录为准。
+
+### 首次启动
+
+全新安装不会预选任何数据源，窗口保持空白，并在首次运行时弹一次说明引导。需要
+说明的是：配额与余额来自当前配置，而「今日 Token」「缓存命中率」等来自本机 CLI
+日志，与账号无关，因此切换配置时这些数字不会变化；选中手动配置时会在旁边注明
+「本机 Kimi Code 会话」/「本机 Claude Code 会话」。
+
+## 数据存放与卸载
+
+全部本地数据都在 `%LOCALAPPDATA%\RemainingMarginFloat`：
+
+| 文件 | 内容 |
+|---|---|
+| `configs.json` | 多套配置（名称、接口地址、DPAPI 加密后的密钥） |
+| `settings.json` | 界面位置、置顶、数据源与当前配置、开机启动、提醒与预算基准 |
+| `usage-history.jsonl` | 脱敏趋势样本，按配置分别记录 |
+| `spend-ledger.json` | DeepSeek 本月花费台账，按配置分别记账 |
+| `state-history/` | DPAPI 加密的完整页面快照 |
+| `logs/runtime.log` | 脱敏运行日志 |
+
+卸载时会询问是否一并删除这个目录：选择删除会连同配置、密钥、使用记录、
+花费台账与日志一起清除；选择保留（静默卸载的默认行为）则原样留下。
+## 预算基准
+
+从「提醒 ▾ → 预算基准…」设置：
+
+| 数据源 | 设置项 | 触发条件 |
+|---|---|---|
+| Codex / Kimi Code | 5 小时预算 ___%　每周预算 ___% | 该窗口已用% 超过预算% |
+| DeepSeek | 预算基准 ¥___ | 本月实际花费超过该金额 |
+
+超出预算时托盘提醒一次，窗口重置后可再次提醒；详情页显示「预算 40% · 已超 12pp」
+或「预算 40% · 还能用 8pp」。留空表示不按预算提醒。预算提醒与低余量提醒、快速
+下降提醒各自独立，互不影响。
 
 ## 操作
 

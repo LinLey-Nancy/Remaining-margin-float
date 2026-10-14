@@ -776,6 +776,7 @@ function Get-CodexUsageSnapshot {
     if ($Demo) {
         return [pscustomobject]@{
             ProviderId = 'Codex'
+            AccountId = ''
             Available = $true
             RemainingPercent = 82
             HasProgress = $true
@@ -854,6 +855,7 @@ function Get-CodexUsageSnapshot {
     if (-not $quotaUsage) {
         return [pscustomobject]@{
             ProviderId = 'Codex'
+            AccountId = ''
             Available = $false
             RemainingPercent = 0
             HasProgress = $false
@@ -1018,6 +1020,7 @@ function Get-CodexUsageSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'Codex'
+        AccountId = ''
         Available = $true
         RemainingPercent = $remainingPercent
         HasProgress = $hasPrimaryQuota

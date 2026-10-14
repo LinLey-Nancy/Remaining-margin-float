@@ -17,11 +17,13 @@ $traySourceItem.Text = '数据源'
 $script:TrayCodexSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayCodexSourceItem.Text = 'Codex'
 $script:TrayCodexSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    if ($script:ActiveProvider -eq 'Codex') { return }
     Set-ActiveProvider -Provider 'Codex' -Refresh
 }))
 $script:TrayDeepSeekSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayDeepSeekSourceItem.Text = 'DeepSeek'
 $script:TrayDeepSeekSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    if ($script:ActiveProvider -eq 'DeepSeek') { return }
     Set-ActiveProvider -Provider 'DeepSeek'
     $credential = Get-DeepSeekCredential
     if ($credential.ApiKey) {
@@ -29,14 +31,15 @@ $script:TrayDeepSeekSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callb
     }
     else {
         Show-ExistingWindow
-        $saved = Show-DeepSeekSettings
-        if (-not $saved) { Invoke-Refresh }
+        [void](Show-ConfigProfileDialog -Provider 'DeepSeek' -Mode 'Add')
+        Invoke-Refresh
         Sync-ProviderMenuState
     }
 }))
 $script:TrayKimiSourceItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayKimiSourceItem.Text = 'Kimi Code'
 $script:TrayKimiSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    if ($script:ActiveProvider -eq 'Kimi') { return }
     Set-ActiveProvider -Provider 'Kimi'
     $credential = Get-KimiCredential
     if ($credential.Token) {
@@ -44,8 +47,8 @@ $script:TrayKimiSourceItem.Add_Click((New-RmfEventHandler -Kind Event -Callback 
     }
     else {
         Show-ExistingWindow
-        $saved = Show-KimiSettings
-        if (-not $saved) { Invoke-Refresh }
+        [void](Show-ConfigProfileDialog -Provider 'Kimi' -Mode 'Add')
+        Invoke-Refresh
         Sync-ProviderMenuState
     }
 }))
@@ -59,22 +62,13 @@ $script:TrayCodexOfficialAccessItem.Add_Click((New-RmfEventHandler -Kind Event -
     $enabled = [bool]$script:TrayCodexOfficialAccessItem.Checked
     [void](Set-CodexOfficialAccess -Enabled $enabled -Confirm:$enabled)
 }))
-$script:TrayDeepSeekSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$script:TrayDeepSeekSettingsItem.Text = 'DeepSeek 设置…'
-$script:TrayDeepSeekSettingsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
-    Show-ExistingWindow
-    [void](Show-DeepSeekSettings)
-}))
-$script:TrayKimiSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$script:TrayKimiSettingsItem.Text = 'Kimi Code 手动配置…'
-$script:TrayKimiSettingsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
-    Show-ExistingWindow
-    [void](Show-KimiSettings)
-}))
+$script:TrayConfigProfileItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:TrayConfigProfileItem.Text = '当前配置：空'
+$script:TrayConfigProfileItem.Enabled = $false
 $script:TrayKimiWslItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayKimiWslItem.Text = '在 WSL 中使用'
 $script:TrayKimiWslItem.CheckOnClick = $true
-$script:TrayKimiWslItem.ToolTipText = '从 WSL 发行版的 ~/.kimi-code 读取 Kimi Code 凭证与本地记录'
+$script:TrayKimiWslItem.ToolTipText = '从 WSL 发行版的 ~/.kimi-code 读取本机读取配置与本地记录'
 $script:TrayKimiWslItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Set-KimiUseWsl -Enabled ([bool]$script:TrayKimiWslItem.Checked)
 }))
@@ -95,13 +89,19 @@ $script:TrayLowAlertsItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
     Set-LowRemainingAlertsEnabled -Enabled $script:TrayLowAlertsItem.Checked
 }))
 $script:TrayLowAlertThresholdItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$script:TrayLowAlertThresholdItem.Text = Get-UsageAlertSettingsMenuText
+$script:TrayLowAlertThresholdItem.Text = '快速下降阈值…'
 $script:TrayLowAlertThresholdItem.Add_Click((
     New-RmfEventHandler -Kind Event -Callback {
         Show-ExistingWindow
         [void](Show-LowRemainingAlertSettings)
     }
 ))
+$trayBudgetItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayBudgetItem.Text = '预算基准…'
+$trayBudgetItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+    Show-ExistingWindow
+    [void](Show-BudgetBaselineDialog)
+}))
 $script:TrayEdgeDockItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayEdgeDockItem.Text = '贴边隐藏'
 $script:TrayEdgeDockItem.CheckOnClick = $true
@@ -196,6 +196,25 @@ $trayStartupServiceItem.ToolTipText = '服务运行在隔离会话中，无法�
     (New-Object System.Windows.Forms.ToolStripSeparator)
 )
 [void]$trayStartupItem.DropDownItems.Add($trayStartupServiceItem)
+$trayAlertItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayAlertItem.Text = '提醒'
+[void]$trayAlertItem.DropDownItems.Add($script:TrayLowAlertsItem)
+[void]$trayAlertItem.DropDownItems.Add($script:TrayLowAlertThresholdItem)
+[void]$trayAlertItem.DropDownItems.Add($trayBudgetItem)
+$trayDisplayItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayDisplayItem.Text = '显示'
+[void]$trayDisplayItem.DropDownItems.Add($script:TrayTopmostItem)
+[void]$trayDisplayItem.DropDownItems.Add($script:TrayEdgeDockItem)
+$trayMoreItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayMoreItem.Text = '更多'
+[void]$trayMoreItem.DropDownItems.Add($script:TrayCodexOfficialAccessItem)
+[void]$trayMoreItem.DropDownItems.Add($script:TrayKimiWslItem)
+[void]$trayMoreItem.DropDownItems.Add(
+    (New-Object System.Windows.Forms.ToolStripSeparator)
+)
+[void]$trayMoreItem.DropDownItems.Add($script:TrayUpdateItem)
+[void]$trayMoreItem.DropDownItems.Add($script:TrayAutoUpdateItem)
+[void]$trayMoreItem.DropDownItems.Add($trayStartupItem)
 $traySeparator = New-Object System.Windows.Forms.ToolStripSeparator
 $trayExitItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayExitItem.Text = '退出'
@@ -205,17 +224,14 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 [void]$script:TrayMenu.Items.Add($trayOpenItem)
 [void]$script:TrayMenu.Items.Add($trayRefreshItem)
 [void]$script:TrayMenu.Items.Add($traySourceItem)
-[void]$script:TrayMenu.Items.Add($script:TrayCodexOfficialAccessItem)
-[void]$script:TrayMenu.Items.Add($script:TrayDeepSeekSettingsItem)
-[void]$script:TrayMenu.Items.Add($script:TrayKimiSettingsItem)
-[void]$script:TrayMenu.Items.Add($script:TrayKimiWslItem)
-[void]$script:TrayMenu.Items.Add($script:TrayTopmostItem)
-[void]$script:TrayMenu.Items.Add($script:TrayLowAlertsItem)
-[void]$script:TrayMenu.Items.Add($script:TrayLowAlertThresholdItem)
-[void]$script:TrayMenu.Items.Add($script:TrayEdgeDockItem)
+[void]$script:TrayMenu.Items.Add($script:TrayConfigProfileItem)
+[void]$script:TrayMenu.Items.Add(
+    (New-Object System.Windows.Forms.ToolStripSeparator)
+)
+[void]$script:TrayMenu.Items.Add($trayAlertItem)
+[void]$script:TrayMenu.Items.Add($trayDisplayItem)
 [void]$script:TrayMenu.Items.Add($trayDataItem)
-[void]$script:TrayMenu.Items.Add($trayUpdateMenu)
-[void]$script:TrayMenu.Items.Add($trayStartupItem)
+[void]$script:TrayMenu.Items.Add($trayMoreItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
 [void]$script:TrayMenu.Items.Add($trayExitItem)
 
@@ -279,7 +295,12 @@ if ($releaseGuiCheck) {
                     (Get-LowRemainingAlertMenuText)
             )
             $savedOfficialAccess = $script:CodexOfficialAccessEnabled
+            $savedProvider = $script:ActiveProvider
             try {
+                # A fresh install starts blank, and the blank state issues no
+                # request at all. This probe exercises the refresh pipeline, so
+                # it picks a data source explicitly before refreshing.
+                $script:ActiveProvider = 'Codex'
                 $script:CodexOfficialAccessEnabled = $false
                 Invoke-Refresh
                 $script:RmfRefreshDataProbePassed = (
@@ -295,6 +316,7 @@ if ($releaseGuiCheck) {
             }
             finally {
                 $script:CodexOfficialAccessEnabled = $savedOfficialAccess
+                $script:ActiveProvider = $savedProvider
             }
             Set-RefreshBusy -Busy $true
         }
@@ -307,6 +329,27 @@ if ($releaseGuiCheck) {
             )
         })
     ) | Out-Null
+}
+
+if ($CheckMultiAccountSimulation) {
+    # Only the recorded steps are reported: refresh helpers called along the
+    # way may return incidental values, and those are not part of the report.
+    $simulation = @(
+        Get-MultiAccountSimulation | Where-Object {
+            $_ -is [pscustomobject] -and $_.PSObject.Properties['Step']
+        }
+    )
+    $simulation | ConvertTo-Json -Depth 5
+    $window.Close()
+    $script:RmfStopLoading = $true
+    return
+}
+
+if ($CheckConfigProfiles) {
+    Get-ConfigProfilesDiagnostic | ConvertTo-Json
+    $window.Close()
+    $script:RmfStopLoading = $true
+    return
 }
 
 if ($CheckRefreshCoordinator) {

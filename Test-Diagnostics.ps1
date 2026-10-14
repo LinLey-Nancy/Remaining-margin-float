@@ -90,6 +90,98 @@ function Invoke-EmptyProfilePerformanceDiagnostic {
     }
 }
 
+$configProfiles = Invoke-JsonDiagnostic -Name 'CheckConfigProfiles'
+Assert-Diagnostic -Condition (
+    [string]$configProfiles.KimiDefault -eq 'https://api.kimi.com/coding/v1' -and
+    [string]$configProfiles.KimiTrimsTrailingSlash -eq 'https://api.kimi.com/coding/v1' -and
+    [string]$configProfiles.KimiAddsScheme -eq 'https://api.kimi.com/coding/v1' -and
+    [string]$configProfiles.KimiAddsVersion -eq 'https://relay.example.com/v1' -and
+    [string]$configProfiles.KimiKeepsHttp -eq 'http://127.0.0.1:8080/coding/v1' -and
+    [string]$configProfiles.DeepSeekDefault -eq 'https://api.deepseek.com' -and
+    [string]$configProfiles.DeepSeekStripsAnthropic -eq 'https://api.deepseek.com' -and
+    [string]$configProfiles.DeepSeekStripsVersion -eq 'https://api.deepseek.com' -and
+    [bool]$configProfiles.DeepSeekRejectsBadScheme
+) -Message 'Interface address normalization'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.AddedKeyRoundTrip -and
+    [string]$configProfiles.AddedHint -eq '0000' -and
+    [string]$configProfiles.AddedBaseUrl -eq 'https://api.kimi.com/coding/v1' -and
+    [bool]$configProfiles.ShortKeyRejected -and
+    [bool]$configProfiles.EmptyLabelRejected
+) -Message 'Saved configuration is written and validated'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.DuplicateLabelRejected -and
+    [string]$configProfiles.DuplicateLabelMessage -match '配置已存在'
+) -Message 'Duplicate configuration names are rejected with a readable message'
+Assert-Diagnostic -Condition (
+    [string]$configProfiles.UpdatedLabel -eq '个人号' -and
+    [bool]$configProfiles.UpdatedKeyKeptWhenBlank -and
+    [bool]$configProfiles.UpdatedKeyReplacedWhenTyped
+) -Message 'Editing a configuration keeps the key unless the user retypes it'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.AutoIsVirtualAndFirst -and
+    [bool]$configProfiles.AutoNotPersisted -and
+    [bool]$configProfiles.RemoveAutoRejected -and
+    [bool]$configProfiles.RemoveSucceeds
+) -Message 'The local-read profile is virtual and cannot be edited or deleted'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.ResolvedFallsBackToAuto -and
+    [bool]$configProfiles.ResolvedHonoursSelection -and
+    [bool]$configProfiles.ResolvedAfterDeletion -and
+    [bool]$configProfiles.ProfileOverridesLocalCli
+) -Message 'The selected configuration outranks the locally detected one'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.CorruptedDocumentFallsBack -and
+    [bool]$configProfiles.MigrationCreatesOneEntry -and
+    [bool]$configProfiles.MigrationIsIdempotent -and
+    [bool]$configProfiles.MigrationKeepsKey -and
+    [string]$configProfiles.MigrationLabel -eq '配置 1'
+) -Message 'Legacy single-slot keys migrate once and survive a damaged document'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.LegacyHistoryAdoptedByFirstProfile -and
+    [bool]$configProfiles.LegacyHistoryDroppedOnceProfileHasOwn -and
+    [bool]$configProfiles.LedgerIsolatesAccounts -and
+    [bool]$configProfiles.StateHistoryIsolatesAccounts
+) -Message 'History, spend ledger and state snapshots are isolated per account'
+Assert-Diagnostic -Condition (
+    [string]$configProfiles.BudgetOverLimit -match '已超' -and
+    [string]$configProfiles.BudgetUnderLimit -match '还能用' -and
+    [bool]$configProfiles.BudgetUnsetIsInert -and
+    [bool]$configProfiles.BudgetKeyIncludesAccount -and
+    [bool]$configProfiles.BudgetExceededFlag -and
+    [bool]$configProfiles.BudgetNotExceededFlag
+) -Message 'The budget baseline is evaluated per quota window and per account'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.EmptySnapshotIsBlank -and
+    [bool]$configProfiles.EmptyFaultShowsStatusOnly
+) -Message 'The blank state renders without content and only reports faults'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.DetectionReadsClaudeSettings -and
+    [bool]$configProfiles.DetectionStripsAnthropicSuffix -and
+    [int]$configProfiles.KimiDetectionCount -ge 1
+) -Message 'Detecting existing local configuration reads the CLI and Claude Code files'
+
+# ConvertFrom-Json hands a top-level array back as a single object, so the
+# steps have to be enumerated before they can be counted.
+$multiAccount = @(
+    foreach ($step in (Invoke-JsonDiagnostic -Name 'CheckMultiAccountSimulation')) {
+        $step
+    }
+)
+$multiAccountFailures = @(
+    $multiAccount | Where-Object { -not $_.Passed }
+)
+Assert-Diagnostic -Condition (
+    $multiAccount.Count -ge 20 -and
+    $multiAccountFailures.Count -eq 0
+) -Message (
+    'Simulated user journey: ' + (
+        @($multiAccountFailures | ForEach-Object {
+            '{0}({1})' -f $_.Step, $_.Detail
+        }) -join '; '
+    )
+)
+
 $codex = Invoke-JsonDiagnostic -Name 'CheckCodexRateLimitSelection'
 foreach ($property in $codex.PSObject.Properties) {
     if ($property.Value -is [bool]) {
@@ -480,14 +572,22 @@ Assert-Diagnostic -Condition (
 Assert-Diagnostic -Condition (
     $transitions.CodexSettingsVisibility -eq 'Collapsed' -and
     $transitions.DeepSeekSettingsVisibility -eq 'Visible'
-) -Message 'Provider settings visibility'
+) -Message 'Current-configuration row follows the active data source'
 Assert-Diagnostic -Condition (
-    $transitions.KimiSettingsVisibility -eq 'Collapsed' -and
+    $transitions.KimiSettingsVisibility -eq 'Visible' -and
     $transitions.KimiCodexAccessVisibility -eq 'Collapsed' -and
-    $transitions.KimiManualConfigVisibility -eq 'Visible' -and
-    $transitions.KimiManualConfigWhenCodex -eq 'Collapsed' -and
     [bool]$transitions.KimiSourceChecked
 ) -Message 'Kimi provider menu state'
+Assert-Diagnostic -Condition (
+    $transitions.CodexWslVisibility -eq 'Visible' -and
+    $transitions.DeepSeekWslVisibility -eq 'Visible' -and
+    $transitions.KimiWslVisibility -eq 'Visible'
+) -Message 'The WSL switch stays visible for every data source'
+Assert-Diagnostic -Condition (
+    [string]$transitions.CodexProfileHeader -eq '当前配置：空' -and
+    [string]$transitions.DeepSeekProfileHeader -match '^当前配置：' -and
+    [string]$transitions.KimiProfileHeader -match '^当前配置：'
+) -Message 'The current-configuration header names the live profile'
 Assert-Diagnostic -Condition (
     [bool]$transitions.KimiWslMenuVisibleOnlyForKimi -and
     [bool]$transitions.KimiWslCheckedStatesSynced
@@ -601,6 +701,8 @@ Assert-Diagnostic -Condition ([bool]$transitions.TokenSummaryVisualReady) `
     -Message 'Token summary visual grouping'
 Assert-Diagnostic -Condition ([bool]$transitions.AlertKeysIsolateQuotaPeriods) `
     -Message 'Codex alert deduplication isolates five-hour and weekly periods'
+Assert-Diagnostic -Condition ([bool]$transitions.AlertKeysIsolateAccounts) `
+    -Message 'Alert deduplication isolates separate accounts'
 
 Assert-Diagnostic `
     -Condition (
@@ -686,7 +788,8 @@ Assert-Diagnostic `
 Assert-Diagnostic -Condition (
     [string]$transitions.LowAlertThresholdMenuText -match '≤35%' -and
     [string]$transitions.LowAlertThresholdMenuText -match '每周 ≤30%' -and
-    [string]$transitions.UsageAlertSettingsMenuText -match '45'
+    [string]$transitions.UsageAlertSettingsMenuText -match '45' -and
+    [string]$transitions.UsageAlertSettingsMenuHeader -eq '快速下降阈值…'
 ) -Message 'Custom low-alert threshold menu UI'
 Assert-Diagnostic -Condition (
     [bool]$transitions.LowAlertThresholdPersisted -and
@@ -749,6 +852,8 @@ Assert-Diagnostic -Condition (
 
 
 [pscustomobject]@{
+    ConfigProfiles = 'Passed'
+    MultiAccountSimulation = 'Passed ({0} steps)' -f $multiAccount.Count
     CodexRateLimitSelection = 'Passed'
     ProviderContracts = 'Passed'
     RefreshPerformance = (

@@ -128,11 +128,16 @@ function New-SpendLedgerProvider {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProviderId,
-        [string]$Unit = 'CNY'
+        [string]$Unit = 'CNY',
+        [string]$AccountId = ''
     )
 
     return [pscustomobject]@{
         ProviderId = $ProviderId
+        # Money is derived from balance movements, so the ledger has to be kept
+        # per account: switching from a ¥500 balance to a ¥20 one would
+        # otherwise be recorded as a ¥480 spend.
+        AccountId = $AccountId
         Unit = $Unit
         LastBalance = $null
         LastObservedAtUtc = $null
@@ -176,12 +181,16 @@ function ConvertFrom-SpendLedgerDocument {
         )
         if ([string]::IsNullOrWhiteSpace($providerId)) { continue }
 
+        $accountId = [string](
+            Get-SpendLedgerProperty -Object $savedProvider -Name 'AccountId' -Default ''
+        )
         $unit = [string](
             Get-SpendLedgerProperty -Object $savedProvider -Name 'Unit' -Default ''
         )
         $provider = New-SpendLedgerProvider `
             -ProviderId $providerId `
-            -Unit $(if ([string]::IsNullOrWhiteSpace($unit)) { 'CNY' } else { $unit })
+            -Unit $(if ([string]::IsNullOrWhiteSpace($unit)) { 'CNY' } else { $unit }) `
+            -AccountId $accountId
         $lastBalance = Get-SpendLedgerProperty `
             -Object $savedProvider `
             -Name 'LastBalance'
@@ -255,6 +264,7 @@ function ConvertTo-SpendLedgerDocument {
         }
         $providers.Add([ordered]@{
             ProviderId = [string]$provider.ProviderId
+            AccountId = [string]$provider.AccountId
             Unit = [string]$provider.Unit
             LastBalance = if ($null -eq $provider.LastBalance) {
                 $null
@@ -397,12 +407,16 @@ function Get-SpendLedgerProvider {
         $Ledger,
         [Parameter(Mandatory = $true)]
         [string]$ProviderId,
-        [string]$Unit = 'CNY'
+        [string]$Unit = 'CNY',
+        [string]$AccountId = ''
     )
 
     foreach ($provider in @($Ledger.Providers)) {
         if (-not $provider) { continue }
-        if ([string]$provider.ProviderId -eq $ProviderId) {
+        if (
+            [string]$provider.ProviderId -eq $ProviderId -and
+            [string]$provider.AccountId -eq $AccountId
+        ) {
             if (-not [string]::IsNullOrWhiteSpace($Unit)) {
                 $provider.Unit = $Unit
             }
@@ -410,7 +424,10 @@ function Get-SpendLedgerProvider {
         }
     }
 
-    $created = New-SpendLedgerProvider -ProviderId $ProviderId -Unit $Unit
+    $created = New-SpendLedgerProvider `
+        -ProviderId $ProviderId `
+        -Unit $Unit `
+        -AccountId $AccountId
     $Ledger.Providers = @($Ledger.Providers) + $created
     return $created
 }
@@ -437,6 +454,7 @@ function Add-SpendLedgerObservation {
         $Ledger,
         [Parameter(Mandatory = $true)]
         [string]$ProviderId,
+        [string]$AccountId = '',
         [string]$Unit = 'CNY',
         [double]$Balance,
         [DateTimeOffset]$ObservedAt = [DateTimeOffset]::Now,
@@ -458,6 +476,7 @@ function Add-SpendLedgerObservation {
     $provider = Get-SpendLedgerProvider `
         -Ledger $Ledger `
         -ProviderId $ProviderId `
+        -AccountId $AccountId `
         -Unit $Unit
     $day = Get-SpendLedgerDay -Provider $provider -Date $LocalDate
     $day.Samples = [int]$day.Samples + 1
@@ -568,16 +587,26 @@ function Initialize-SpendLedgerFromHistory {
     if ($records.Count -eq 0) { return 0 }
 
     $seeded = 0
-    foreach ($group in @($records | Group-Object ProviderId)) {
-        $providerId = [string]$group.Name
-        if ([string]::IsNullOrWhiteSpace($providerId)) { continue }
+    foreach ($group in @(
+        $records | Group-Object -Property {
+            '{0}|{1}' -f
+                [string]$_.ProviderId,
+                [string](Get-SpendLedgerProperty -Object $_ -Name 'AccountId' -Default '')
+        }
+    )) {
         $groupRecords = @($group.Group | Sort-Object ObservedAtUtc)
+        $providerId = [string]$groupRecords[0].ProviderId
+        if ([string]::IsNullOrWhiteSpace($providerId)) { continue }
+        $accountId = [string](
+            Get-SpendLedgerProperty -Object $groupRecords[0] -Name 'AccountId' -Default ''
+        )
         $unit = [string](
             Get-SpendLedgerProperty -Object $groupRecords[0] -Name 'Unit' -Default 'CNY'
         )
         $provider = Get-SpendLedgerProvider `
             -Ledger $Ledger `
             -ProviderId $providerId `
+            -AccountId $accountId `
             -Unit $unit
         if ($null -ne $provider.SeededAtUtc) { continue }
 
@@ -585,6 +614,7 @@ function Initialize-SpendLedgerFromHistory {
             [void](Add-SpendLedgerObservation `
                 -Ledger $Ledger `
                 -ProviderId $providerId `
+                -AccountId $accountId `
                 -Unit $unit `
                 -Balance (Get-SpendLedgerAmount -Value $record.RemainingValue) `
                 -ObservedAt ([DateTimeOffset]$record.ObservedAtUtc) `
@@ -649,6 +679,7 @@ function Get-SpendSummary {
         $Ledger,
         [Parameter(Mandatory = $true)]
         [string]$ProviderId,
+        [string]$AccountId = '',
         [DateTimeOffset]$Now = [DateTimeOffset]::Now,
         [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
     )
@@ -658,6 +689,7 @@ function Get-SpendSummary {
         -TimeZone $TimeZone).LocalDate
     $summary = [pscustomobject]@{
         ProviderId = $ProviderId
+        AccountId = $AccountId
         Unit = 'CNY'
         HasData = $false
         HasToday = $false
@@ -684,6 +716,7 @@ function Get-SpendSummary {
         foreach ($candidate in @($Ledger.Providers)) {
             if (-not $candidate) { continue }
             if ([string]$candidate.ProviderId -ne $ProviderId) { continue }
+            if ([string]$candidate.AccountId -ne $AccountId) { continue }
             $provider = $candidate
             break
         }
@@ -808,9 +841,13 @@ function Update-SpendLedger {
             $unit = [string](
                 Get-SpendLedgerProperty -Object $sample -Name 'Unit' -Default 'CNY'
             )
+            $sampleAccountId = [string](
+                Get-SpendLedgerProperty -Object $sample -Name 'AccountId' -Default ''
+            )
             $applied = Add-SpendLedgerObservation `
                 -Ledger $ledger `
                 -ProviderId ([string]$sample.ProviderId) `
+                -AccountId $sampleAccountId `
                 -Unit $unit `
                 -Balance (Get-SpendLedgerAmount -Value $sample.RemainingValue) `
                 -ObservedAt ([DateTimeOffset]$sample.ObservedAtUtc) `

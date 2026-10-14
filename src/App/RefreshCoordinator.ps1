@@ -71,6 +71,9 @@ function Stop-ProviderRefreshTask {
     $State.RequestTask = $null
     $State.Attempt = 0
     $State.RetryAfter = $null
+    # The tag dies with the request: leaving it behind would let a later
+    # completion look like a fresh answer for the current configuration.
+    if ($State.PSObject.Properties['AccountId']) { $State.AccountId = '' }
     Set-RefreshBusy -Busy $false
 }
 
@@ -378,16 +381,17 @@ function Start-DeepSeekRefresh {
     if ([string]::IsNullOrWhiteSpace($credential.ApiKey)) {
         $script:AppContext.Refresh.DeepSeek.Attempt = 0
         $script:AppContext.Refresh.DeepSeek.RetryAfter = $null
-        Update-UsageView -Snapshot (Get-DeepSeekUnavailableSnapshot)
+        Update-UsageView -Snapshot (Get-DeepSeekUnavailableSnapshot -Credential $credential)
         Set-RefreshBusy -Busy $false
         return $false
     }
 
     $request = $null
+    $requestAccountId = [string]$credential.ProfileId
     try {
         $request = New-Object System.Net.Http.HttpRequestMessage(
             [System.Net.Http.HttpMethod]::Get,
-            'https://api.deepseek.com/user/balance'
+            $credential.BalanceUrl
         )
         $request.Headers.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
             'Bearer',
@@ -396,6 +400,7 @@ function Start-DeepSeekRefresh {
         $script:AppContext.Refresh.DeepSeek.Attempt++
         $script:AppContext.Refresh.DeepSeek.RetryAfter = $null
         $script:AppContext.Refresh.DeepSeek.Request = $request
+        $script:AppContext.Refresh.DeepSeek.AccountId = $requestAccountId
         $script:AppContext.Refresh.DeepSeek.RequestTask =
             (Get-DeepSeekHttpClient).SendAsync($request)
         return $true
@@ -451,8 +456,24 @@ function Complete-DeepSeekRefresh {
 
     $task = $deepSeek.RequestTask
     $request = $deepSeek.Request
+    $requestAccountId = [string]$deepSeek.AccountId
     $deepSeek.RequestTask = $null
     $deepSeek.Request = $null
+    # The profile may have changed while this request was in flight; its answer
+    # belongs to the old account and must never reach the new account's view.
+    if (
+        $requestAccountId -ne (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+    ) {
+        $deepSeek.Attempt = 0
+        $deepSeek.RetryAfter = $null
+        Set-RefreshBusy -Busy $false
+        Reset-RefreshCountdown
+        Write-RuntimeLog `
+            -Event 'Refresh.AccountStaleResultDropped' `
+            -Message '已丢弃切换配置后才返回的 DeepSeek 结果' `
+            -Data @{ RequestAccountId = $requestAccountId }
+        return
+    }
     $response = $null
     $statusCode = 0
     $retryStarted = $false
@@ -467,6 +488,25 @@ function Complete-DeepSeekRefresh {
         $statusCode = [int]$response.StatusCode
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode) {
+            if ($statusCode -eq 404) {
+                # A relay that does not implement the balance endpoint. Keep the
+                # local statistics rather than showing a hard failure.
+                $localOnly = Get-DeepSeekLocalOnlySnapshot `
+                    -Credential (Get-DeepSeekCredential)
+                $script:LastDeepSeekSnapshot = $localOnly
+                if ($script:ActiveProvider -eq 'DeepSeek') {
+                    Update-UsageView -Snapshot $localOnly
+                }
+                Set-RuntimeDiagnosticStatus `
+                    -Area 'DeepSeek' `
+                    -Status 'Degraded' `
+                    -Message $localOnly.Source
+                Set-RuntimeDiagnosticStatus `
+                    -Area 'Refresh' `
+                    -Status 'Degraded' `
+                    -Message $localOnly.Source
+                return
+            }
             $message = switch ($statusCode) {
                 401 { 'API Key 无效或已失效，请重新配置。' }
                 402 { 'DeepSeek 余额不足，请充值后重试。' }
@@ -479,14 +519,22 @@ function Complete-DeepSeekRefresh {
         }
 
         $payload = $body | ConvertFrom-Json
-        $configuration = Get-DeepSeekConfiguration
+        # The budget baseline moved into the per-source alert settings so all
+        # three data sources are configured in one dialog; the legacy
+        # deepseek.json value is only used to seed it once.
+        $budgetSettings = Get-UsageAlertSettings -ProviderId 'DeepSeek'
+        $budgetAmount = [double]$budgetSettings.BudgetAmount
+        if ($budgetAmount -le 0) {
+            $budgetAmount = [double](Get-DeepSeekConfiguration).Budget
+        }
         $credential = Get-DeepSeekCredential
         $snapshot = ConvertTo-DeepSeekSnapshot `
             -BalancePayload $payload `
             -LocalUsage (Get-DeepSeekLocalUsage) `
-            -Budget $configuration.Budget `
+            -Budget $budgetAmount `
             -KeyHint $credential.Hint `
-            -SourceLabel $credential.Source
+            -SourceLabel $credential.Source `
+            -AccountLabel $credential.ProfileLabel
         $script:LastDeepSeekSnapshot = $snapshot
         if ($script:ActiveProvider -eq 'DeepSeek') {
             Update-UsageView -Snapshot $snapshot
@@ -568,6 +616,9 @@ function Start-KimiOfficialRequest {
         $kimi.Attempt++
         $kimi.RetryAfter = $null
         $kimi.Request = $request
+        # Tag the request with the configuration that authorized it so a late
+        # response for the previous profile can be dropped.
+        $kimi.AccountId = [string](Get-KimiCredential).ProfileId
         $kimi.RequestTask = (Get-KimiHttpClient).SendAsync($request)
         return $true
     }
@@ -661,8 +712,21 @@ function Complete-KimiRefresh {
 
     $task = $kimi.RequestTask
     $request = $kimi.Request
+    $requestAccountId = [string]$kimi.AccountId
     $kimi.RequestTask = $null
     $kimi.Request = $null
+    # Drop an answer that belongs to a configuration the user already left.
+    if ($requestAccountId -ne (Get-ActiveConfigProfileId -Provider 'Kimi')) {
+        $kimi.Attempt = 0
+        $kimi.RetryAfter = $null
+        Set-RefreshBusy -Busy $false
+        Reset-RefreshCountdown
+        Write-RuntimeLog `
+            -Event 'Refresh.AccountStaleResultDropped' `
+            -Message '已丢弃切换配置后才返回的 Kimi 结果' `
+            -Data @{ RequestAccountId = $requestAccountId }
+        return
+    }
     $response = $null
     $statusCode = 0
     $retryStarted = $false
@@ -796,68 +860,59 @@ function Complete-KimiRefresh {
 }
 
 function Sync-ProviderMenuState {
+    $activeProvider = [string]$script:ActiveProvider
     if ($script:CodexSourceMenuItem) {
-        $script:CodexSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'Codex'
+        $script:CodexSourceMenuItem.IsChecked = $activeProvider -eq 'Codex'
     }
     if ($script:DeepSeekSourceMenuItem) {
-        $script:DeepSeekSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'DeepSeek'
+        $script:DeepSeekSourceMenuItem.IsChecked = $activeProvider -eq 'DeepSeek'
     }
     if ($script:TrayCodexSourceItem) {
-        $script:TrayCodexSourceItem.Checked = $script:ActiveProvider -eq 'Codex'
+        $script:TrayCodexSourceItem.Checked = $activeProvider -eq 'Codex'
     }
     if ($script:TrayDeepSeekSourceItem) {
-        $script:TrayDeepSeekSourceItem.Checked = $script:ActiveProvider -eq 'DeepSeek'
+        $script:TrayDeepSeekSourceItem.Checked = $activeProvider -eq 'DeepSeek'
     }
     if ($script:KimiSourceMenuItem) {
-        $script:KimiSourceMenuItem.IsChecked = $script:ActiveProvider -eq 'Kimi'
+        $script:KimiSourceMenuItem.IsChecked = $activeProvider -eq 'Kimi'
     }
     if ($script:TrayKimiSourceItem) {
-        $script:TrayKimiSourceItem.Checked = $script:ActiveProvider -eq 'Kimi'
+        $script:TrayKimiSourceItem.Checked = $activeProvider -eq 'Kimi'
     }
     if ($script:CodexOfficialAccessMenuItem) {
         $script:CodexOfficialAccessMenuItem.Visibility = if (
-            $script:ActiveProvider -eq 'Codex'
+            $activeProvider -eq 'Codex'
         ) { 'Visible' } else { 'Collapsed' }
         $script:CodexOfficialAccessMenuItem.IsChecked =
             $script:CodexOfficialAccessEnabled
     }
     if ($script:TrayCodexOfficialAccessItem) {
         $script:TrayCodexOfficialAccessItem.Visible =
-            $script:ActiveProvider -eq 'Codex'
+            $activeProvider -eq 'Codex'
         $script:TrayCodexOfficialAccessItem.Checked =
             $script:CodexOfficialAccessEnabled
     }
-    if ($script:DeepSeekSettingsMenuItem) {
-        $script:DeepSeekSettingsMenuItem.Visibility = if (
-            $script:ActiveProvider -eq 'DeepSeek'
-        ) { 'Visible' } else { 'Collapsed' }
-    }
-    if ($script:TrayDeepSeekSettingsItem) {
-        $script:TrayDeepSeekSettingsItem.Visible = $script:ActiveProvider -eq 'DeepSeek'
-    }
-    if ($script:KimiSettingsMenuItem) {
-        $script:KimiSettingsMenuItem.Visibility = if (
-            $script:ActiveProvider -eq 'Kimi'
-        ) { 'Visible' } else { 'Collapsed' }
-    }
-    if ($script:TrayKimiSettingsItem) {
-        $script:TrayKimiSettingsItem.Visible = $script:ActiveProvider -eq 'Kimi'
-    }
+    # The WSL switch is always visible: it decides where the local CLI files are
+    # read from, which the user may want to set before switching data source.
     if ($script:KimiWslMenuItem) {
-        $script:KimiWslMenuItem.Visibility = if (
-            $script:ActiveProvider -eq 'Kimi'
-        ) { 'Visible' } else { 'Collapsed' }
+        $script:KimiWslMenuItem.Visibility = 'Visible'
         $script:KimiWslMenuItem.IsChecked = $script:KimiUseWsl
     }
     if ($script:TrayKimiWslItem) {
-        $script:TrayKimiWslItem.Visible = $script:ActiveProvider -eq 'Kimi'
+        $script:TrayKimiWslItem.Visible = $true
         $script:TrayKimiWslItem.Checked = $script:KimiUseWsl
     }
+    if ($script:BudgetBaselineMenuItem) {
+        $script:BudgetBaselineMenuItem.Visibility = if (
+            $activeProvider -in (Get-UsageAlertProviderIds)
+        ) { 'Visible' } else { 'Collapsed' }
+    }
+    Sync-ConfigProfileMenu
 }
 
 function Set-ActiveProvider {
     param(
-        [ValidateSet('Codex', 'DeepSeek', 'Kimi')]
+        [ValidateSet('Codex', 'DeepSeek', 'Kimi', '')]
         [string]$Provider,
         [switch]$Refresh
     )
@@ -884,6 +939,9 @@ function Set-ActiveProvider {
         }
     }
     $script:ActiveProvider = $Provider
+    if ([string]::IsNullOrWhiteSpace($Provider)) {
+        Clear-UsageView
+    }
     Sync-ActiveAlertSettings
     Sync-LowAlertMenuState
     Sync-ProviderMenuState
@@ -951,7 +1009,9 @@ function Set-KimiUseWsl {
     }
     $script:KimiUseWsl = $Enabled
     # 数据根与官方用量都可能来自另一侧环境，切换后全部重新解析。
-    $script:KimiOfficialUsageCache = $null
+    # Reset-ProviderAccountCaches clears the cached official usage too, and the
+    # 401 marker goes with it so the local read is retried from scratch.
+    Reset-ProviderAccountCaches -Provider 'Kimi'
     $script:KimiAutoCredentialRejected = $false
     $script:KimiWslDataRootCache = $null
     $script:KimiWslDataRootResolved = $false
@@ -962,257 +1022,53 @@ function Set-KimiUseWsl {
     }
 }
 
-function Show-DeepSeekSettings {
-    $configuration = Get-DeepSeekConfiguration
-    $credential = Get-DeepSeekCredential
-    [xml]$dialogXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DeepSeek 设置"
-        Width="430"
-        Height="350"
-        ResizeMode="NoResize"
-        WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False"
-        Background="#FCFBF8"
-        FontFamily="Microsoft YaHei UI">
-    <Grid x:Name="SettingsRoot" Background="#FCFBF8">
-      <Grid Margin="24">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="22"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="18"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="38"/>
-        </Grid.RowDefinitions>
-        <TextBlock Grid.Row="0" Text="连接 DeepSeek 官方余额" FontSize="18" FontWeight="SemiBold" Foreground="#343A35"/>
-        <StackPanel Grid.Row="2">
-            <TextBlock Text="API Key" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
-            <PasswordBox x:Name="ApiKeyBox" Height="34" Margin="0,7,0,0" Padding="9,6"
-                         BorderBrush="#D8DDD7" Background="White"
-                         AutomationProperties.Name="DeepSeek API Key"/>
-            <TextBlock x:Name="KeyHelp" Margin="0,6,0,0" FontSize="10" Foreground="#7B847D" TextWrapping="Wrap"/>
-            <CheckBox x:Name="RemoveKeyBox" Margin="0,8,0,0" Content="清除已保存的 API Key"
-                      Foreground="#6B746D" FontSize="11"/>
-        </StackPanel>
-        <StackPanel Grid.Row="5">
-            <TextBlock Text="预算基准（可选）" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
-            <TextBox x:Name="BudgetBox" Height="34" Margin="0,7,0,0" Padding="9,6"
-                     BorderBrush="#D8DDD7" Background="White"
-                     AutomationProperties.Name="预算基准"/>
-            <TextBlock Margin="0,6,0,0" FontSize="10" Foreground="#7B847D"
-                       Text="设置后，小窗显示当前余额相对该金额的百分比；留空则直接显示余额。"/>
-        </StackPanel>
-        <TextBlock x:Name="ErrorText" Grid.Row="7" Margin="0,8,0,0"
-                   Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
-        <Grid Grid.Row="8">
-            <Button x:Name="CancelButton" Width="82" Height="34" HorizontalAlignment="Right"
-                    Margin="0,0,92,0" Content="取消" IsCancel="True"/>
-            <Button x:Name="SaveButton" Width="82" Height="34" HorizontalAlignment="Right"
-                    Content="保存" IsDefault="True" Background="#E9F0EA"
-                    BorderBrush="#BFCDBF" Foreground="#344A3B"/>
-        </Grid>
-      </Grid>
-    </Grid>
-</Window>
-'@
-    $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
-    $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
-    $dialog.Owner = $window
-    $apiKeyBox = $dialog.FindName('ApiKeyBox')
-    $keyHelp = $dialog.FindName('KeyHelp')
-    $removeKeyBox = $dialog.FindName('RemoveKeyBox')
-    $budgetBox = $dialog.FindName('BudgetBox')
-    $errorText = $dialog.FindName('ErrorText')
-    $saveButton = $dialog.FindName('SaveButton')
+function Reset-ProviderAccountCaches {
+    # Every cached value below was produced by a credential the user has just
+    # moved away from; keeping it would show the previous account's numbers.
+    param([string]$Provider)
 
-    if ($configuration.Budget -gt 0) {
-        $budgetBox.Text = $configuration.Budget.ToString('0.##', [Globalization.CultureInfo]::CurrentCulture)
-    }
-    if ($credential.Source -eq '环境变量') {
-        $keyHelp.Text = '当前由 DEEPSEEK_API_KEY 环境变量提供（••••{0}），环境变量优先。' -f $credential.Hint
-        $apiKeyBox.IsEnabled = $false
-        $removeKeyBox.IsEnabled = $false
-    }
-    elseif ($credential.ApiKey) {
-        $keyHelp.Text = '已通过 Windows DPAPI 安全保存（••••{0}）。留空会保留原密钥。' -f $credential.Hint
-    }
-    else {
-        $keyHelp.Text = '密钥仅加密保存在当前 Windows 用户下，不会写入日志或仓库。'
-        $removeKeyBox.IsEnabled = $false
-    }
-
-    $saveButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
-        $errorText.Text = ''
-        $budget = 0.0
-        $budgetText = $budgetBox.Text.Trim()
-        if ($budgetText) {
-            $parsed = [double]::TryParse(
-                $budgetText,
-                [Globalization.NumberStyles]::Number,
-                [Globalization.CultureInfo]::CurrentCulture,
-                [ref]$budget
-            )
-            if (-not $parsed) {
-                $parsed = [double]::TryParse(
-                    $budgetText,
-                    [Globalization.NumberStyles]::Number,
-                    [Globalization.CultureInfo]::InvariantCulture,
-                    [ref]$budget
-                )
-            }
-            if (-not $parsed -or $budget -le 0) {
-                $errorText.Text = '预算基准需要是大于 0 的数字，或留空不设置。'
-                $budgetBox.Focus() | Out-Null
-                return
-            }
-        }
-
-        $newKey = $apiKeyBox.Password.Trim()
-        if (
-            $credential.Source -ne '环境变量' -and
-            -not $removeKeyBox.IsChecked -and
-            -not $credential.ApiKey -and
-            [string]::IsNullOrWhiteSpace($newKey)
-        ) {
-            $errorText.Text = '请输入 DeepSeek API Key。'
-            $apiKeyBox.Focus() | Out-Null
-            return
-        }
-        if ($newKey -and $newKey.Length -lt 10) {
-            $errorText.Text = 'API Key 长度看起来不正确，请检查后重试。'
-            $apiKeyBox.Focus() | Out-Null
-            return
-        }
-
-        try {
-            Save-DeepSeekConfiguration `
-                -ApiKey $newKey `
-                -Budget $budget `
-                -RemoveKey:$removeKeyBox.IsChecked
-            $dialog.DialogResult = $true
-        }
-        catch {
-            $errorText.Text = '保存失败：' + $_.Exception.Message
-        }
-    }))
-
-    $saved = $dialog.ShowDialog()
-    if ($saved) {
-        $script:LastDeepSeekSnapshot = $null
-        Set-ActiveProvider -Provider 'DeepSeek' -Refresh
-        return $true
-    }
-    return $false
-}
-
-function Show-KimiSettings {
-    $credential = Get-KimiCredential
-    [xml]$dialogXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Kimi Code 手动配置"
-        Width="430"
-        Height="330"
-        ResizeMode="NoResize"
-        WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False"
-        Background="#FCFBF8"
-        FontFamily="Microsoft YaHei UI">
-    <Grid x:Name="SettingsRoot" Background="#FCFBF8">
-      <Grid Margin="24">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="14"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="18"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="38"/>
-        </Grid.RowDefinitions>
-        <TextBlock Grid.Row="0" Text="连接 Kimi 官方配额接口" FontSize="18" FontWeight="SemiBold" Foreground="#343A35"/>
-        <TextBlock x:Name="AutoDetectText" Grid.Row="2" FontSize="11" Foreground="#5C665E" TextWrapping="Wrap"/>
-        <StackPanel Grid.Row="4">
-            <TextBlock Text="API Key（手动配置，自动读取不可用时生效）" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
-            <PasswordBox x:Name="ApiKeyBox" Height="34" Margin="0,7,0,0" Padding="9,6"
-                         BorderBrush="#D8DDD7" Background="White"
-                         AutomationProperties.Name="Kimi API Key"/>
-            <TextBlock x:Name="KeyHelp" Margin="0,6,0,0" FontSize="10" Foreground="#7B847D" TextWrapping="Wrap"/>
-            <CheckBox x:Name="RemoveKeyBox" Margin="0,8,0,0" Content="清除手动配置的 API Key"
-                      Foreground="#6B746D" FontSize="11"/>
-        </StackPanel>
-        <TextBlock x:Name="ErrorText" Grid.Row="5" Margin="0,8,0,0"
-                   Foreground="#A65B52" FontSize="11" TextWrapping="Wrap"/>
-        <Grid Grid.Row="6">
-            <Button x:Name="CancelButton" Width="82" Height="34" HorizontalAlignment="Right"
-                    Margin="0,0,92,0" Content="取消" IsCancel="True"/>
-            <Button x:Name="SaveButton" Width="82" Height="34" HorizontalAlignment="Right"
-                    Content="保存" IsDefault="True" Background="#E9F0EA"
-                    BorderBrush="#BFCDBF" Foreground="#344A3B"/>
-        </Grid>
-      </Grid>
-    </Grid>
-</Window>
-'@
-    $dialogReader = New-Object System.Xml.XmlNodeReader $dialogXaml
-    $dialog = [Windows.Markup.XamlReader]::Load($dialogReader)
-    $dialog.Owner = $window
-    $apiKeyBox = $dialog.FindName('ApiKeyBox')
-    $keyHelp = $dialog.FindName('KeyHelp')
-    $removeKeyBox = $dialog.FindName('RemoveKeyBox')
-    $autoDetectText = $dialog.FindName('AutoDetectText')
-    $errorText = $dialog.FindName('ErrorText')
-    $saveButton = $dialog.FindName('SaveButton')
-
-    if ($credential.AutoSource -eq 'OAuth 登录') {
-        $autoDetectText.Text = '已自动读取本机 Kimi Code 的 OAuth 登录。'
-    }
-    elseif ($credential.AutoHint) {
-        $autoDetectText.Text = '已自动读取本机 Kimi Code 配置（••••{0}）。' -f $credential.AutoHint
-    }
-    else {
-        $autoDetectText.Text = '未检测到本机 Kimi Code 配置，请手动输入 API Key。'
-    }
-    if ($credential.ManualHint) {
-        $keyHelp.Text = '已保存手动密钥（••••{0}，Windows DPAPI 加密）。留空会保留原密钥。' -f $credential.ManualHint
-    }
-    else {
-        $keyHelp.Text = '密钥仅加密保存在当前 Windows 用户下，不会写入日志或仓库。'
-        $removeKeyBox.IsEnabled = $false
-    }
-
-    $saveButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
-        $errorText.Text = ''
-        $newKey = $apiKeyBox.Password.Trim()
-        if ($newKey -and $newKey.Length -lt 10) {
-            $errorText.Text = 'API Key 长度看起来不正确，请检查后重试。'
-            $apiKeyBox.Focus() | Out-Null
-            return
-        }
-        try {
-            Save-KimiConfiguration `
-                -ApiKey $newKey `
-                -RemoveKey:$removeKeyBox.IsChecked
-            $dialog.DialogResult = $true
-        }
-        catch {
-            $errorText.Text = '保存失败：' + $_.Exception.Message
-        }
-    }))
-
-    $saved = $dialog.ShowDialog()
-    if ($saved) {
+    if ($Provider -eq 'Kimi') {
         $script:LastKimiSnapshot = $null
         $script:KimiOfficialUsageCache = $null
-        Set-ActiveProvider -Provider 'Kimi' -Refresh
-        return $true
     }
-    return $false
+    elseif ($Provider -eq 'DeepSeek') {
+        $script:LastDeepSeekSnapshot = $null
+    }
 }
+
+function Set-ActiveConfigProfile {
+    param(
+        [string]$Provider,
+        [string]$ConfigId,
+        [switch]$Refresh
+    )
+
+    $existing = Get-ActiveConfigProfileId -Provider $Provider
+    if ($existing -eq $ConfigId) {
+        # Re-selecting the same configuration must not blank the screen or fire
+        # another request.
+        return $false
+    }
+    Set-ActiveConfigProfileId -Provider $Provider -ConfigId $ConfigId
+    if ($script:AppContext.Refresh.Kimi.RequestTask -or $script:AppContext.Refresh.Kimi.RetryAfter) {
+        Cancel-KimiRefresh
+    }
+    if (
+        $script:AppContext.Refresh.DeepSeek.RequestTask -or
+        $script:AppContext.Refresh.DeepSeek.RetryAfter
+    ) {
+        Cancel-DeepSeekRefresh
+    }
+    Reset-ProviderAccountCaches -Provider $Provider
+    # The 401 marker belongs to the credential we just left as well.
+    if ($Provider -eq 'Kimi') { $script:KimiAutoCredentialRejected = $false }
+    Reset-ProviderRapidDropSession -ProviderId $Provider
+    Save-Settings
+    Sync-ProviderMenuState
+    if ($Refresh -or $script:ActiveProvider -eq $Provider) { Invoke-Refresh }
+    return $true
+}
+
 
 function Test-ShouldPresentCodexLocalSnapshot {
     if (-not $script:CodexOfficialAccessEnabled) { return $true }
@@ -1276,6 +1132,19 @@ function Complete-CodexLocalRefresh {
 
 function Invoke-Refresh {
     if ($script:AppContext.Refresh.IsBusy) { return }
+    # The empty state must not fall through to the Codex branch below: with no
+    # data source selected there is nothing to request, and quietly reading
+    # Codex would both surprise the user and defeat the blank window.
+    if ([string]::IsNullOrWhiteSpace([string]$script:ActiveProvider)) {
+        Set-RuntimeDiagnosticStatus `
+            -Area 'Refresh' `
+            -Status 'Healthy' `
+            -Message '尚未选择数据源'
+        Set-RefreshBusy -Busy $false
+        Clear-UsageView
+        Reset-RefreshCountdown
+        return
+    }
     try {
         Set-RuntimeDiagnosticStatus `
             -Area 'Refresh' `

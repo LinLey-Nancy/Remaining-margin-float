@@ -157,6 +157,38 @@ function Get-KimiCredential {
         AutoSource = ''
         AutoHint = ''
         ManualHint = ''
+        ProfileId = ''
+        ProfileLabel = ''
+        Fault = ''
+    }
+
+    $profile = Get-ResolvedConfigProfile -Provider 'Kimi'
+    if ($profile) {
+        $result.ProfileId = [string]$profile.Id
+        $result.ProfileLabel = [string]$profile.Label
+    }
+
+    # A saved profile is an explicit choice: the local CLI must not silently
+    # override it, otherwise a second account could never be used.
+    if ($profile -and $profile.Kind -ne 'Auto') {
+        $result.Source = '配置 · {0}' -f $profile.Label
+        $result.BaseUrl = Resolve-ConfigProfileBaseUrl `
+            -Provider 'Kimi' `
+            -BaseUrl $profile.BaseUrl
+        $secret = Get-ConfigProfileSecret -Profile $profile
+        if ($null -eq $secret) {
+            # Stored but undecryptable: a fault the user has to see, not an
+            # ordinary "no configuration".
+            $result.Fault = 'KeyUnreadable'
+        }
+        else {
+            $result.Token = $secret
+            $result.AuthMethod = 'ApiKey'
+            $result.Hint = [string]$profile.KeyHint
+            $result.ManualHint = [string]$profile.KeyHint
+        }
+        $result.UsageUrl = Resolve-KimiUsageUrl -BaseUrl $result.BaseUrl
+        return [pscustomobject]$result
     }
 
     $dataRoot = Get-KimiCodeDataRoot
@@ -166,10 +198,16 @@ function Get-KimiCredential {
         [string]::IsNullOrWhiteSpace($env:KIMI_CODE_HOME) -and
         -not [string]::IsNullOrWhiteSpace($dataRoot)
     )
-    $manualConfiguration = Get-KimiConfiguration
-    $manualKey = Unprotect-LocalSecret -Value $manualConfiguration.EncryptedApiKey
-    # 自动读取的 OAuth/config.toml 凭证被服务端判定失效（401）后，进程内改用手动
-    # 配置的 Key；没有手动 Key 时仍回退到自动凭证，保持原有的“重新登录”提示。
+    # The fallback key now lives in the saved profiles: the legacy kimi.json was
+    # migrated into "配置 1" at startup, so an existing key is still reachable.
+    $manualProfile = Get-ResolvedConfigProfile -Provider 'Kimi'
+    $manualKey = ''
+    if ($manualProfile -and $manualProfile.Kind -ne 'Auto') {
+        $profileSecret = Get-ConfigProfileSecret -Profile $manualProfile
+        if ($profileSecret) { $manualKey = [string]$profileSecret }
+    }
+    # 自动读取的 OAuth/config.toml 凭证被服务端判定失效（401）后，进程内改用已保存
+    # 配置的 Key；没有已保存配置时仍回退到自动凭证，保持原有的“重新登录”提示。
     $skipAutoToken = (
         $script:KimiAutoCredentialRejected -and
         -not [string]::IsNullOrWhiteSpace($manualKey)
@@ -183,7 +221,7 @@ function Get-KimiCredential {
                 Select-Object -First 1
             if ($credentialFile) {
                 try {
-                    $payload = Get-Content -LiteralPath $credentialFile.FullName -Raw |
+                    $payload = Get-Content -LiteralPath $credentialFile.FullName -Raw -Encoding UTF8 |
                         ConvertFrom-Json
                     $accessToken = [string](Get-ObjectPropertyValue `
                         -Object $payload `
@@ -232,29 +270,20 @@ function Get-KimiCredential {
         }
     }
 
-    # 自动读取不可用（或已被 401 拒绝）时，回退到用户手动配置并加密保存的 API Key。
-    if ($manualKey) {
-        $result.ManualHint = $manualConfiguration.KeyHint
-    }
-    if (-not $result.Token -and $manualKey) {
-        $result.Token = $manualKey
-        $result.Source = '手动配置'
-        $result.AuthMethod = 'ApiKey'
-        $result.Hint = $manualConfiguration.KeyHint
-    }
-    $result.UsageUrl = Resolve-KimiUsageUrl -BaseUrl $result.BaseUrl
+$result.UsageUrl = Resolve-KimiUsageUrl -BaseUrl $result.BaseUrl
     return [pscustomobject]$result
 }
 
 function Test-KimiManualCredentialFallback {
-    # 当前使用的是自动凭证且手动 Key 存在且不同，401 后才值得改用手动 Key 重试。
+    # 当前使用的是自动凭证、且另一条已保存配置里存在不同的 Key 时，
+    # 401 之后才值得切过去重试一次。
+    $profile = Get-ResolvedConfigProfile -Provider 'Kimi'
+    if (-not $profile -or $profile.Kind -eq 'Auto') { return $false }
     $credential = Get-KimiCredential
     if ([string]::IsNullOrWhiteSpace($credential.Token)) { return $false }
-    if ($credential.Source -eq '手动配置') { return $false }
-    $manualKey = Unprotect-LocalSecret `
-        -Value (Get-KimiConfiguration).EncryptedApiKey
-    if ([string]::IsNullOrWhiteSpace($manualKey)) { return $false }
-    return ($manualKey.Trim() -ne ([string]$credential.Token).Trim())
+    $savedKey = Get-ConfigProfileSecret -Profile $profile
+    if ([string]::IsNullOrWhiteSpace([string]$savedKey)) { return $false }
+    return ($savedKey.Trim() -ne ([string]$credential.Token).Trim())
 }
 
 function Get-KimiHttpClient {
@@ -792,7 +821,14 @@ function Get-KimiUsageSnapshot {
     }
     $localUsage = Get-KimiLocalUsage
 
-    $accountName = '本地 Kimi Code'
+    # The account row names the configuration the user picked, so two accounts are
+    # never visually identical. Quota comes from the configuration; the token
+    # counters below come from the local CLI log and belong to no account.
+    $accountName = if ($credential.ProfileLabel) {
+        'Kimi Code · {0}' -f $credential.ProfileLabel
+    } else {
+        '本地 Kimi Code'
+    }
     $accountEmail = switch ($credential.AuthMethod) {
         'OAuth' { 'OAuth 登录 · Kimi Code' }
         'ApiKey' {
@@ -806,7 +842,10 @@ function Get-KimiUsageSnapshot {
     if (-not $officialUsage) {
         return [pscustomobject]@{
             ProviderId = 'Kimi'
+            AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
             Available = $false
+            # Renders through the blank layout instead of a placeholder window.
+            IsEmptyState = $true
             RemainingPercent = 0
             HasProgress = $false
             WindowLabel = '5 小时余量未知'
@@ -908,6 +947,7 @@ function Get-KimiUsageSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'Kimi'
+        AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
         Available = $true
         RemainingPercent = $remainingPercent
         HasProgress = $hasPrimaryQuota
@@ -971,6 +1011,7 @@ function Get-KimiUnavailableSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'Kimi'
+        AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
         Available = $false
         RemainingPercent = 0
         HasProgress = $false
@@ -1017,6 +1058,7 @@ function Get-KimiUnavailableSnapshot {
 function Get-KimiDemoSnapshot {
     return [pscustomobject]@{
         ProviderId = 'Kimi'
+        AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
         Available = $true
         RemainingPercent = 90
         HasProgress = $true

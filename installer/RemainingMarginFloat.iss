@@ -112,8 +112,32 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Answer: Integer;
+  DataDirectory: String;
 begin
-  if CurUninstallStep = usUninstall then
+  if CurUninstallStep = usPostUninstall then
+  begin
+    { Saved profiles contain encrypted API keys and the usage history, so the
+      user decides. Silent uninstalls keep everything by default: an unattended
+      removal must not destroy data nobody was there to confirm. }
+    if UninstallSilent then
+      Exit;
+    DataDirectory := ExpandConstant('{localappdata}\RemainingMarginFloat');
+    if not DirExists(DataDirectory) then
+      Exit;
+    Answer := MsgBox(
+      '是否同时删除已保存的数据？' + #13#10 + #13#10 +
+      DataDirectory + #13#10 + #13#10 +
+      '包含：配置与加密密钥、使用记录、花费台账、完整状态快照、运行日志。' +
+      #13#10 + '选择「否」将保留这些数据。',
+      mbConfirmation,
+      MB_YESNO
+    );
+    if Answer = IDYES then
+      DelTree(DataDirectory, True, True, True);
+  end
+  else if CurUninstallStep = usUninstall then
     TerminateRemainingAppInstances;
 end;
 

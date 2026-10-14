@@ -600,7 +600,8 @@ $names = @(
     'Trend5HStartMarker', 'Trend5HEndMarker', 'Trend5HMetaText',
     'Trend7Card', 'Trend7Text', 'Trend7Canvas', 'Trend7Area', 'Trend7Line',
     'Trend7StartMarker', 'Trend7EndMarker', 'Trend7MetaText',
-    'UsageTrendTitle', 'PredictionText', 'RapidDropStatusDot', 'RapidDropText',
+    'UsageTrendTitle', 'PredictionText', 'BudgetText',
+    'RapidDropStatusDot', 'RapidDropText',
     'FooterStatusText', 'VersionLabelText', 'AppVersionText',
     'VersionSeparatorText', 'AutoRefreshText', 'RefreshButton'
 )

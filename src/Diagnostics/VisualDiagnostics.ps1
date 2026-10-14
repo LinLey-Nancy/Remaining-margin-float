@@ -459,16 +459,20 @@ if ($CheckTransitions) {
         -Amount 0.5
     $script:ActiveProvider = 'Codex'
     Sync-ProviderMenuState
-    $codexSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
-    $kimiManualConfigWhenCodex = [string]$script:KimiSettingsMenuItem.Visibility
+    $codexSettingsVisibility = [string]$script:ConfigProfileMenuItem.Visibility
+    $codexProfileHeader = [string]$script:ConfigProfileMenuItem.Header
+    $codexWslVisibility = [string]$script:KimiWslMenuItem.Visibility
     $script:ActiveProvider = 'DeepSeek'
     Sync-ProviderMenuState
-    $deepSeekSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $deepSeekSettingsVisibility = [string]$script:ConfigProfileMenuItem.Visibility
+    $deepSeekProfileHeader = [string]$script:ConfigProfileMenuItem.Header
+    $deepSeekWslVisibility = [string]$script:KimiWslMenuItem.Visibility
     $script:ActiveProvider = 'Kimi'
     Sync-ProviderMenuState
-    $kimiSettingsVisibility = [string]$script:DeepSeekSettingsMenuItem.Visibility
+    $kimiSettingsVisibility = [string]$script:ConfigProfileMenuItem.Visibility
+    $kimiProfileHeader = [string]$script:ConfigProfileMenuItem.Header
     $kimiCodexAccessVisibility = [string]$script:CodexOfficialAccessMenuItem.Visibility
-    $kimiManualConfigVisibility = [string]$script:KimiSettingsMenuItem.Visibility
+    $kimiWslVisibility = [string]$script:KimiWslMenuItem.Visibility
     $kimiSourceChecked = [bool]$script:KimiSourceMenuItem.IsChecked
     $script:ActiveProvider = 'DeepSeek'
     Sync-ProviderMenuState
@@ -930,11 +934,21 @@ if ($CheckTransitions) {
     $plusSnapshot.ResetAt = $plusSnapshot.FiveHourResetAt
     $alertKeysIsolateQuotaPeriods = (
         (Get-UsageAlertScopeKey -Snapshot $startupLocalSnapshot) -eq
-            'Codex|Weekly' -and
+            'Codex||Weekly' -and
         (Get-UsageAlertScopeKey -Snapshot $plusSnapshot) -eq
-            'Codex|FiveHour' -and
+            'Codex||FiveHour' -and
         (Get-UsageAlertScopeKey -Snapshot $startupLocalSnapshot) -ne
             (Get-UsageAlertScopeKey -Snapshot $plusSnapshot)
+    )
+    # The scope key must also separate accounts, otherwise switching profiles
+    # silently keeps another account's "already notified" state.
+    $accountScopedSnapshot = $plusSnapshot.PSObject.Copy()
+    $accountScopedSnapshot.AccountId = 'profile-b'
+    $alertKeysIsolateAccounts = (
+        (Get-UsageAlertScopeKey -Snapshot $plusSnapshot) -ne
+            (Get-UsageAlertScopeKey -Snapshot $accountScopedSnapshot) -and
+        (Get-UsageAlertScopeKey -Snapshot $accountScopedSnapshot) -eq
+            'Codex|profile-b|FiveHour'
     )
     $plusWeeklyOnlySnapshot = $plusSnapshot.PSObject.Copy()
     $plusWeeklyOnlySnapshot.HasProgress = $false
@@ -1067,7 +1081,7 @@ if ($CheckTransitions) {
         [double]$weeklyDepletedSample.RemainingValue -eq 100 -and
         [string]$weeklyDepletedSample.MetricType -eq 'Percent' -and
         (Get-UsageAlertScopeKey -Snapshot $weeklyDepletedSnapshot) -eq
-            'Codex|FiveHour'
+            'Codex||FiveHour'
     )
     $plusWeeklyDepletedKeepsResetAtOnPrimaryChannel = (
         $null -ne $weeklyDepletedSnapshot.ResetAt -and
@@ -1865,6 +1879,8 @@ if ($CheckTransitions) {
     $rapidDropStatusWhenReenabled = [string]$RapidDropText.Text
     $lowAlertThresholdMenuText = [string]$script:LowAlertsMenuItem.Header
     $usageAlertSettingsMenuText =
+        [string]$script:LowAlertThresholdMenuItem.ToolTip
+    $usageAlertSettingsMenuHeader =
         [string]$script:LowAlertThresholdMenuItem.Header
     $lowAlertSettingsSnapshot = Get-AppSettingsSnapshot
     $lowAlertThresholdDialog = New-LowRemainingAlertSettingsDialog
@@ -1938,16 +1954,16 @@ if ($CheckTransitions) {
     )
     $lowAlertChecksSplitPerWindow = (
         @($weeklyDepletedLowChecks | Where-Object {
-            $_.Key -eq 'Codex|FiveHour|Low'
+            $_.Key -eq 'Codex||FiveHour|Low'
         }).Count -eq 1 -and
         @($weeklyDepletedLowChecks | Where-Object {
-            $_.Key -eq 'Codex|Weekly|Low'
+            $_.Key -eq 'Codex||Weekly|Low'
         }).Count -eq 1 -and
         @($weeklyDepletedLowChecks | Where-Object {
-            $_.Key -eq 'Codex|FiveHour|Low'
+            $_.Key -eq 'Codex||FiveHour|Low'
         })[0].Title -eq 'Codex 5 小时余量偏低' -and
         @($weeklyDepletedLowChecks | Where-Object {
-            $_.Key -eq 'Codex|Weekly|Low'
+            $_.Key -eq 'Codex||Weekly|Low'
         })[0].Title -eq 'Codex 每周余量偏低'
     )
     # The weekly window is at 0% while the five-hour window is untouched, and
@@ -1977,19 +1993,19 @@ if ($CheckTransitions) {
     $deepSeekLowChecksSplit = (
         $deepSeekLowChecks.Count -eq 2 -and
         @($deepSeekLowChecks | Where-Object {
-            $_.Key -eq 'DeepSeek|Percent|Low'
+            $_.Key -eq 'DeepSeek||Percent|Low'
         }).Count -eq 1 -and
         @($deepSeekLowChecks | Where-Object {
-            $_.Key -eq 'DeepSeek|Amount|Low'
+            $_.Key -eq 'DeepSeek||Amount|Low'
         }).Count -eq 1 -and
         @($deepSeekLowChecks | Where-Object {
-            $_.Key -eq 'DeepSeek|Amount|Low'
+            $_.Key -eq 'DeepSeek||Amount|Low'
         })[0].Threshold -eq 8.5 -and
         @($deepSeekLowChecks | Where-Object {
-            $_.Key -eq 'DeepSeek|Percent|Low'
+            $_.Key -eq 'DeepSeek||Percent|Low'
         })[0].Available -eq $false -and
         @($deepSeekLowChecks | Where-Object {
-            $_.Key -eq 'DeepSeek|Amount|Low'
+            $_.Key -eq 'DeepSeek||Amount|Low'
         })[0].Available
     )
     $rapidDropWindowsSplitPerQuota = (
@@ -2082,26 +2098,26 @@ if ($CheckTransitions) {
     try {
         $env:KIMI_CODE_HOME = ''
 
-        # 菜单可见性：仅 Kimi 数据源下显示，勾选态跟随开关。托盘菜单项由
-        # TrayHost.ps1 创建，而该组件在本诊断组件之后才加载，探针运行时
-        # 托盘项尚不存在，存在时才一并断言。
+        # 菜单可见性：开关决定「本机读取」与本地记录从哪里读，任何数据源下都
+        # 可见，勾选态跟随开关。托盘菜单项由 TrayHost.ps1 创建，而该组件在本
+        # 诊断组件之后才加载，存在时才一并断言。
         $trayKimiWslAvailable = ($null -ne $script:TrayKimiWslItem)
         $script:ActiveProvider = 'DeepSeek'
         Sync-ProviderMenuState
-        $kimiWslHiddenForDeepSeek = (
-            [string]$script:KimiWslMenuItem.Visibility -eq 'Collapsed' -and
+        $kimiWslVisibleForDeepSeek = (
+            [string]$script:KimiWslMenuItem.Visibility -eq 'Visible' -and
             (
                 -not $trayKimiWslAvailable -or
-                -not [bool]$script:TrayKimiWslItem.Visible
+                [bool]$script:TrayKimiWslItem.Visible
             )
         )
         $script:ActiveProvider = 'Codex'
         Sync-ProviderMenuState
-        $kimiWslHiddenForCodex = (
-            [string]$script:KimiWslMenuItem.Visibility -eq 'Collapsed' -and
+        $kimiWslVisibleForCodex = (
+            [string]$script:KimiWslMenuItem.Visibility -eq 'Visible' -and
             (
                 -not $trayKimiWslAvailable -or
-                -not [bool]$script:TrayKimiWslItem.Visible
+                [bool]$script:TrayKimiWslItem.Visible
             )
         )
         $script:ActiveProvider = 'Kimi'
@@ -2114,8 +2130,8 @@ if ($CheckTransitions) {
             )
         )
         $kimiWslMenuVisibleOnlyForKimi = (
-            $kimiWslHiddenForDeepSeek -and
-            $kimiWslHiddenForCodex -and
+            $kimiWslVisibleForDeepSeek -and
+            $kimiWslVisibleForCodex -and
             $kimiWslVisibleForKimi
         )
         # 切回非 Kimi 再切换开关，避免触发真实 Kimi 刷新。
@@ -2258,8 +2274,12 @@ if ($CheckTransitions) {
         DeepSeekSettingsVisibility = $deepSeekSettingsVisibility
         KimiSettingsVisibility = $kimiSettingsVisibility
         KimiCodexAccessVisibility = $kimiCodexAccessVisibility
-        KimiManualConfigVisibility = $kimiManualConfigVisibility
-        KimiManualConfigWhenCodex = $kimiManualConfigWhenCodex
+        CodexProfileHeader = $codexProfileHeader
+        DeepSeekProfileHeader = $deepSeekProfileHeader
+        KimiProfileHeader = $kimiProfileHeader
+        CodexWslVisibility = $codexWslVisibility
+        DeepSeekWslVisibility = $deepSeekWslVisibility
+        KimiWslVisibility = $kimiWslVisibility
         KimiSourceChecked = $kimiSourceChecked
         KimiWslMenuVisibleOnlyForKimi = $kimiWslMenuVisibleOnlyForKimi
         KimiWslCheckedStatesSynced = $kimiWslCheckedStatesSynced
@@ -2365,6 +2385,7 @@ if ($CheckTransitions) {
         ExpandedHeaderHierarchy = $expandedHeaderHierarchy
         TokenSummaryVisualReady = $tokenSummaryVisualReady
         AlertKeysIsolateQuotaPeriods = $alertKeysIsolateQuotaPeriods
+        AlertKeysIsolateAccounts = $alertKeysIsolateAccounts
         Trend7Text = $Trend7Text.Text
         Trend5HPointCount = $trend5HPointCount
         Trend7PointCount = $trend7PointCount
@@ -2407,6 +2428,7 @@ if ($CheckTransitions) {
         LowAlertMenuChecked = [bool]$script:LowAlertsMenuItem.IsChecked
         LowAlertThresholdMenuText = $lowAlertThresholdMenuText
         UsageAlertSettingsMenuText = $usageAlertSettingsMenuText
+        UsageAlertSettingsMenuHeader = $usageAlertSettingsMenuHeader
         LowAlertThresholdPersisted = (
             [double]$lowAlertSettingsSnapshot.LowRemainingThreshold -eq 35
         )

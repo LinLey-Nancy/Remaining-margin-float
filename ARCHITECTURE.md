@@ -48,6 +48,31 @@ WPF Dispatcher，待当前回调结束后继续执行。
 | `UI` | WPF 窗口、状态渲染、交互、托盘与 XAML |
 | `Diagnostics` | 数据、窗口、视觉和发布所需的自诊断流程 |
 
+## 配置档案（多账号）
+
+`Core\ConfigProfiles.ps1` 负责同一个数据源下的多套已保存配置。磁盘上只保存用户
+手动创建的条目（`%LOCALAPPDATA%\RemainingMarginFloat\configs.json`，带
+`SchemaVersion`、原子写与互斥锁，Key 使用 DPAPI `CurrentUser`）；「本机读取」
+是读取时派生的虚拟条目，固定排在首位，既不会被写入磁盘，也无法编辑或删除。
+
+- 地址归一化：Kimi 补 `https://`、去尾斜杠、补 `/v1`，请求 `{base}/usages`；
+  DeepSeek 额外剥掉 `/v1` 与 `/anthropic`，请求 `{base}/user/balance`；
+  非 http/https 一律拒绝
+- 凭证解析：`Get-ResolvedConfigProfile` 记住的配置优先，取不到时回落「本机读取」；
+  一旦选中手动配置，本机 CLI 的自动读取不再覆盖它
+- 迁移：旧 `kimi.json` / `deepseek.json` 的手写 Key 生成一条名为「配置 1」的条目，
+  幂等，旧文件保留不写以保证降级可用
+
+账号维度下沉到所有跨时间的存储：快照契约带 `AccountId`，趋势样本、花费台账、加密
+状态快照与提醒去重键都按 `ProviderId + AccountId` 分组。多配置之前写入的历史没有
+`AccountId`，只在当前配置尚无自身记录时被它接管；一旦该配置有了自己的记录就不再
+混入，避免两个账号共用一条曲线。在途请求记录发起时的 `AccountId`，完成时校验不
+匹配则丢弃，避免切换瞬间把上一个账号的数据画到新账号界面上。
+
+空态分三种：全新安装没有任何配置时完全空白且不显示任何文案；当前数据源无可用凭证时
+空白加「尚未添加配置」；密钥已存储但无法解密时空白加「密钥无法解密，请重新输入」。
+`Invoke-Refresh` 在 Codex 分支之前先检查空态，否则空窗口会静默去读取 Codex。
+
 ## Provider 契约
 
 Provider 最终向 UI 返回统一快照。`Core\UsageSnapshot.ps1` 在渲染前检查公共
@@ -63,6 +88,7 @@ Provider 最终向 UI 返回统一快照。`Core\UsageSnapshot.ps1` 在渲染前
 - `SampledAt`
 - `Status`
 - `Source`
+- `AccountId`（无配置的数据源为空字符串）
 
 Codex 快照还携带 `FiveHour*` 与 `Weekly*` 两组周期字段，包括可用性、已用百分比、
 剩余百分比和重置时间，并通过 `PlanType` 与 `PrimaryQuotaPeriod` 明确套餐和主周期。

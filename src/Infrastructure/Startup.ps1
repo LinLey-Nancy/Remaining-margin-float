@@ -605,6 +605,9 @@ function Get-AppSettingsSnapshot {
         Expanded = $false
         Topmost = $window.Topmost
         Provider = $script:ActiveProvider
+        ActiveKimiConfigId = Get-ActiveConfigProfileId -Provider 'Kimi'
+        ActiveDeepSeekConfigId = Get-ActiveConfigProfileId -Provider 'DeepSeek'
+        OnboardingCompleted = [bool]$script:OnboardingCompleted
         CodexOfficialAccessEnabled = $script:CodexOfficialAccessEnabled
         KimiUseWsl = $script:KimiUseWsl
         AutoUpdateEnabled = $script:AutoUpdateEnabled
@@ -684,11 +687,33 @@ function Restore-Settings {
             ) {
                 $script:EdgeDockSide = [string]$settings.EdgeDockSide
             }
-            if (
-                $settings.PSObject.Properties['Provider'] -and
-                [string]$settings.Provider -in @('Codex', 'DeepSeek', 'Kimi')
-            ) {
-                $script:ActiveProvider = [string]$settings.Provider
+            if ($settings.PSObject.Properties['Provider']) {
+                $storedProvider = [string]$settings.Provider
+                # An empty Provider is the deliberate blank state; only a value
+                # this build knows about may replace the default.
+                if ($storedProvider -in @('Codex', 'DeepSeek', 'Kimi')) {
+                    $script:ActiveProvider = $storedProvider
+                }
+            }
+            foreach ($configBinding in @(
+                [pscustomobject]@{
+                    Name = 'ActiveKimiConfigId'
+                    Provider = 'Kimi'
+                },
+                [pscustomobject]@{
+                    Name = 'ActiveDeepSeekConfigId'
+                    Provider = 'DeepSeek'
+                }
+            )) {
+                if ($settings.PSObject.Properties[$configBinding.Name]) {
+                    Set-ActiveConfigProfileId `
+                        -Provider $configBinding.Provider `
+                        -ConfigId ([string]$settings.($configBinding.Name))
+                }
+            }
+            if ($settings.PSObject.Properties['OnboardingCompleted']) {
+                $script:OnboardingCompleted =
+                    [bool]$settings.OnboardingCompleted
             }
             if ($settings.PSObject.Properties['CodexOfficialAccessEnabled']) {
                 $script:CodexOfficialAccessEnabled =

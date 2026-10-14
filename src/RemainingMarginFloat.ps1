@@ -15,6 +15,8 @@
     [switch]$CheckUpdates,
     [switch]$CheckTransitions,
     [switch]$CheckRefreshCoordinator,
+    [switch]$CheckConfigProfiles,
+    [switch]$CheckMultiAccountSimulation,
     [switch]$CaptureVisuals,
     [string]$CaptureDirectory = '',
     [switch]$Demo,
@@ -57,6 +59,8 @@ $isDiagnosticRun = (
     $CheckUpdates -or
     $CheckTransitions -or
     $CheckRefreshCoordinator -or
+    $CheckConfigProfiles -or
+    $CheckMultiAccountSimulation -or
     $CaptureVisuals -or
     $Demo -or
     $releaseGuiCheck

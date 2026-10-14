@@ -2916,3 +2916,924 @@ if ($CheckEdgeDocking) {
     $script:RmfStopLoading = $true
     return
 }
+
+function Get-ConfigProfilesDiagnostic {
+    # Everything here runs against a throwaway LOCALAPPDATA so the machine's
+    # real profiles, settings and history can never influence the result.
+    $result = [ordered]@{
+        KimiDefault = ''
+        KimiTrimsTrailingSlash = ''
+        KimiAddsScheme = ''
+        KimiAddsVersion = ''
+        KimiKeepsHttp = ''
+        DeepSeekDefault = ''
+        DeepSeekStripsAnthropic = ''
+        DeepSeekStripsVersion = ''
+        DeepSeekRejectsBadScheme = $false
+        AddedKeyRoundTrip = $false
+        AddedHint = ''
+        AddedBaseUrl = ''
+        DuplicateLabelRejected = $false
+        DuplicateLabelMessage = ''
+        UpdatedLabel = ''
+        UpdatedKeyKeptWhenBlank = $false
+        UpdatedKeyReplacedWhenTyped = $false
+        AutoIsVirtualAndFirst = $false
+        AutoNotPersisted = $false
+        RemoveSucceeds = $false
+        RemoveAutoRejected = $false
+        ResolvedFallsBackToAuto = $false
+        ResolvedHonoursSelection = $false
+        ResolvedAfterDeletion = $false
+        ProfileOverridesLocalCli = $false
+        CorruptedDocumentFallsBack = $false
+        ShortKeyRejected = $false
+        EmptyLabelRejected = $false
+        MigrationCreatesOneEntry = $false
+        MigrationIsIdempotent = $false
+        MigrationKeepsKey = $false
+        MigrationLabel = ''
+        LegacyHistoryAdoptedByFirstProfile = $false
+        LegacyHistoryDroppedOnceProfileHasOwn = $false
+        LedgerIsolatesAccounts = $false
+        StateHistoryIsolatesAccounts = $false
+        BudgetUnderLimit = ''
+        BudgetOverLimit = ''
+        BudgetUnsetIsInert = $false
+        BudgetKeyIncludesAccount = $false
+        BudgetExceededFlag = $false
+        BudgetNotExceededFlag = $false
+        EmptySnapshotIsBlank = $false
+        EmptyFaultShowsStatusOnly = $false
+        DetectionReadsClaudeSettings = $false
+        DetectionStripsAnthropicSuffix = $false
+    }
+
+    # --- address normalization -------------------------------------------
+    $result.KimiDefault = Resolve-ConfigProfileBaseUrl -Provider 'Kimi' -BaseUrl ''
+    $result.KimiTrimsTrailingSlash =
+        Resolve-ConfigProfileBaseUrl -Provider 'Kimi' -BaseUrl 'https://api.kimi.com/coding/v1/'
+    $result.KimiAddsScheme =
+        Resolve-ConfigProfileBaseUrl -Provider 'Kimi' -BaseUrl 'api.kimi.com/coding'
+    $result.KimiAddsVersion =
+        Resolve-ConfigProfileBaseUrl -Provider 'Kimi' -BaseUrl 'https://relay.example.com'
+    $result.KimiKeepsHttp =
+        Resolve-ConfigProfileBaseUrl -Provider 'Kimi' -BaseUrl 'http://127.0.0.1:8080/coding'
+    $result.DeepSeekDefault = Resolve-ConfigProfileBaseUrl -Provider 'DeepSeek' -BaseUrl ''
+    $result.DeepSeekStripsAnthropic =
+        Resolve-ConfigProfileBaseUrl -Provider 'DeepSeek' -BaseUrl 'https://api.deepseek.com/anthropic'
+    $result.DeepSeekStripsVersion =
+        Resolve-ConfigProfileBaseUrl -Provider 'DeepSeek' -BaseUrl 'https://api.deepseek.com/v1'
+    try {
+        [void](Resolve-ConfigProfileBaseUrl -Provider 'DeepSeek' -BaseUrl 'file:///etc/passwd')
+    }
+    catch {
+        $result.DeepSeekRejectsBadScheme = $true
+    }
+
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        'RmfConfigProfiles.{0}.{1}' -f $PID, [Guid]::NewGuid().ToString('N')
+    )
+    [void](New-Item -Path $temporaryRoot -ItemType Directory -Force)
+    $previousLocalAppData = $env:LOCALAPPDATA
+    $previousProfile = $env:USERPROFILE
+    $previousConfigEntries = $script:ConfigProfileEntries
+    $previousActiveIds = $script:ActiveConfigIds
+    $fakeProfileRoot = Join-Path $temporaryRoot 'profile'
+    [void](New-Item -Path (Join-Path $fakeProfileRoot '.kimi-code') -ItemType Directory -Force)
+    [void](New-Item -Path (Join-Path $fakeProfileRoot '.claude') -ItemType Directory -Force)
+    try {
+        $env:LOCALAPPDATA = $temporaryRoot
+        $env:USERPROFILE = $fakeProfileRoot
+        $script:ConfigProfileEntries = $null
+        $script:ActiveConfigIds = [ordered]@{}
+
+        # --- "检测本机已有配置" source shapes -------------------------
+        [IO.File]::WriteAllText(
+            (Join-Path $fakeProfileRoot '.kimi-code\config.toml'),
+            ("default_model = `"kimi/k3`"`n" +
+                "[providers.relay]`n" +
+                "base_url = `"https://relay.example.com/coding`"`n" +
+                "api_key = `"sk-detected-kimi-333333333`"`n"),
+            (New-Object Text.UTF8Encoding($false))
+        )
+        [IO.File]::WriteAllText(
+            (Join-Path $fakeProfileRoot '.claude\settings.json'),
+            ([ordered]@{
+                    env = [ordered]@{
+                        ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
+                        ANTHROPIC_AUTH_TOKEN = 'sk-detected-deepseek-44444444'
+                    }
+                } | ConvertTo-Json -Depth 4),
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $kimiCandidates = @(Get-DetectedConfigCandidate -Provider 'Kimi')
+        $deepSeekCandidates = @(Get-DetectedConfigCandidate -Provider 'DeepSeek')
+        $result.DetectionReadsClaudeSettings = (
+            @($deepSeekCandidates | Where-Object {
+                    [string]$_.ApiKey -eq 'sk-detected-deepseek-44444444'
+                }).Count -eq 1
+        )
+        $detectedDeepSeek = $deepSeekCandidates | Select-Object -First 1
+        $result.DetectionStripsAnthropicSuffix = (
+            -not [string]::IsNullOrWhiteSpace([string]$detectedDeepSeek.BaseUrl) -and
+            (Resolve-ConfigProfileBaseUrl -Provider 'DeepSeek' `
+                -BaseUrl $detectedDeepSeek.BaseUrl) -eq 'https://api.deepseek.com'
+        )
+        $result.KimiDetectionCount = $kimiCandidates.Count
+
+        # --- add -------------------------------------------------------
+        $added = Add-ConfigProfile `
+            -Provider 'Kimi' `
+            -Label '公司号' `
+            -BaseUrl 'https://api.kimi.com/coding' `
+            -ApiKey 'sk-kimi-company-0000000000' -AllowDiagnosticWrite
+        $result.AddedKeyRoundTrip = (
+            (Get-ConfigProfileSecret -Profile $added) -eq 'sk-kimi-company-0000000000'
+        )
+        $result.AddedHint = [string]$added.KeyHint
+        $result.AddedBaseUrl = [string]$added.BaseUrl
+
+        try {
+            [void](Add-ConfigProfile `
+                    -Provider 'Kimi' `
+                    -Label '公司号' `
+                    -BaseUrl '' `
+                    -ApiKey 'sk-kimi-company-0000000000' -AllowDiagnosticWrite)
+        }
+        catch {
+            $result.DuplicateLabelRejected = $true
+            $result.DuplicateLabelMessage = $_.Exception.Message
+        }
+        try {
+            [void](Add-ConfigProfile -Provider 'Kimi' -Label '短' -BaseUrl '' -ApiKey 'sk-123')
+        }
+        catch {
+            $result.ShortKeyRejected = $true
+        }
+        try {
+            [void](Add-ConfigProfile -Provider 'Kimi' -Label '  ' -BaseUrl '' -ApiKey 'sk-1234567890')
+        }
+        catch {
+            $result.EmptyLabelRejected = $true
+        }
+
+        # --- update ----------------------------------------------------
+        $updated = Update-ConfigProfile `
+            -Id $added.Id `
+            -Label '个人号' `
+            -BaseUrl 'https://api.kimi.com/coding/v1' `
+            -ApiKey '' -AllowDiagnosticWrite
+        $result.UpdatedLabel = [string]$updated.Label
+        $result.UpdatedKeyKeptWhenBlank = (
+            (Get-ConfigProfileSecret -Profile $updated) -eq 'sk-kimi-company-0000000000'
+        )
+        $rekeyed = Update-ConfigProfile `
+            -Id $added.Id `
+            -Label '个人号' `
+            -BaseUrl 'https://api.kimi.com/coding/v1' `
+            -ApiKey 'sk-kimi-personal-111111111' -AllowDiagnosticWrite
+        $result.UpdatedKeyReplacedWhenTyped = (
+            (Get-ConfigProfileSecret -Profile $rekeyed) -eq 'sk-kimi-personal-111111111'
+        )
+
+        # --- Auto profile is virtual -----------------------------------
+        $entries = @(Get-ConfigProfileEntries -Provider 'Kimi' -Refresh)
+        $result.AutoIsVirtualAndFirst = (
+            $entries.Count -ge 2 -and
+            [string]$entries[0].Kind -eq 'Auto' -and
+            [string]$entries[0].Id -eq (Get-ConfigProfileAutoId -Provider 'Kimi')
+        )
+        $stored = @(Get-StoredConfigProfileEntries -Refresh)
+        $result.AutoNotPersisted = (
+            @($stored | Where-Object { $_.Kind -eq 'Auto' }).Count -eq 0
+        )
+
+        # --- resolution ------------------------------------------------
+        Set-ActiveConfigProfileId -Provider 'Kimi' -ConfigId ''
+        $result.ResolvedFallsBackToAuto = (
+            [string](Get-ResolvedConfigProfile -Provider 'Kimi').Id -eq
+            (Get-ConfigProfileAutoId -Provider 'Kimi')
+        )
+        Set-ActiveConfigProfileId -Provider 'Kimi' -ConfigId $added.Id
+        $result.ResolvedHonoursSelection = (
+            [string](Get-ResolvedConfigProfile -Provider 'Kimi').Id -eq $added.Id
+        )
+        # A selected profile outranks the locally detected CLI credentials.
+        $credentialWithProfile = Get-KimiCredential
+        $result.ProfileOverridesLocalCli = (
+            [string]$credentialWithProfile.Token -eq 'sk-kimi-personal-111111111' -and
+            [string]$credentialWithProfile.Source -like '*个人号'
+        )
+        Set-ActiveConfigProfileId -Provider 'Kimi' -ConfigId 'does-not-exist'
+        $result.ResolvedAfterDeletion = (
+            [string](Get-ResolvedConfigProfile -Provider 'Kimi').Id -eq
+            (Get-ConfigProfileAutoId -Provider 'Kimi')
+        )
+        Set-ActiveConfigProfileId -Provider 'Kimi' -ConfigId ''
+
+        # --- removal ---------------------------------------------------
+        try {
+            [void](Remove-ConfigProfile -Id (Get-ConfigProfileAutoId -Provider 'Kimi'))
+        }
+        catch {
+            $result.RemoveAutoRejected = $true
+        }
+        $remainingBeforeRemove = @(Get-StoredConfigProfileEntries -Refresh)
+        $removedProvider = Remove-ConfigProfile -Id $added.Id -AllowDiagnosticWrite
+        $result.RemoveSucceeds = (
+            $removedProvider -eq 'Kimi' -and
+            $remainingBeforeRemove.Count -eq 1 -and
+            @(Get-StoredConfigProfileEntries -Refresh).Count -eq 0
+        )
+
+        # --- corrupted document ----------------------------------------
+        $configPath = Get-ConfigProfilesPath
+        [IO.File]::WriteAllText($configPath, '{ this is not json', [Text.Encoding]::UTF8)
+        $corrupted = Read-ConfigProfileDocument
+        $result.CorruptedDocumentFallsBack = (
+            $corrupted.Corrupted -and
+            @($corrupted.Entries).Count -eq 0
+        )
+        Remove-Item -LiteralPath $configPath -Force
+
+        # --- legacy migration -----------------------------------------
+        $legacyKey = Protect-LocalSecret -Value 'sk-legacy-migrated-22222222'
+        [IO.File]::WriteAllText(
+            (Get-KimiConfigPath),
+            ([ordered]@{
+                    EncryptedApiKey = $legacyKey
+                    KeyHint = '2222'
+                } | ConvertTo-Json),
+            [Text.Encoding]::UTF8
+        )
+        [void](Invoke-ConfigProfileMigration -AllowDiagnosticWrite)
+        $afterFirst = @(Get-StoredConfigProfileEntries -Refresh)
+        $result.MigrationCreatesOneEntry = (
+            $afterFirst.Count -eq 1 -and
+            [string]$afterFirst[0].Label -eq '配置 1'
+        )
+        $result.MigrationLabel = [string]$afterFirst[0].Label
+        [void](Invoke-ConfigProfileMigration -AllowDiagnosticWrite)
+        $afterSecond = @(Get-StoredConfigProfileEntries -Refresh)
+        $result.MigrationIsIdempotent = ($afterSecond.Count -eq 1)
+        $result.MigrationKeepsKey = (
+            (Get-ConfigProfileSecret -Profile $afterSecond[0]) -eq
+            'sk-legacy-migrated-22222222'
+        )
+        Remove-Item -LiteralPath (Get-KimiConfigPath) -Force
+
+        # --- history account isolation ---------------------------------
+        $legacySamples = @(
+            [pscustomobject]@{
+                ProviderId = 'Kimi'
+                AccountId = ''
+                MetricType = 'Percent'
+                QuotaPeriod = 'Weekly'
+                RemainingValue = 42.0
+                Unit = '%'
+                ObservedAtUtc = [DateTimeOffset]::Now.AddMinutes(-30)
+            },
+            [pscustomobject]@{
+                ProviderId = 'Kimi'
+                AccountId = 'profile-a'
+                MetricType = 'Percent'
+                QuotaPeriod = 'Weekly'
+                RemainingValue = 77.0
+                Unit = '%'
+                ObservedAtUtc = [DateTimeOffset]::Now.AddMinutes(-10)
+            }
+        )
+        # A profile with no records of its own adopts the unattributed history.
+        $adopted = @(
+            foreach ($sample in $legacySamples) {
+                [pscustomobject]@{
+                    ProviderId = $sample.ProviderId
+                    AccountId = $sample.AccountId
+                    MetricType = $sample.MetricType
+                    QuotaPeriod = $sample.QuotaPeriod
+                    RemainingValue = $sample.RemainingValue
+                    Unit = $sample.Unit
+                    ObservedAtUtc = $sample.ObservedAtUtc
+                }
+            }
+        )
+        Sync-UsageHistoryAccountContext `
+            -Samples $adopted -ProviderId 'Kimi' -AccountId 'profile-b'
+        # Only the unattributed record joins profile-b; profile-a keeps its own.
+        $result.LegacyHistoryAdoptedByFirstProfile = (
+            @($adopted | Where-Object { [string]$_.AccountId -eq 'profile-b' }).Count -eq 1 -and
+            @($adopted | Where-Object { [string]$_.AccountId -eq 'profile-a' }).Count -eq 1 -and
+            @($adopted | Where-Object { [string]$_.AccountId -eq '' }).Count -eq 0
+        )
+        # Once that profile owns records the unattributed ones stay out, so two
+        # accounts can never end up sharing one curve.
+        $ignored = @(
+            foreach ($sample in $legacySamples) {
+                [pscustomobject]@{
+                    ProviderId = $sample.ProviderId
+                    AccountId = $sample.AccountId
+                    MetricType = $sample.MetricType
+                    QuotaPeriod = $sample.QuotaPeriod
+                    RemainingValue = $sample.RemainingValue
+                    Unit = $sample.Unit
+                    ObservedAtUtc = $sample.ObservedAtUtc
+                }
+            }
+        )
+        Sync-UsageHistoryAccountContext `
+            -Samples $ignored -ProviderId 'Kimi' -AccountId 'profile-a'
+        $result.LegacyHistoryDroppedOnceProfileHasOwn = (
+            @($ignored | Where-Object { [string]$_.AccountId -eq 'profile-a' }).Count -eq 1 -and
+            @($ignored | Where-Object { [string]$_.AccountId -eq '' }).Count -eq 1
+        )
+
+        # --- ledger account isolation ----------------------------------
+        $ledger = Get-EmptySpendLedger
+        $ledgerA = New-SpendLedgerProvider -ProviderId 'DeepSeek' -AccountId 'account-a'
+        $ledgerA.LastBalance = 500.0
+        $ledgerA.LastObservedAtUtc = [DateTimeOffset]::Now
+        $ledgerADay = New-SpendLedgerDay -Date ([DateTime]::Now.ToString('yyyy-MM-dd'))
+        $ledgerADay.Spent = 12.5
+        $ledgerA.Days = @($ledgerADay)
+        $ledgerB = New-SpendLedgerProvider -ProviderId 'DeepSeek' -AccountId 'account-b'
+        $ledgerB.LastBalance = 20.0
+        $ledgerB.LastObservedAtUtc = [DateTimeOffset]::Now
+        $ledgerB.Days = @()
+        $ledger.Providers = @($ledgerA, $ledgerB)
+        $summaryA = Get-SpendSummary -Ledger $ledger -ProviderId 'DeepSeek' -AccountId 'account-a'
+        $summaryB = Get-SpendSummary -Ledger $ledger -ProviderId 'DeepSeek' -AccountId 'account-b'
+        $result.LedgerIsolatesAccounts = (
+            [Math]::Abs([double]$summaryA.TodaySpent - 12.5) -lt 0.001 -and
+            [double]$summaryB.TodaySpent -eq 0 -and
+            [Math]::Abs([double]$summaryA.LastBalance - 500.0) -lt 0.001 -and
+            [Math]::Abs([double]$summaryB.LastBalance - 20.0) -lt 0.001
+        )
+
+        # --- state history account isolation ---------------------------
+        $stateRoot = Join-Path $temporaryRoot 'state-history'
+        $now = [DateTimeOffset]::Now
+        foreach ($account in @('account-a', 'account-b')) {
+            $balance = if ($account -eq 'account-a') { 500 } else { 20 }
+            $balancePayload = [pscustomobject]@{
+                is_available = $true
+                balance_infos = @(
+                    [pscustomobject]@{
+                        currency = 'CNY'
+                        total_balance = [string]$balance
+                        granted_balance = '0'
+                        topped_up_balance = [string]$balance
+                    }
+                )
+            }
+            $syntheticLocalUsage = [pscustomobject]@{
+                TodayTokens = 1000
+                MonthlyTokens = 2000
+                LastTurnTokens = 300
+                LastInputTokens = 200
+                LastOutputTokens = 100
+                LastCachedTokens = 700
+                CacheHitPercent = 70
+                MonthlyEstimatedCostCny = 1.5
+                Model = 'deepseek-chat'
+                SampledAt = Get-Date
+            }
+            $snapshot = ConvertTo-DeepSeekSnapshot `
+                -BalancePayload $balancePayload `
+                -LocalUsage $syntheticLocalUsage `
+                -Budget 0 `
+                -KeyHint 'abcd' `
+                -SourceLabel '配置' `
+                -AccountLabel $account
+            $snapshot.AccountId = $account
+            [void](Save-UsageStateSnapshot `
+                    -Snapshot $snapshot `
+                    -ObservedAt $now `
+                    -RootPath $stateRoot `
+                    -Reason 'Refresh' `
+                    -AllowDiagnosticWrite)
+        }
+        $restoredA = Get-LatestUsageStateSnapshot `
+            -ProviderId 'DeepSeek' `
+            -AccountId 'account-a' `
+            -RootPath $stateRoot `
+            -Now $now
+        $restoredB = Get-LatestUsageStateSnapshot `
+            -ProviderId 'DeepSeek' `
+            -AccountId 'account-b' `
+            -RootPath $stateRoot `
+            -Now $now
+        $result.StateDebugEntryCount = @(
+            Get-UsageStateHistory -RootPath $stateRoot -Now $now
+        ).Count
+        $result.StateDebugRestoredBalances = @(
+            if ($restoredA) { [string]$restoredA.TotalBalance }
+            if ($restoredB) { [string]$restoredB.TotalBalance }
+        )
+        $result.StateHistoryIsolatesAccounts = (
+            $restoredA -and
+            $restoredB -and
+            [string]$restoredA.AccountId -eq 'account-a' -and
+            [string]$restoredB.AccountId -eq 'account-b' -and
+            [double]$restoredA.TotalBalance -ne [double]$restoredB.TotalBalance
+        )
+
+        # --- budget baseline -------------------------------------------
+        $budgetSnapshot = [pscustomobject]@{
+            ProviderId = 'Codex'
+            AccountId = 'account-a'
+            Available = $true
+            FiveHourAvailable = $true
+            FiveHourUsedPercent = 52.0
+            WeeklyAvailable = $true
+            WeeklyUsedPercent = 30.0
+        }
+        [void](Set-UsageAlertSettings `
+                -ProviderId 'Codex' `
+                -BudgetPercentFiveHour 40 `
+                -BudgetPercentWeekly 40)
+        $budgetChecks = @(Get-UsageBudgetChecks -Snapshot $budgetSnapshot)
+        $fiveHourCheck = $budgetChecks |
+            Where-Object { [string]$_.Key -like '*|FiveHour|Budget' } |
+            Select-Object -First 1
+        $weeklyCheck = $budgetChecks |
+            Where-Object { [string]$_.Key -like '*|Weekly|Budget' } |
+            Select-Object -First 1
+        $result.BudgetOverLimit = [string]$fiveHourCheck.Summary
+        $result.BudgetUnderLimit = [string]$weeklyCheck.Summary
+        $result.BudgetKeyIncludesAccount = (
+            [string]$fiveHourCheck.Key -eq 'Codex|account-a|FiveHour|Budget'
+        )
+        $result.BudgetExceededFlag = [bool]$fiveHourCheck.IsExceeded
+        $result.BudgetNotExceededFlag = -not [bool]$weeklyCheck.IsExceeded
+        [void](Set-UsageAlertSettings `
+                -ProviderId 'Codex' `
+                -BudgetPercentFiveHour 0 `
+                -BudgetPercentWeekly 0)
+        $unsetChecks = @(Get-UsageBudgetChecks -Snapshot $budgetSnapshot)
+        $result.BudgetUnsetIsInert = (
+            @($unsetChecks | Where-Object { $_.Available }).Count -eq 0 -and
+            [string](Get-UsageBudgetSummaryText -Snapshot $budgetSnapshot) -eq ''
+        )
+
+        # --- empty state -----------------------------------------------
+        $empty = New-EmptyUsageSnapshot
+        Clear-UsageView
+        $result.EmptySnapshotIsBlank = (
+            -not [bool]$empty.Available -and
+            [string]$empty.ProviderId -eq '' -and
+            [string]$RemainingValue.Text -eq '' -and
+            [string]$WindowLabel.Text -eq '' -and
+            [string]$AccountName.Text -eq '' -and
+            [string]$SourceText.Text -eq '' -and
+            $CodexQuotaPanel.Visibility -eq 'Collapsed' -and
+            $ProviderMetricPanel.Visibility -eq 'Collapsed'
+        )
+        $fault = New-EmptyUsageSnapshot -Message '密钥无法解密，请重新输入'
+        Clear-UsageView -Message $fault.Source
+        $result.EmptyFaultShowsStatusOnly = (
+            [string]$RemainingValue.Text -eq '' -and
+            [string]$SourceText.Text -eq '密钥无法解密，请重新输入'
+        )
+    }
+    finally {
+        $env:LOCALAPPDATA = $previousLocalAppData
+        $env:USERPROFILE = $previousProfile
+        $script:ConfigProfileEntries = $previousConfigEntries
+        $script:ActiveConfigIds = $previousActiveIds
+        if (Test-Path -LiteralPath $temporaryRoot) {
+            Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
+        }
+    }
+
+    return [pscustomobject]$result
+}
+function Get-MultiAccountSimulation {
+    # Walks the journey a real user performs, against a real WPF window and an
+    # isolated profile: first run, picking a data source, adding two profiles,
+    # switching between them, the blank states, deleting and the budget. Each
+    # step records what the window actually shows, not what the code intended.
+    $report = New-Object Collections.Generic.List[object]
+    function Record {
+        param([string]$Step, $Passed, [string]$Detail)
+        $report.Add([pscustomobject]@{
+            Step = $Step
+            Passed = [bool]$Passed
+            Detail = $Detail
+        })
+    }
+
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        'RmfMultiAccount.{0}.{1}' -f $PID, [Guid]::NewGuid().ToString('N')
+    )
+    $fakeProfileRoot = Join-Path $temporaryRoot 'profile'
+    [void](New-Item -Path (Join-Path $fakeProfileRoot '.kimi-code') -ItemType Directory -Force)
+    [void](New-Item -Path (Join-Path $fakeProfileRoot '.claude') -ItemType Directory -Force)
+    [IO.File]::WriteAllText(
+        (Join-Path $fakeProfileRoot '.kimi-code\config.toml'),
+        ("[providers.cli]`n" +
+            "base_url = `"https://api.kimi.com/coding/v1`"`n" +
+            "api_key = `"sk-cli-detected-555555555`"`n"),
+        (New-Object Text.UTF8Encoding($false))
+    )
+    [IO.File]::WriteAllText(
+        (Join-Path $fakeProfileRoot '.claude\settings.json'),
+        ([ordered]@{
+                env = [ordered]@{
+                    ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
+                    ANTHROPIC_AUTH_TOKEN = 'sk-cli-deepseek-66666666'
+                }
+            } | ConvertTo-Json -Depth 4),
+        (New-Object Text.UTF8Encoding($false))
+    )
+
+    $previousLocalAppData = $env:LOCALAPPDATA
+    $previousProfile = $env:USERPROFILE
+    $previousKimiUseWsl = $script:KimiUseWsl
+    $previousKimiCodeHome = $env:KIMI_CODE_HOME
+    $previousProvider = $script:ActiveProvider
+    $previousOnboarding = $script:OnboardingCompleted
+    $previousConfigEntries = $script:ConfigProfileEntries
+    $previousActiveIds = $script:ActiveConfigIds
+    $previousLastSnapshot = $script:LastSnapshot
+    $previousLastKimi = $script:LastKimiSnapshot
+    $previousKimiCache = $script:KimiOfficialUsageCache
+    $previousIsBusy = $script:AppContext.Refresh.IsBusy
+    $previousDemo = [bool]$Demo
+    $previousSavedSettings = [bool]$script:IsRestoringSettings
+    try {
+        $env:LOCALAPPDATA = $temporaryRoot
+        $env:USERPROFILE = $fakeProfileRoot
+        $env:KIMI_CODE_HOME = $null
+        $script:KimiUseWsl = $false
+        $script:ConfigProfileEntries = $null
+        $script:ActiveConfigIds = [ordered]@{}
+        $script:LastSnapshot = $null
+        $script:LastKimiSnapshot = $null
+        $script:KimiOfficialUsageCache = $null
+        $script:AppContext.Refresh.IsBusy = $false
+        # Suppress real network traffic and settings writes for the walkthrough.
+        $Demo = $true
+        $script:IsRestoringSettings = $true
+
+        # --- B1 first run: nothing preselected, window blank --------------
+        Set-ActiveProvider -Provider ''
+        Clear-UsageView
+        Record 'B1' (
+            [string]$script:ActiveProvider -eq '' -and
+            [string]$RemainingValue.Text -eq '' -and
+            [string]$AccountName.Text -eq '' -and
+            [string]$SourceText.Text -eq '' -and
+            $ProviderMetricPanel.Visibility -eq 'Collapsed' -and
+            $CodexQuotaPanel.Visibility -eq 'Collapsed'
+        ) ('provider=[{0}] value=[{1}]' -f $script:ActiveProvider, $RemainingValue.Text)
+
+        # --- B2 refresh while blank must not touch Codex ------------------
+        $lastSnapshotBefore = $script:LastSnapshot
+        Invoke-Refresh
+        Record 'B2' (
+            $null -eq $script:LastSnapshot -and
+            $null -eq $lastSnapshotBefore -and
+            [string]$SourceText.Text -eq ''
+        ) 'blank refresh issued no snapshot'
+
+        # --- B3 onboarding is a one-shot flag -----------------------------
+        $script:OnboardingCompleted = $false
+        $settingsSnapshot = Get-AppSettingsSnapshot
+        Record 'B3' (
+            -not [bool]$settingsSnapshot.OnboardingCompleted
+        ) 'onboarding starts unset on a fresh install'
+
+        # --- B6/B7 menu visibility follows the data source ---------------
+        Set-ActiveProvider -Provider 'Codex'
+        Sync-ProviderMenuState
+        Record 'B6' (
+            [string]$script:ConfigProfileMenuItem.Visibility -eq 'Collapsed'
+        ) 'no configuration row while Codex is active'
+        Record 'B7' (
+            [string]$script:KimiWslMenuItem.Visibility -eq 'Visible'
+        ) 'the WSL switch stays visible'
+
+        # --- B10/B11 pick Kimi, then add two profiles and switch ----------
+        Set-ActiveProvider -Provider 'Kimi'
+        $autoCredential = Get-KimiCredential
+        Record 'B10a' (
+            [string]$autoCredential.Token -eq 'sk-cli-detected-555555555' -and
+            [string]$autoCredential.Source -like '*Kimi Code*' -and
+            [string]$autoCredential.Source -notlike '*配置*'
+        ) ('auto source = [{0}]' -f $autoCredential.Source)
+
+        $company = Add-ConfigProfile `
+            -Provider 'Kimi' `
+            -Label '公司号' `
+            -BaseUrl 'https://api.kimi.com/coding/v1' `
+            -ApiKey 'sk-company-7777777777' `
+            -AllowDiagnosticWrite
+        $personal = Add-ConfigProfile `
+            -Provider 'Kimi' `
+            -Label '个人号' `
+            -BaseUrl 'https://api.kimi.com/coding/v1' `
+            -ApiKey 'sk-personal-88888888' `
+            -AllowDiagnosticWrite
+
+        # Fill the window with the active profile so the switch has something
+        # to clear, which is what the user actually sees.
+        $companySnapshot = Get-KimiUsageSnapshot -SkipOfficialRequest
+        Update-UsageView -Snapshot $companySnapshot -DisplayOnly
+
+        Set-ActiveConfigProfile `
+            -Provider 'Kimi' `
+            -ConfigId $company.Id
+        $companyCredential = Get-KimiCredential
+        $companyName = [string]$AccountName.Text
+        Record 'B10b' (
+            [string]$companyCredential.Token -eq 'sk-company-7777777777'
+        ) ('switched to company key; window account = [{0}]' -f $companyName)
+
+        # A snapshot or cached usage answer produced by the credential the user
+        # just left must be discarded, not reused.
+        $script:LastKimiSnapshot = $companySnapshot
+        $script:KimiOfficialUsageCache = [pscustomobject]@{
+            SampledAt = [DateTimeOffset]::Now
+        }
+        Reset-ProviderAccountCaches -Provider 'Kimi'
+        Record 'B11' (
+            $null -eq $script:LastKimiSnapshot -and
+            $null -eq $script:KimiOfficialUsageCache
+        ) 'switching cleared the previous snapshot and usage cache'
+
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId $personal.Id
+        $personalCredential = Get-KimiCredential
+        Record 'B10c' (
+            [string]$personalCredential.Token -eq 'sk-personal-88888888' -and
+            [string]$personalCredential.Source -like '*个人号'
+        ) ('switched to personal key; source = [{0}]' -f $personalCredential.Source)
+
+        # Re-selecting the same profile must not blank the window or re-request.
+        $sameAgain = Set-ActiveConfigProfile `
+            -Provider 'Kimi' `
+            -ConfigId $personal.Id
+        Record 'B9' (
+            -not $sameAgain -and
+            [string]$RemainingValue.Text -ne ''
+        ) 're-selecting the active profile is a no-op'
+
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId ''
+        $backToAuto = Get-KimiCredential
+        Record 'B10d' (
+            [string]$backToAuto.Token -eq 'sk-cli-detected-555555555'
+        ) 'switching back to the local read restores the CLI key'
+
+        # --- B5 the menu header names the live profile --------------------
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId $company.Id
+        Sync-ProviderMenuState
+        $headerText = [string]$script:ConfigProfileMenuItem.Header
+        Record 'B5' (
+            $headerText -match ([regex]::Escape('公司号'))
+        ) ('menu header = [{0}]' -f $headerText)
+
+        # --- B14 the active profile is persisted --------------------------
+        $persisted = Get-AppSettingsSnapshot
+        Record 'B14' (
+            [string]$persisted.ActiveKimiConfigId -eq $company.Id
+        ) ('persisted ActiveKimiConfigId = [{0}]' -f $persisted.ActiveKimiConfigId)
+
+        # --- B15 a late response from the previous profile is dropped ------
+        # A real completed task with a disposable response, so the cancel path
+        # behaves exactly as it does in production.
+        $abandonedResponse = New-Object System.Net.Http.HttpResponseMessage
+        $script:AppContext.Refresh.Kimi.RequestTask =
+            [System.Threading.Tasks.Task[System.Net.Http.HttpResponseMessage]]::FromResult(
+                $abandonedResponse
+            )
+        $script:AppContext.Refresh.Kimi.AccountId = $personal.Id
+        # The guard that matters: an answer produced by the profile the user
+        # already left must never reach the new profile's window.
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId $company.Id
+        $snapshotBeforeStaleResult = $script:LastKimiSnapshot
+        $abandoned = New-Object System.Net.Http.HttpResponseMessage
+        $script:AppContext.Refresh.Kimi.RequestTask =
+            [System.Threading.Tasks.Task[System.Net.Http.HttpResponseMessage]]::FromResult(
+                $abandoned
+            )
+        $script:AppContext.Refresh.Kimi.AccountId = $personal.Id
+        Complete-KimiRefresh
+        Record 'B15' (
+            $script:LastKimiSnapshot -eq $snapshotBeforeStaleResult
+        ) 'a response for the previous profile was dropped instead of drawn'
+        $abandoned.Dispose()
+
+        # --- B16 only the active profile is restored on restart ------------
+        $stateRoot = Join-Path $temporaryRoot 'state-history'
+        $now = [DateTimeOffset]::Now
+        foreach ($pair in @(
+            @{ Id = $company.Id; Balance = 111 },
+            @{ Id = $personal.Id; Balance = 222 }
+        )) {
+            $snapshot = Get-KimiUsageSnapshot -SkipOfficialRequest
+            $snapshot.AccountId = $pair.Id
+            $snapshot.RemainingPercent = $pair.Balance
+            [void](Save-UsageStateSnapshot `
+                    -Snapshot $snapshot `
+                    -ObservedAt $now `
+                    -RootPath $stateRoot `
+                    -Reason 'Refresh' `
+                    -AllowDiagnosticWrite)
+        }
+        $restoredForCompany = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Kimi' `
+            -AccountId $company.Id `
+            -RootPath $stateRoot `
+            -Now $now
+        $restoredForPersonal = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Kimi' `
+            -AccountId $personal.Id `
+            -RootPath $stateRoot `
+            -Now $now
+        Record 'B16' (
+            $restoredForCompany -and
+            $restoredForPersonal -and
+            [string]$restoredForCompany.AccountId -eq $company.Id -and
+            [string]$restoredForPersonal.AccountId -eq $personal.Id -and
+            [double]$restoredForCompany.RemainingPercent -ne
+                [double]$restoredForPersonal.RemainingPercent
+        ) 'each profile restores its own snapshot'
+
+        # --- B20 deleting the active profile falls back to local read ------
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId $personal.Id
+        [void](Remove-ConfigProfile -Id $personal.Id -AllowDiagnosticWrite)
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId ''
+        $afterDelete = Get-ConfigProfileEntries -Provider 'Kimi' -Refresh
+        Record 'B20' (
+            @($afterDelete | Where-Object { $_.Id -eq $personal.Id }).Count -eq 0 -and
+            [string](Get-ActiveConfigProfileId -Provider 'Kimi') -eq '' -and
+            [string]$afterDelete[0].Kind -eq 'Auto'
+        ) 'deleting the active profile removed it and returned to the local read'
+
+        # --- B18/B19 the two fault flavours of the blank state ------------
+        Set-ActiveConfigProfile -Provider 'DeepSeek' -ConfigId ''
+        $env:DEEPSEEK_API_KEY = ''
+        $noCredential = Get-DeepSeekCredential
+        Update-UsageView -Snapshot (
+            Get-DeepSeekUnavailableSnapshot -Credential $noCredential
+        ) -DisplayOnly
+        Record 'B18' (
+            [string]$RemainingValue.Text -eq '' -and
+            [string]$SourceText.Text -eq '尚未添加配置'
+        ) ('no-credential state line = [{0}]' -f $SourceText.Text)
+
+        $brokenProfile = Add-ConfigProfile `
+            -Provider 'DeepSeek' `
+            -Label '坏密钥' `
+            -BaseUrl '' `
+            -ApiKey 'sk-broken-9999999999' `
+            -AllowDiagnosticWrite
+        $profilePath = Get-ConfigProfilesPath
+        $document = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        foreach ($entry in @($document.Entries)) {
+            if ($entry.Id -eq $brokenProfile.Id) {
+                $entry.EncryptedApiKey = 'not-a-valid-dpapi-blob'
+            }
+        }
+        $document | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath $profilePath -Encoding UTF8
+        Clear-ConfigProfileCache
+        Set-ActiveConfigProfile -Provider 'DeepSeek' -ConfigId $brokenProfile.Id
+        $brokenCredential = Get-DeepSeekCredential
+        $brokenSnapshot = Get-DeepSeekUnavailableSnapshot -Credential $brokenCredential
+        Update-UsageView -Snapshot $brokenSnapshot -DisplayOnly
+        Record 'B19' (
+            [string]$brokenCredential.Fault -eq 'KeyUnreadable' -and
+            [string]$RemainingValue.Text -eq '' -and
+            [string]$SourceText.Text -eq '密钥无法解密，请重新输入'
+        ) ('fault = [{0}]; state line = [{1}]' -f
+            $brokenCredential.Fault,
+            $SourceText.Text)
+
+        Set-ActiveProvider -Provider 'DeepSeek'
+        Sync-ProviderMenuState
+        $brokenHeader = [string]$script:ConfigProfileMenuItem.Header
+        Record 'B19b' (
+            $brokenHeader -like '*密钥无法解密*'
+        ) ('menu header warns = [{0}]' -f $brokenHeader)
+
+        # --- B24/B25 the budget baseline round-trips and stays independent --
+        Set-ActiveProvider -Provider 'Codex'
+        [void](Set-UsageAlertSettings `
+                -ProviderId 'Codex' `
+                -BudgetPercentFiveHour 40 `
+                -BudgetPercentWeekly 25)
+        $budgetSettings = Get-UsageAlertSettings -ProviderId 'Codex'
+        $budgetSnapshot = [pscustomobject]@{
+            ProviderId = 'Codex'
+            AccountId = 'account-x'
+            Available = $true
+            FiveHourAvailable = $true
+            FiveHourUsedPercent = 55.0
+            WeeklyAvailable = $true
+            WeeklyUsedPercent = 20.0
+        }
+        $budgetText = Get-UsageBudgetSummaryText -Snapshot $budgetSnapshot
+        Record 'B24' (
+            [Math]::Abs([double]$budgetSettings.BudgetPercentFiveHour - 40) -lt 0.001 -and
+            [Math]::Abs([double]$budgetSettings.BudgetPercentWeekly - 25) -lt 0.001 -and
+            $budgetText -like '*已超*15pp*'
+        ) ('budget line = [{0}]' -f $budgetText)
+
+        # There is no tray icon in this run, so the alert path is exercised through
+        # the same dedup state it maintains in production.
+        $script:BudgetAlertState = @{}
+        $budgetChecks = @(Get-UsageBudgetChecks -Snapshot $budgetSnapshot)
+        foreach ($check in $budgetChecks) {
+            $key = [string]$check.Key
+            if (-not $check.Available -or -not $check.IsExceeded) {
+                $script:BudgetAlertState[$key] = $false
+                continue
+            }
+            $script:BudgetAlertState[$key] = $true
+        }
+        $wouldFireAgain = @(
+            foreach ($check in $budgetChecks) {
+                if (-not $check.Available -or -not $check.IsExceeded) { continue }
+                if ($script:BudgetAlertState[[string]$check.Key]) { $check.Key }
+            }
+        )
+        Record 'B25' (
+            $script:BudgetAlertState['Codex|account-x|FiveHour|Budget'] -eq $true -and
+            $script:BudgetAlertState['Codex|account-x|Weekly|Budget'] -eq $false -and
+            @($wouldFireAgain).Count -eq 1
+        ) 'the budget alert fires once per account and window'
+
+        # A second account must not inherit the first one's "already alerted".
+        $otherAccount = [pscustomobject]@{
+            ProviderId = 'Codex'
+            AccountId = 'account-y'
+            Available = $true
+            FiveHourAvailable = $true
+            FiveHourUsedPercent = 99.0
+            WeeklyAvailable = $true
+            WeeklyUsedPercent = 99.0
+        }
+        foreach ($check in @(Get-UsageBudgetChecks -Snapshot $otherAccount)) {
+            if (-not $check.Available -or -not $check.IsExceeded) { continue }
+            $script:BudgetAlertState[[string]$check.Key] = $true
+        }
+        Record 'B25b' (
+            $script:BudgetAlertState.ContainsKey('Codex|account-y|FiveHour|Budget') -and
+            $script:BudgetAlertState['Codex|account-x|Weekly|Budget'] -eq $false
+        ) 'a second account alerts on its own and an under-budget window stays quiet'
+
+        # --- B4 the menu really is ten rows -------------------------------
+        Set-ActiveProvider -Provider 'Kimi'
+        Sync-ProviderMenuState
+        $contextMenu = $script:ConfigProfileMenuItem.Parent
+        $menuRows = @($contextMenu.Items).Count
+        $menuHeaders = @(
+            foreach ($item in $script:ConfigProfileMenuItem.Parent.Items) {
+                # Separators carry no header at all.
+                if ($item.PSObject.Properties['Header']) { [string]$item.Header }
+            }
+        )
+        $groupedMenu = (
+            @($menuHeaders | Where-Object { $_ -eq '提醒' }).Count -eq 1 -and
+            @($menuHeaders | Where-Object { $_ -eq '显示' }).Count -eq 1 -and
+            @($menuHeaders | Where-Object { $_ -eq '数据' }).Count -eq 1 -and
+            @($menuHeaders | Where-Object { $_ -eq '更多' }).Count -eq 1 -and
+            @($menuHeaders | Where-Object { $_ -eq '退出' }).Count -eq 1 -and
+            @($menuHeaders | Where-Object { $_ -eq '数据源' }).Count -eq 1 -and
+            @($menuHeaders | Where-Object { $_ -eq '立即刷新' }).Count -eq 1 -and
+            $menuRows -eq 10
+        )
+        Record 'B4' $groupedMenu ('menu rows = ' + $menuRows)
+    }
+    finally {
+        $env:LOCALAPPDATA = $previousLocalAppData
+        $env:USERPROFILE = $previousProfile
+        $env:KIMI_CODE_HOME = $previousKimiCodeHome
+        $script:KimiUseWsl = $previousKimiUseWsl
+        $script:ConfigProfileEntries = $previousConfigEntries
+        $script:ActiveConfigIds = $previousActiveIds
+        $script:LastSnapshot = $previousLastSnapshot
+        $script:LastKimiSnapshot = $previousLastKimi
+        $script:KimiOfficialUsageCache = $previousKimiCache
+        $script:AppContext.Refresh.IsBusy = $previousIsBusy
+        $script:ActiveProvider = $previousProvider
+        $script:OnboardingCompleted = $previousOnboarding
+        $script:IsRestoringSettings = $previousSavedSettings
+        $Demo = $previousDemo
+        if (Test-Path -LiteralPath $temporaryRoot) {
+            Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
+        }
+    }
+
+    # Only the recorded steps are returned: anything a called function happened
+    # to emit must not turn into a blank report row.
+    $steps = @(
+        $report | Where-Object {
+            $_ -is [pscustomobject] -and $_.PSObject.Properties['Step']
+        }
+    )
+    $report.Clear()
+    return $steps
+}
