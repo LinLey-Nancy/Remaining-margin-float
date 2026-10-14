@@ -115,6 +115,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Answer: Integer;
   DataDirectory: String;
+  LineBreak: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
@@ -126,11 +127,15 @@ begin
     DataDirectory := ExpandConstant('{localappdata}\RemainingMarginFloat');
     if not DirExists(DataDirectory) then
       Exit;
+    { The line break lives in a variable: a '#' at the start of a line is
+      read by the Inno Setup preprocessor as a directive, not as a string
+      constant, so it must never lead a line inside a [Code] section. }
+    LineBreak := #13#10;
     Answer := MsgBox(
-      '是否同时删除已保存的数据？' + #13#10 + #13#10 +
-      DataDirectory + #13#10 + #13#10 +
+      '是否同时删除已保存的数据？' + LineBreak + LineBreak +
+      DataDirectory + LineBreak + LineBreak +
       '包含：配置与加密密钥、使用记录、花费台账、完整状态快照、运行日志。' +
-      #13#10 + '选择「否」将保留这些数据。',
+      LineBreak + '选择「否」将保留这些数据。',
       mbConfirmation,
       MB_YESNO
     );
