@@ -349,6 +349,23 @@
     $captureFiles['codex-weekly-depleted-edge'] = $weeklyDepletedEdgePath
 
     Clear-EdgeDock
+    $window.Left = 24
+    $window.Top = 24
+    $kimiCaptureSnapshot = Get-KimiDemoSnapshot
+    $kimiCaptureSnapshot.AccountName = 'Kimi Code · 备用配置（未加密 API）'
+    $kimiCaptureSnapshot.AccountEmail = `
+        '密钥 ••••a1b2 · https://api.kimi.com/coding/v1'
+    Set-CaptureUsageHistory `
+        -Snapshot $kimiCaptureSnapshot `
+        -Values @(74, 71, 69, 66, 63, 61, 59, 57)
+    Update-UsageView -Snapshot $kimiCaptureSnapshot
+    Set-ExpandedState -Expanded $true -Immediate
+    Wait-ForCaptureUi -Milliseconds 60
+    $kimiDetailsPath = Join-Path $captureRoot 'kimi-details.png'
+    Save-VisualPng -Element $window -Path $kimiDetailsPath
+    $captureFiles['kimi-details'] = $kimiDetailsPath
+
+    Clear-EdgeDock
     $window.Close()
     [pscustomobject]$captureFiles | ConvertTo-Json
     $script:RmfStopLoading = $true
@@ -1404,6 +1421,75 @@ if ($CheckTransitions) {
         $resetProgressGap -ge 2 -and
         $resetProgressGap -le 8
     )
+    # Collapse control placement. A right-aligned button inside the account row
+    # used to sit on top of Kimi content: the account name
+    # ("Kimi Code · <profile>") and the credential line
+    # ("密钥 ••••1234 · <来源>") both reach the right edge of that row, so the
+    # arrow covered part of them. The control now lives in the window corner.
+    # The probe measures real geometry with Kimi-length strings instead of
+    # trusting the XAML, so a regression to the old layout fails here.
+    $savedAccountNameForCollapseProbe = [string]$AccountName.Text
+    $savedAccountEmailForCollapseProbe = [string]$AccountEmail.Text
+    $AccountName.Text = 'Kimi Code · 备用配置（未加密 API）'
+    $AccountEmail.Text = '密钥 ••••a1b2 · https://api.kimi.com/coding/v1'
+    $window.UpdateLayout()
+    Wait-ForUi -Milliseconds 120
+    $window.UpdateLayout()
+    $collapseTopLeft = $CloseButton.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $window
+    )
+    $collapseBottomRight = $CloseButton.TranslatePoint(
+        (
+            New-Object Windows.Point(
+                $CloseButton.ActualWidth,
+                $CloseButton.ActualHeight
+            )
+        ),
+        $window
+    )
+    $accountTopLeft = $AccountRow.TranslatePoint(
+        (New-Object Windows.Point(0, 0)),
+        $window
+    )
+    $accountBottomRight = $AccountRow.TranslatePoint(
+        (
+            New-Object Windows.Point(
+                $AccountRow.ActualWidth,
+                $AccountRow.ActualHeight
+            )
+        ),
+        $window
+    )
+    $badgeRight = $PlanBadge.TranslatePoint(
+        (New-Object Windows.Point($PlanBadge.ActualWidth, 0)),
+        $window
+    ).X
+    $detailsRight = $DetailsPanel.TranslatePoint(
+        (New-Object Windows.Point($DetailsPanel.ActualWidth, 0)),
+        $window
+    ).X
+    $AccountName.Text = $savedAccountNameForCollapseProbe
+    $AccountEmail.Text = $savedAccountEmailForCollapseProbe
+    $window.UpdateLayout()
+    $collapseClearsAccountRow = (
+        $collapseBottomRight.Y -le $accountTopLeft.Y -or
+        $collapseTopLeft.Y -ge $accountBottomRight.Y -or
+        $collapseBottomRight.X -le $accountTopLeft.X -or
+        $collapseTopLeft.X -ge $accountBottomRight.X
+    )
+    $collapseControlInWindowCorner = (
+        [string]$CloseButton.Visibility -eq 'Visible' -and
+        $collapseClearsAccountRow -and
+        # 12px covers the window inset, the surface border and the button's own
+        # top margin, so the control really sits in the corner.
+        $collapseTopLeft.Y -le 12 -and
+        ($window.ActualWidth - $collapseBottomRight.X) -le 12 -and
+        $collapseBottomRight.Y -le $CompactHit.ActualHeight -and
+        # A trimmed account name keeps the plan badge inside the card.
+        $badgeRight -le $detailsRight -and
+        $AccountName.TextTrimming -eq 'CharacterEllipsis'
+    )
     $tokenSummaryVisualReady = (
         $TokenSummaryCard.ActualHeight -ge 45 -and
         $TokenSummaryCard.ActualHeight -le 47 -and
@@ -2403,6 +2489,7 @@ if ($CheckTransitions) {
         Trend5HText = $Trend5HText.Text
         CompactHeaderRestored = $compactHeaderRestored
         ExpandedHeaderHierarchy = $expandedHeaderHierarchy
+        CollapseControlInWindowCorner = $collapseControlInWindowCorner
         TokenSummaryVisualReady = $tokenSummaryVisualReady
         AlertKeysIsolateQuotaPeriods = $alertKeysIsolateQuotaPeriods
         AlertKeysIsolateAccounts = $alertKeysIsolateAccounts

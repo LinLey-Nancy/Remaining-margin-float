@@ -302,54 +302,52 @@
                         <RowDefinition Height="52"/>
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0">
-                        <StackPanel VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock x:Name="AccountName"
-                                           Text="本地 Codex"
-                                           Foreground="{StaticResource TextPrimary}"
-                                           FontFamily="Microsoft YaHei UI"
-                                           FontSize="15"
-                                           FontWeight="SemiBold"/>
-                                <Border Margin="9,1,0,0"
-                                        Padding="7,2"
-                                        VerticalAlignment="Center"
-                                        Background="#F1EFEA"
-                                        BorderBrush="#E1DDD3"
-                                        BorderThickness="1"
-                                        CornerRadius="5">
-                                    <TextBlock x:Name="PlanBadge"
-                                               Text="Codex"
-                                               Foreground="#796B53"
-                                               FontFamily="Segoe UI Variable Text"
-                                               FontSize="9"
-                                               FontWeight="SemiBold"/>
-                                </Border>
-                            </StackPanel>
-                            <TextBlock x:Name="AccountEmail"
-                                       Margin="0,5,0,0"
-                                       Text="未找到账号信息"
-                                       Foreground="{StaticResource TextSecondary}"
-                                       FontFamily="Segoe UI Variable Text"
-                                       FontSize="10.5"
-                                       TextTrimming="CharacterEllipsis"
-                                       ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
-                        </StackPanel>
+                    <Grid x:Name="AccountRow" Grid.Row="0" VerticalAlignment="Center">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                        <Button x:Name="CloseButton"
-                                HorizontalAlignment="Right"
+                        <TextBlock x:Name="AccountName"
+                                   Grid.Column="0"
+                                   VerticalAlignment="Center"
+                                   Text="本地 Codex"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   FontFamily="Microsoft YaHei UI"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                        <Border Grid.Column="1"
+                                Margin="9,1,0,0"
+                                Padding="7,2"
                                 VerticalAlignment="Center"
-                                Width="34"
-                                Height="34"
-                                Style="{StaticResource SoftButton}"
-                                Padding="0"
-                                ToolTip="收起详情"
-                                AutomationProperties.Name="收起详情">
-                            <TextBlock Text="&#xE70E;"
-                                       Foreground="#69716C"
-                                       FontFamily="Segoe Fluent Icons"
-                                       FontSize="11"/>
-                        </Button>
+                                Background="#F1EFEA"
+                                BorderBrush="#E1DDD3"
+                                BorderThickness="1"
+                                CornerRadius="5">
+                            <TextBlock x:Name="PlanBadge"
+                                       Text="Codex"
+                                       Foreground="#796B53"
+                                       FontFamily="Segoe UI Variable Text"
+                                       FontSize="9"
+                                       FontWeight="SemiBold"/>
+                        </Border>
+                        <TextBlock x:Name="AccountEmail"
+                                   Grid.Row="1"
+                                   Grid.Column="0"
+                                   Grid.ColumnSpan="2"
+                                   Margin="0,5,0,0"
+                                   Text="未找到账号信息"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   FontFamily="Segoe UI Variable Text"
+                                   FontSize="10.5"
+                                   TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                     </Grid>
 
                     <Border Grid.Row="2"
@@ -849,6 +847,31 @@
                         </Grid>
                     </Grid>
                 </Grid>
+
+                <!-- The collapse control lives in the window corner instead of
+                     the account row: provider names such as
+                     "Kimi Code · <profile>" are long enough to run underneath
+                     a right-aligned button. The expanded header keeps its
+                     number on the left and its reset line on the bottom row,
+                     so the top-right corner stays empty for it. -->
+                <Button x:Name="CloseButton"
+                        Grid.Row="0"
+                        Panel.ZIndex="2"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Margin="0,3,6,0"
+                        Width="34"
+                        Height="34"
+                        Style="{StaticResource SoftButton}"
+                        Padding="0"
+                        Visibility="Collapsed"
+                        ToolTip="收起详情"
+                        AutomationProperties.Name="收起详情">
+                    <TextBlock Text="&#xE70E;"
+                               Foreground="#69716C"
+                               FontFamily="Segoe Fluent Icons"
+                               FontSize="11"/>
+                </Button>
             </Grid>
         </Border>
 

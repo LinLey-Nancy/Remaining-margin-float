@@ -702,6 +702,9 @@ function Set-ExpandedState {
         # 34px number clipped it for non-quota providers like DeepSeek.
         $ExpandedWindowLabel.Visibility = 'Visible'
         $WindowLabel.Visibility = 'Collapsed'
+        # The collapse control sits in the window corner, outside the detail
+        # panel, so its visibility follows the expanded state directly.
+        $CloseButton.Visibility = 'Visible'
         $CompactHit.Padding = New-Object Windows.Thickness(9, 7, 9, 2)
         $CompactProgressRow.Height = New-Object Windows.GridLength(23)
         $RemainingSummaryPanel.HorizontalAlignment =
@@ -733,6 +736,7 @@ function Set-ExpandedState {
         $DetailsPanel.Visibility = 'Collapsed'
         $ResetSummaryPanel.Visibility = 'Collapsed'
         $ExpandedWindowLabel.Visibility = 'Collapsed'
+        $CloseButton.Visibility = 'Collapsed'
         $WindowLabel.Visibility = 'Visible'
         $CompactHit.Padding = New-Object Windows.Thickness(7, 5, 7, 5)
         $CompactProgressRow.Height = New-Object Windows.GridLength(12)
@@ -3470,6 +3474,9 @@ function Update-UsageView {
         [string]$Snapshot.ProviderId -in @('Codex', 'Kimi')
     ) { 'Visible' } else { 'Collapsed' }
     $ExpandedWindowLabel.Visibility = if ($script:IsExpanded) {
+        'Visible'
+    } else { 'Collapsed' }
+    $CloseButton.Visibility = if ($script:IsExpanded) {
         'Visible'
     } else { 'Collapsed' }
     $WindowLabel.Visibility = if ($script:IsExpanded) {
