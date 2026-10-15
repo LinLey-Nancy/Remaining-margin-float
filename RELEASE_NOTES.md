@@ -1,3 +1,13 @@
+# Remaining Margin Float v1.13.2
+
+## 修复
+
+- 修复切换到 Kimi Code 或 DeepSeek 后窗口没有更新的问题：只要没有手动添加过配置
+  （默认的「本机读取」方式），官方接口返回的数据会被误判成上一个账号的迟到结果而
+  丢弃，现在这些数据会正常显示
+
+---
+
 # Remaining Margin Float v1.13.1
 
 ## 修复

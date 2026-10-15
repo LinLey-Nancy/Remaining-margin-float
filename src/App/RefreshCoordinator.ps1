@@ -387,7 +387,7 @@ function Start-DeepSeekRefresh {
     }
 
     $request = $null
-    $requestAccountId = [string]$credential.ProfileId
+    $requestAccountId = Get-EffectiveConfigProfileId -Provider 'DeepSeek'
     try {
         $request = New-Object System.Net.Http.HttpRequestMessage(
             [System.Net.Http.HttpMethod]::Get,
@@ -462,7 +462,7 @@ function Complete-DeepSeekRefresh {
     # The profile may have changed while this request was in flight; its answer
     # belongs to the old account and must never reach the new account's view.
     if (
-        $requestAccountId -ne (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+        $requestAccountId -ne (Get-EffectiveConfigProfileId -Provider 'DeepSeek')
     ) {
         $deepSeek.Attempt = 0
         $deepSeek.RetryAfter = $null
@@ -618,7 +618,7 @@ function Start-KimiOfficialRequest {
         $kimi.Request = $request
         # Tag the request with the configuration that authorized it so a late
         # response for the previous profile can be dropped.
-        $kimi.AccountId = [string](Get-KimiCredential).ProfileId
+        $kimi.AccountId = Get-EffectiveConfigProfileId -Provider 'Kimi'
         $kimi.RequestTask = (Get-KimiHttpClient).SendAsync($request)
         return $true
     }
@@ -716,7 +716,9 @@ function Complete-KimiRefresh {
     $kimi.RequestTask = $null
     $kimi.Request = $null
     # Drop an answer that belongs to a configuration the user already left.
-    if ($requestAccountId -ne (Get-ActiveConfigProfileId -Provider 'Kimi')) {
+    if (
+        $requestAccountId -ne (Get-EffectiveConfigProfileId -Provider 'Kimi')
+    ) {
         $kimi.Attempt = 0
         $kimi.RetryAfter = $null
         Set-RefreshBusy -Busy $false

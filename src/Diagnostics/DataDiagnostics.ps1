@@ -3657,6 +3657,54 @@ function Get-MultiAccountSimulation {
         ) 'a response for the previous profile was dropped instead of drawn'
         $abandoned.Dispose()
 
+        # --- B17 the default 本机读取 profile keeps its own responses ------
+        # Regression: the in-flight guard compared the profile that authorized the
+        # request ("auto-kimi") against the remembered profile id, which is empty
+        # while no custom profile is selected. Every official response was then
+        # treated as belonging to a profile the user had left and dropped, so the
+        # window never updated after switching to Kimi Code.
+        $script:ActiveProvider = 'Kimi'
+        Set-ActiveConfigProfile -Provider 'Kimi' -ConfigId ''
+        $autoProfileId = Get-EffectiveConfigProfileId -Provider 'Kimi'
+        $snapshotBeforeAutoResult = $script:LastKimiSnapshot
+        $autoUsageBody = @'
+{"usages":{"limit_5h":{"used_ratio":0.1,"reset_time":"2030-01-01T17:00:00.000000Z"},"limit_7d":{"used_ratio":0.02,"reset_time":"2030-01-08T12:00:00.000000Z"}}}
+'@
+        $autoResponse = New-Object System.Net.Http.HttpResponseMessage
+        $autoResponse.StatusCode = [System.Net.HttpStatusCode]::OK
+        $autoResponse.Content = New-Object System.Net.Http.StringContent(
+            $autoUsageBody,
+            [Text.Encoding]::UTF8,
+            'application/json'
+        )
+        $script:AppContext.Refresh.Kimi.RequestTask =
+            [System.Threading.Tasks.Task[System.Net.Http.HttpResponseMessage]]::FromResult(
+                $autoResponse
+            )
+        $script:AppContext.Refresh.Kimi.AccountId = $autoProfileId
+        Complete-KimiRefresh
+        Record 'B17' (
+            [string]::IsNullOrWhiteSpace(
+                (Get-ActiveConfigProfileId -Provider 'Kimi')
+            ) -and
+            [string]$autoProfileId -eq [string](Get-ConfigProfileAutoId -Provider 'Kimi') -and
+            $null -ne $script:KimiOfficialUsageCache -and
+            $null -ne $script:LastKimiSnapshot -and
+            $script:LastKimiSnapshot -ne $snapshotBeforeAutoResult
+        ) 'the default profile keeps its own official response'
+
+        # --- B17b the DeepSeek guard uses the same effective id -------------
+        $script:ActiveProvider = 'DeepSeek'
+        Set-ActiveConfigProfile -Provider 'DeepSeek' -ConfigId ''
+        Record 'B17b' (
+            [string]::IsNullOrWhiteSpace(
+                (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+            ) -and
+            [string](Get-EffectiveConfigProfileId -Provider 'DeepSeek') -eq
+                [string](Get-ConfigProfileAutoId -Provider 'DeepSeek')
+        ) 'DeepSeek falls back to the same effective profile id'
+        $autoResponse.Dispose()
+
         # --- B16 only the active profile is restored on restart ------------
         $stateRoot = Join-Path $temporaryRoot 'state-history'
         $now = [DateTimeOffset]::Now

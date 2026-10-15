@@ -620,6 +620,25 @@ function Get-ResolvedConfigProfile {
     return $entries | Where-Object { $_.Id -eq $autoId } | Select-Object -First 1
 }
 
+function Get-EffectiveConfigProfileId {
+    # The id of the profile that actually authorizes a request right now. This is
+    # what an in-flight request must be tagged with and compared against: the
+    # remembered id alone is empty while the default 本机读取 profile is in use,
+    # and comparing an auto profile id against that empty value would make every
+    # default-install response look like it belonged to a profile the user left.
+    param(
+        [string]$Provider,
+        [switch]$Refresh
+    )
+
+    $profile = Get-ResolvedConfigProfile -Provider $Provider -Refresh:$Refresh
+    if ($profile) {
+        $id = [string]$profile.Id
+        if (-not [string]::IsNullOrWhiteSpace($id)) { return $id }
+    }
+    return Get-ConfigProfileAutoId -Provider $Provider
+}
+
 function Get-ConfigProfileSecret {
     # Returns the decrypted key, or $null when the stored blob exists but cannot
     # be decrypted (roaming profile, damaged key). The distinction matters: a
