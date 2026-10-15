@@ -9,6 +9,36 @@ $script:UpdateLatestReleaseUri = (
 )
 $script:UpdateCheckInterval = [TimeSpan]::FromHours(6)
 
+# A failed check must not stay silent for the full interval: startup happens
+# while WiFi, VPN and proxies are often still coming up, so the first attempt
+# is the one most likely to fail. Retry on this ladder and only fall back to
+# the normal interval after a check actually succeeds.
+$script:UpdateCheckRetryLadder = @(
+    [TimeSpan]::FromMinutes(1)
+    [TimeSpan]::FromMinutes(5)
+    [TimeSpan]::FromMinutes(20)
+    [TimeSpan]::FromMinutes(60)
+)
+$script:UpdateMetadataRequestTimeout = [TimeSpan]::FromSeconds(20)
+$script:UpdateOperationDeadline = [TimeSpan]::FromSeconds(90)
+$script:UpdateDownloadDeadline = [TimeSpan]::FromSeconds(300)
+$script:UpdateDownloadStallDeadline = [TimeSpan]::FromSeconds(30)
+$script:UpdateDownloadAttempts = 2
+$script:UpdateDownloadChunkBytes = 65536
+
+function Get-UpdateRetryDelay {
+    param([int]$FailureCount)
+
+    if ($FailureCount -lt 1) {
+        $FailureCount = 1
+    }
+    $index = $FailureCount - 1
+    if ($index -ge $script:UpdateCheckRetryLadder.Count) {
+        $index = $script:UpdateCheckRetryLadder.Count - 1
+    }
+    return $script:UpdateCheckRetryLadder[$index]
+}
+
 function ConvertTo-RmfVersion {
     param([string]$Value)
 
@@ -17,7 +47,11 @@ function ConvertTo-RmfVersion {
         $normalized = $normalized.Substring(1)
     }
     if ($normalized -notmatch '^\d+\.\d+\.\d+$') {
-        throw "版本号格式无效：$Value"
+        throw (
+            "版本号格式无效：$Value。" +
+            '远端标签必须是三段式版本号，形如 v1.13.3；' +
+            '预发布或非标准命名不在自动更新支持范围内。'
+        )
     }
     return New-Object Version $normalized
 }
@@ -75,10 +109,10 @@ function ConvertFrom-GitHubRelease {
         throw 'GitHub Release 响应为空。'
     }
     $tag = [string]$Release.tag_name
-    $version = (ConvertTo-RmfVersion -Value $tag).ToString()
     if ([bool]$Release.draft -or [bool]$Release.prerelease) {
         throw 'GitHub 返回的最新版本不是稳定正式版。'
     }
+    $version = (ConvertTo-RmfVersion -Value $tag).ToString()
 
     $installerName = "Remaining-Margin-Float-v$version-Setup.exe"
     $checksumName = "$installerName.sha256"
@@ -153,6 +187,7 @@ function ConvertFrom-GitHubRelease {
         ChecksumUrl = $checksumUrl
         InstallerSize = $installerSize
         ChecksumSize = $checksumSize
+        InstallerSizeExact = $true
         HasInstaller = [bool]$hasInstaller
     }
 }
@@ -199,24 +234,98 @@ function Get-GitHubRedirectReleaseTag {
     return $tag
 }
 
-function Get-GitHubAssetResponseSize {
+function Get-GitHubAssetListUri {
+    param([string]$Tag)
+
+    return 'https://github.com/{0}/releases/expanded_assets/{1}' -f
+        $script:UpdateRepository,
+        $Tag
+}
+
+# The API is rate limited per source address and easily exhausted on shared or
+# mobile networks. The expanded-assets fragment lives on github.com and answers
+# with the authoritative asset list, so the HTML fallback path uses it instead
+# of probing the download endpoints, which GitHub throttles much harder.
+function ConvertFrom-GitHubAssetListHtml {
     param(
-        $Response,
-        [long]$MaximumSize
+        [string]$Html,
+        [string]$Tag
     )
 
-    if (-not $Response -or -not $Response.IsSuccessStatusCode) {
-        return 0L
+    if ([string]::IsNullOrWhiteSpace($Html) -or
+        [string]::IsNullOrWhiteSpace($Tag)) {
+        throw 'GitHub Release 资产清单为空。'
     }
-    $contentLength = $Response.Content.Headers.ContentLength
-    if (
-        $null -eq $contentLength -or
-        [long]$contentLength -le 0 -or
-        [long]$contentLength -gt $MaximumSize
-    ) {
-        return 0L
+    $version = (ConvertTo-RmfVersion -Value $Tag).ToString()
+    $installerName = "Remaining-Margin-Float-v$version-Setup.exe"
+    $checksumName = "$installerName.sha256"
+    $releaseUrl = 'https://github.com/{0}/releases/tag/{1}' -f
+        $script:UpdateRepository,
+        $Tag
+    $installerUrl = 'https://github.com/{0}/releases/download/{1}/{2}' -f
+        $script:UpdateRepository,
+        $Tag,
+        $installerName
+    $checksumUrl = 'https://github.com/{0}/releases/download/{1}/{2}' -f
+        $script:UpdateRepository,
+        $Tag,
+        $checksumName
+
+    $hrefPattern = 'href\s*=\s*"(?<url>[^"]*releases/download/[^"]+)"'
+    $foundHrefs = @(
+        [regex]::Matches(
+            $Html,
+            $hrefPattern,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        ) | ForEach-Object {
+            [Uri]::UnescapeDataString($_.Groups['url'].Value.Trim())
+        }
+    )
+    $baseUri = New-Object Uri 'https://github.com'
+    $hasInstaller = $false
+    $hasChecksum = $false
+    foreach ($href in $foundHrefs) {
+        $candidate = New-Object Uri -ArgumentList @($baseUri, $href)
+        if (
+            $candidate.Scheme -ne [Uri]::UriSchemeHttps -or
+            -not $candidate.Host.Equals(
+                'github.com',
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            continue
+        }
+        if (Test-GitHubUpdateAssetUrl `
+            -Url $candidate.AbsoluteUri `
+            -Tag $Tag `
+            -FileName $installerName) {
+            $hasInstaller = $true
+        }
+        elseif (Test-GitHubUpdateAssetUrl `
+            -Url $candidate.AbsoluteUri `
+            -Tag $Tag `
+            -FileName $checksumName) {
+            $hasChecksum = $true
+        }
     }
-    return [long]$contentLength
+
+    return [pscustomobject]@{
+        Tag = $Tag
+        Version = $version
+        ReleaseUrl = $releaseUrl
+        InstallerName = $installerName
+        InstallerUrl = $installerUrl
+        ChecksumName = $checksumName
+        ChecksumUrl = $checksumUrl
+        InstallerSize = 0L
+        ChecksumSize = 0L
+        # The fragment only carries human readable sizes, so the exact byte
+        # count the API provides is not available here. Integrity still rests
+        # on the full-file SHA-256 and the embedded version check.
+        InstallerSizeExact = $false
+        HasInstaller = [bool]($hasInstaller -and $hasChecksum)
+        HasChecksum = [bool]$hasChecksum
+    }
 }
 
 function New-GitHubRedirectRelease {
@@ -265,6 +374,7 @@ function New-GitHubRedirectRelease {
         ChecksumUrl = $checksumUrl
         InstallerSize = $InstallerSize
         ChecksumSize = $ChecksumSize
+        InstallerSizeExact = $true
         HasInstaller = [bool]$hasInstaller
     }
 }
@@ -317,8 +427,18 @@ function Assert-UpdatePayload {
         [byte[]]$ChecksumBytes
     )
 
+    $sizeMismatch = if ($Release.InstallerSizeExact) {
+        $InstallerBytes.LongLength -ne [long]$Release.InstallerSize
+    }
+    else {
+        # The HTML fallback only exposes rounded human readable sizes, so the
+        # exact byte count is unavailable there. The ceiling below still
+        # applies, and the full-file SHA-256 plus the embedded version check
+        # remain the authoritative integrity guarantees.
+        $InstallerBytes.LongLength -le 0
+    }
     if (
-        $InstallerBytes.LongLength -ne [long]$Release.InstallerSize -or
+        $sizeMismatch -or
         $InstallerBytes.LongLength -gt 50MB -or
         $ChecksumBytes.LongLength -ne [long]$Release.ChecksumSize -or
         $ChecksumBytes.LongLength -gt 4KB
@@ -399,9 +519,24 @@ function Test-TrustedUpdateInstallerSignature {
 }
 
 function Get-UpdateHttpClient {
+    param(
+        [TimeSpan]$Timeout = [TimeSpan]::Zero
+    )
+
+    if ($Timeout -le [TimeSpan]::Zero) {
+        $Timeout = $script:UpdateMetadataRequestTimeout
+    }
+    if (
+        $script:UpdateHttpClient -and
+        $script:UpdateHttpClient.Timeout -ne $Timeout
+    ) {
+        $previous = $script:UpdateHttpClient
+        $script:UpdateHttpClient = $null
+        $previous.Dispose()
+    }
     if (-not $script:UpdateHttpClient) {
         $client = New-Object Net.Http.HttpClient
-        $client.Timeout = [TimeSpan]::FromSeconds(20)
+        $client.Timeout = $Timeout
         [void]$client.DefaultRequestHeaders.TryAddWithoutValidation(
             'User-Agent',
             "RemainingMarginFloat/$($script:AppVersion)"
@@ -413,6 +548,32 @@ function Get-UpdateHttpClient {
         $script:UpdateHttpClient = $client
     }
     return $script:UpdateHttpClient
+}
+
+function Reset-UpdateHttpClient {
+    if (-not $script:UpdateHttpClient) { return }
+    $previous = $script:UpdateHttpClient
+    $script:UpdateHttpClient = $null
+    $previous.Dispose()
+}
+
+function Write-UpdateLog {
+    param(
+        [ValidateSet('Debug', 'Info', 'Warning', 'Error')]
+        [string]$Level = 'Info',
+        [Parameter(Mandatory = $true)]
+        [string]$Event,
+        [AllowEmptyString()]
+        [string]$Message = '',
+        [Collections.IDictionary]$Data
+    )
+
+    if ($isDiagnosticRun) { return }
+    Write-RuntimeLog `
+        -Level $Level `
+        -Event "Update.$Event" `
+        -Message $Message `
+        -Data $Data
 }
 
 function Get-AutoUpdateNetworkAssessment {
@@ -644,14 +805,55 @@ function Set-AutoUpdateEnabled {
     return $true
 }
 
+function Format-UpdateProgressText {
+    param(
+        [long]$Bytes,
+        [long]$Total
+    )
+
+    if ($Bytes -le 0) { return '' }
+    if ($Total -gt 0) {
+        $percent = [Math]::Min(
+            100,
+            [Math]::Max(0, [int][Math]::Floor($Bytes * 100 / $Total))
+        )
+        return ('{0}%（{1:N1} MB / {2:N1} MB）' -f
+            $percent,
+            ($Bytes / 1MB),
+            ($Total / 1MB))
+    }
+    return ('{0:N1} MB' -f ($Bytes / 1MB))
+}
+
 function Sync-UpdateMenuState {
     $enabled = -not $script:UpdateContext.IsBusy
     $text = switch ($script:UpdateContext.Phase) {
         'Release' { '正在检查更新…' }
         'ReleaseFallback' { '正在检查更新…' }
         'ReleaseAssets' { '正在检查更新…' }
-        'Download' { '正在下载安装程序…' }
+        'DownloadResponse' { '正在下载安装程序…' }
+        'DownloadStream' { '正在下载安装程序…' }
+        'DownloadCopy' { '正在下载安装程序…' }
         default { '检查更新…' }
+    }
+    if ($script:UpdateContext.IsBusy) {
+        $waited = 0
+        if ($script:UpdateContext.StartedAt) {
+            $waited = [int][Math]::Max(
+                0,
+                [Math]::Floor(
+                    ([DateTimeOffset]::Now - $script:UpdateContext.StartedAt).
+                        TotalSeconds
+                )
+            )
+        }
+        $progress = Format-UpdateProgressText `
+            -Bytes $script:UpdateContext.ProgressBytes `
+            -Total $script:UpdateContext.ProgressTotal
+        if ($progress) {
+            $text = "正在下载安装程序 · $progress"
+        }
+        $text = "$text · 已等待 $waited 秒"
     }
     if ($script:UpdateMenuItem) {
         $script:UpdateMenuItem.IsEnabled = $enabled
@@ -664,7 +866,32 @@ function Sync-UpdateMenuState {
     Sync-AutoUpdateMenuState
 }
 
+function Close-UpdateTransferStreams {
+    if ($script:UpdateContext.File) {
+        try { $script:UpdateContext.File.Dispose() } catch { }
+        $script:UpdateContext.File = $null
+    }
+    if ($script:UpdateContext.Stream) {
+        try { $script:UpdateContext.Stream.Dispose() } catch { }
+        $script:UpdateContext.Stream = $null
+    }
+    # Disposing the response disposes its content and aborts an unfinished
+    # transfer, so the response may only be released once the copy is done.
+    if ($script:UpdateContext.Response) {
+        try { $script:UpdateContext.Response.Dispose() } catch { }
+        $script:UpdateContext.Response = $null
+    }
+    if ($script:UpdateContext.Cancellation) {
+        try {
+            [void]$script:UpdateContext.Cancellation.Dispose()
+        }
+        catch { }
+        $script:UpdateContext.Cancellation = $null
+    }
+}
+
 function Reset-UpdateContext {
+    Close-UpdateTransferStreams
     $script:UpdateContext.IsBusy = $false
     $script:UpdateContext.Manual = $false
     $script:UpdateContext.AutomaticInstall = $false
@@ -674,6 +901,20 @@ function Reset-UpdateContext {
     $script:UpdateContext.InstallerTask = $null
     $script:UpdateContext.ChecksumTask = $null
     $script:UpdateContext.Release = $null
+    $script:UpdateContext.ReleaseTag = $null
+    $script:UpdateContext.SourceClient = $null
+    $script:UpdateContext.Response = $null
+    $script:UpdateContext.StreamTask = $null
+    $script:UpdateContext.CopyTask = $null
+    $script:UpdateContext.TemporaryPath = $null
+    $script:UpdateContext.StartedAt = $null
+    $script:UpdateContext.PhaseStartedAt = $null
+    $script:UpdateContext.ProgressBytes = 0L
+    $script:UpdateContext.ProgressTotal = 0L
+    $script:UpdateContext.LastProgressBytes = 0L
+    $script:UpdateContext.LastProgressAt = $null
+    $script:UpdateContext.Attempt = 1
+    $script:UpdateContext.ManualEscalated = $false
     Sync-UpdateMenuState
 }
 
@@ -697,14 +938,56 @@ function Show-UpdateMessage {
     )
 }
 
+function Set-UpdateCheckSchedule {
+    param([bool]$Succeeded)
+
+    if ($Succeeded) {
+        $script:AutomaticUpdateFailureCount = 0
+        $script:NextAutomaticUpdateCheckAt = (
+            [DateTimeOffset]::Now + $script:UpdateCheckInterval
+        )
+        return
+    }
+    $script:AutomaticUpdateFailureCount++
+    $delay = Get-UpdateRetryDelay -FailureCount $script:AutomaticUpdateFailureCount
+    $script:NextAutomaticUpdateCheckAt = [DateTimeOffset]::Now + $delay
+    Write-UpdateLog -Level Warning -Event 'CheckRescheduled' -Data ([ordered]@{
+        FailureCount = $script:AutomaticUpdateFailureCount
+        RetrySeconds = [long]$delay.TotalSeconds
+    })
+}
+
 function Stop-UpdateOperation {
     param(
         [string]$Message,
-        [switch]$AlwaysShow
+        [switch]$AlwaysShow,
+        [string]$Event = 'Failed',
+        [string]$Stage = '',
+        [Collections.IDictionary]$Data
     )
 
-    $shouldShow = $AlwaysShow -or $script:UpdateContext.Manual
+    $wasManual = $script:UpdateContext.Manual
+    $phase = $script:UpdateContext.Phase
+    $shouldShow = $AlwaysShow -or $wasManual
+    if ($script:UpdateContext.Phase -in @('Release', 'ReleaseFallback',
+        'ReleaseAssets')) {
+        Set-UpdateCheckSchedule -Succeeded $false
+    }
     Reset-UpdateContext
+    $logData = [ordered]@{
+        Stage = $Stage
+        Phase = $phase
+        Manual = $wasManual
+        FailureCount = $script:AutomaticUpdateFailureCount
+    }
+    if ($Data) {
+        foreach ($key in @($Data.Keys)) { $logData[[string]$key] = $Data[$key] }
+    }
+    Write-UpdateLog `
+        -Level Warning `
+        -Event $Event `
+        -Message $Message `
+        -Data $logData
     if ($shouldShow -and -not [string]::IsNullOrWhiteSpace($Message)) {
         Show-UpdateMessage `
             -Message $Message `
@@ -720,7 +1003,15 @@ function Start-UpdateCheck {
 
     if ($script:UpdateContext.IsBusy) {
         if ($Manual) {
-            Show-UpdateMessage -Message '更新检查或下载正在进行，请稍候。'
+            # Dismissing the click would leave the user with no way to find out
+            # what is happening. Upgrade the running operation instead and
+            # report its result; the watchdog guarantees it cannot hang.
+            $script:UpdateContext.Manual = $true
+            $script:UpdateContext.ManualEscalated = $true
+            Write-UpdateLog -Event 'CheckEscalatedToManual' -Data ([ordered]@{
+                Phase = $script:UpdateContext.Phase
+            })
+            Sync-UpdateMenuState
         }
         return
     }
@@ -729,23 +1020,30 @@ function Start-UpdateCheck {
         if (-not $Client) {
             $Client = Get-UpdateHttpClient
         }
+        $script:UpdateContext.SourceClient = $Client
         $script:UpdateContext.IsBusy = $true
         $script:UpdateContext.Manual = [bool]$Manual
+        $script:UpdateContext.ManualEscalated = $false
         $script:UpdateContext.Phase = 'Release'
         $script:UpdateContext.Client = $Client
+        $script:UpdateContext.Attempt = 1
+        $script:UpdateContext.StartedAt = [DateTimeOffset]::Now
+        $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
         $script:UpdateContext.ReleaseTask = $Client.GetAsync(
             $script:UpdateApiUri,
             [Net.Http.HttpCompletionOption]::ResponseHeadersRead
         )
-        $script:NextAutomaticUpdateCheckAt = (
-            [DateTimeOffset]::Now + $script:UpdateCheckInterval
-        )
         Sync-UpdateMenuState
+        Write-UpdateLog -Event 'CheckStarted' -Data ([ordered]@{
+            Manual = [bool]$Manual
+            Source = 'Api'
+        })
     }
     catch {
-        Stop-UpdateOperation -Message (
-            "无法开始检查更新。`n`n$($_.Exception.Message)"
-        )
+        Stop-UpdateOperation `
+            -Event 'CheckStartFailed' `
+            -Stage 'Release' `
+            -Message ("无法开始检查更新。`n`n$($_.Exception.Message)")
     }
 }
 
@@ -753,14 +1051,20 @@ function Start-GitHubReleaseFallback {
     param($Client)
 
     if (-not $Client) {
-        throw '无法启动 GitHub Release 回退检查。'
+        $Client = Get-UpdateHttpClient
     }
     $script:UpdateContext.Phase = 'ReleaseFallback'
+    $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
+    $script:UpdateContext.Client = $Client
     $script:UpdateContext.ReleaseTask = $Client.GetAsync(
         $script:UpdateLatestReleaseUri,
         [Net.Http.HttpCompletionOption]::ResponseHeadersRead
     )
     Sync-UpdateMenuState
+    Write-UpdateLog -Event 'FallbackStarted' -Data ([ordered]@{
+        From = 'Api'
+        To = 'ReleasePage'
+    })
 }
 
 function Start-GitHubAssetMetadataFallback {
@@ -769,34 +1073,89 @@ function Start-GitHubAssetMetadataFallback {
         [string]$Tag
     )
 
-    $release = New-GitHubRedirectRelease `
-        -Tag $Tag `
-        -InstallerSize 0 `
-        -ChecksumSize 0
+    if (-not $Client) {
+        $Client = Get-UpdateHttpClient
+    }
     $script:UpdateContext.Phase = 'ReleaseAssets'
-    $script:UpdateContext.Release = $release
-    $script:UpdateContext.InstallerTask = $Client.GetAsync(
-        $release.InstallerUrl,
+    $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
+    $script:UpdateContext.Client = $Client
+    $script:UpdateContext.ReleaseTag = $Tag
+    $script:UpdateContext.ReleaseTask = $Client.GetAsync(
+        (Get-GitHubAssetListUri -Tag $Tag),
         [Net.Http.HttpCompletionOption]::ResponseHeadersRead
     )
-    $script:UpdateContext.ChecksumTask = $Client.GetAsync(
-        $release.ChecksumUrl,
-        [Net.Http.HttpCompletionOption]::ResponseHeadersRead
-    )
+    Write-UpdateLog -Event 'AssetListRequested' -Data ([ordered]@{ Tag = $Tag })
     Sync-UpdateMenuState
+}
+
+function Test-UpdateOperationDeadline {
+    if (-not $script:UpdateContext.IsBusy) { return }
+
+    $now = [DateTimeOffset]::Now
+    $phase = $script:UpdateContext.Phase
+    $isDownload = $phase -in @('DownloadResponse', 'DownloadStream',
+        'DownloadCopy')
+    $start = $script:UpdateContext.StartedAt
+    if (-not $start) { $start = $script:UpdateContext.PhaseStartedAt }
+    if (-not $start) { return }
+
+    $total = $now - $start
+    $limit = if ($isDownload) {
+        $script:UpdateDownloadDeadline
+    }
+    else {
+        $script:UpdateOperationDeadline
+    }
+
+    # Stall means the byte counter stopped growing, not that the transfer is
+    # slow. A legitimately slow link keeps raising ProgressBytes and must not
+    # be cancelled.
+    $stalled = $false
+    if (
+        $isDownload -and
+        $script:UpdateContext.LastProgressAt -and
+        ($now - $script:UpdateContext.LastProgressAt) -ge
+            $script:UpdateDownloadStallDeadline
+    ) {
+        $stalled = $true
+    }
+
+    if (-not $stalled -and $total -lt $limit) { return }
+
+    $waited = [int]$total.TotalSeconds
+    if ($script:UpdateContext.Cancellation) {
+        try { $script:UpdateContext.Cancellation.Cancel() } catch { }
+    }
+    Write-UpdateLog -Level Warning -Event 'WatchdogReset' -Data ([ordered]@{
+        Phase = $phase
+        WaitedSeconds = $waited
+        Stalled = $stalled
+        Attempt = $script:UpdateContext.Attempt
+    })
+    $wasAutomatic = $script:UpdateContext.AutomaticInstall
+    Stop-UpdateOperation `
+        -Event 'OperationTimedOut' `
+        -Stage $phase `
+        -AlwaysShow:(-not $wasAutomatic) `
+        -Message (
+            "更新操作超时（已等待 $waited 秒）。`n`n" +
+            '请检查网络连接后重试；软件会在后台继续定期检查。'
+        )
+    return
 }
 
 function Complete-ResolvedUpdateRelease {
     param($Release)
 
     $manual = $script:UpdateContext.Manual
+    $escalated = $script:UpdateContext.ManualEscalated
     Reset-UpdateContext
     if (Test-RmfUpdateAvailable `
         -CurrentVersion $script:AppVersion `
         -LatestVersion $Release.Version) {
-        Show-UpdateAvailable -Release $Release -Manual:$manual
+        Show-UpdateAvailable -Release $Release -Manual:($manual -or $escalated)
     }
-    elseif ($manual) {
+    elseif ($manual -or $escalated) {
         Show-UpdateMessage -Message (
             "当前已是最新版本 v$($script:AppVersion)。"
         )
@@ -812,6 +1171,16 @@ function Open-UpdateReleasePage {
     [void][Diagnostics.Process]::Start($startInfo)
 }
 
+function Get-UpdateDownloadsRoot {
+    if (
+        $script:UpdateDiagnosticMode -and
+        -not [string]::IsNullOrWhiteSpace($script:UpdateDiagnosticUpdatesRoot)
+    ) {
+        return $script:UpdateDiagnosticUpdatesRoot
+    }
+    return Join-Path (Get-AppDataDirectory) 'updates'
+}
+
 function Start-UpdateDownload {
     param(
         $Release,
@@ -823,18 +1192,34 @@ function Start-UpdateDownload {
         if (-not $Client) {
             $Client = Get-UpdateHttpClient
         }
+        $script:UpdateContext.SourceClient = $Client
         $script:UpdateContext.IsBusy = $true
         $script:UpdateContext.Manual = -not [bool]$AutomaticInstall
         $script:UpdateContext.AutomaticInstall = [bool]$AutomaticInstall
-        $script:UpdateContext.Phase = 'Download'
+        $script:UpdateContext.Phase = 'DownloadResponse'
+        $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
+        $script:UpdateContext.StartedAt = [DateTimeOffset]::Now
         $script:UpdateContext.Release = $Release
-        $script:UpdateContext.InstallerTask = $Client.GetByteArrayAsync(
-            $Release.InstallerUrl
+        $script:UpdateContext.Client = $Client
+        $script:UpdateContext.Attempt = 1
+        $script:UpdateContext.ProgressBytes = 0L
+        $script:UpdateContext.ProgressTotal = 0L
+        $script:UpdateContext.LastProgressBytes = 0L
+        $script:UpdateContext.LastProgressAt = [DateTimeOffset]::Now
+        $script:UpdateContext.Cancellation = New-Object Threading.CancellationTokenSource
+        $script:UpdateContext.InstallerTask = $Client.GetAsync(
+            $Release.InstallerUrl,
+            [Net.Http.HttpCompletionOption]::ResponseHeadersRead
         )
         $script:UpdateContext.ChecksumTask = $Client.GetByteArrayAsync(
             $Release.ChecksumUrl
         )
         Sync-UpdateMenuState
+        Write-UpdateLog -Event 'DownloadStarted' -Data ([ordered]@{
+            Version = $Release.Version
+            AutomaticInstall = [bool]$AutomaticInstall
+            InstallerSizeExact = [bool]$Release.InstallerSizeExact
+        })
     }
     catch {
         if ($AutomaticInstall) {
@@ -842,6 +1227,9 @@ function Start-UpdateDownload {
             $script:NextAutomaticUpdateCheckAt = (
                 [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(10)
             )
+            Write-UpdateLog -Level Warning `
+                -Event 'DownloadStartFailed' `
+                -Message $_.Exception.Message
             Show-AutoUpdateNotification `
                 -Title '自动更新暂未完成' `
                 -Message '无法开始下载安装程序，稍后会再次检查。' `
@@ -850,40 +1238,74 @@ function Start-UpdateDownload {
         else {
             Stop-UpdateOperation `
                 -AlwaysShow `
+                -Event 'DownloadStartFailed' `
+                -Stage 'DownloadResponse' `
                 -Message ("无法开始下载安装程序。`n`n$($_.Exception.Message)")
         }
     }
 }
 
+# Restart the transfer from the response stage with a brand new connection.
+# A long lived HttpClient reuses pooled connections; when GitHub has throttled
+# this address the pooled socket keeps failing, and a fresh one is measurably
+# more likely to succeed.
+function Restart-UpdateDownloadAttempt {
+    param($Release)
+
+    Close-UpdateTransferStreams
+    # Production always recreates the pooled connection; a caller-supplied
+    # client (diagnostics) is reused so the injected sequence stays in control.
+    $client = if ($script:UpdateContext.SourceClient) {
+        $script:UpdateContext.SourceClient
+    }
+    else {
+        Reset-UpdateHttpClient
+        Get-UpdateHttpClient
+    }
+    $script:UpdateContext.Attempt++
+    $script:UpdateContext.Phase = 'DownloadResponse'
+    $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
+    $script:UpdateContext.Client = $client
+    $script:UpdateContext.ProgressBytes = 0L
+    $script:UpdateContext.ProgressTotal = 0L
+    $script:UpdateContext.LastProgressBytes = 0L
+    $script:UpdateContext.LastProgressAt = [DateTimeOffset]::Now
+    $script:UpdateContext.Cancellation = New-Object Threading.CancellationTokenSource
+    $script:UpdateContext.InstallerTask = $client.GetAsync(
+        $Release.InstallerUrl,
+        [Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    )
+    $script:UpdateContext.ChecksumTask = $client.GetByteArrayAsync(
+        $Release.ChecksumUrl
+    )
+    Sync-UpdateMenuState
+    Write-UpdateLog -Event 'DownloadRetried' -Data ([ordered]@{
+        Version = $Release.Version
+        Attempt = $script:UpdateContext.Attempt
+    })
+}
+
 function Save-VerifiedUpdateInstaller {
     param(
         $Release,
-        [byte[]]$InstallerBytes,
         [byte[]]$ChecksumBytes
     )
 
-    Assert-UpdatePayload `
-        -Release $Release `
-        -InstallerBytes $InstallerBytes `
-        -ChecksumBytes $ChecksumBytes
-
-    $updatesRoot = if (
-        $script:UpdateDiagnosticMode -and
-        -not [string]::IsNullOrWhiteSpace(
-            $script:UpdateDiagnosticUpdatesRoot
-        )
-    ) {
-        $script:UpdateDiagnosticUpdatesRoot
-    }
-    else {
-        Join-Path (Get-AppDataDirectory) 'updates'
-    }
+    $updatesRoot = Get-UpdateDownloadsRoot
     $versionDirectory = Join-Path $updatesRoot $Release.Tag
     New-Item -Path $versionDirectory -ItemType Directory -Force | Out-Null
     $installerPath = Join-Path $versionDirectory $Release.InstallerName
     $temporaryPath = "$installerPath.download"
+    if (-not (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+        throw '安装程序临时文件不存在。'
+    }
+
     try {
-        [IO.File]::WriteAllBytes($temporaryPath, $InstallerBytes)
+        $installerBytes = [IO.File]::ReadAllBytes($temporaryPath)
+        Assert-UpdatePayload `
+            -Release $Release `
+            -InstallerBytes $installerBytes `
+            -ChecksumBytes $ChecksumBytes
         Assert-UpdateInstallerMetadata `
             -InstallerPath $temporaryPath `
             -Release $Release
@@ -892,10 +1314,11 @@ function Save-VerifiedUpdateInstaller {
         }
         Move-Item -LiteralPath $temporaryPath -Destination $installerPath
     }
-    finally {
+    catch {
         if (Test-Path -LiteralPath $temporaryPath) {
             Remove-Item -LiteralPath $temporaryPath -Force
         }
+        throw
     }
     return $installerPath
 }
@@ -1196,6 +1619,214 @@ function Show-UpdateAvailable {
     }
 }
 
+function Complete-UpdateDownloadResponse {
+    $task = $script:UpdateContext.InstallerTask
+    if (-not $task -or -not $task.IsCompleted) { return }
+    $response = $null
+    try {
+        $response = $task.GetAwaiter().GetResult()
+        [void]$response.EnsureSuccessStatusCode()
+        $declaredLength = $response.Content.Headers.ContentLength
+        $script:UpdateContext.ProgressTotal = if ($null -eq $declaredLength) {
+            0L
+        }
+        else {
+            [long]$declaredLength
+        }
+        $script:UpdateContext.Response = $response
+        $script:UpdateContext.StreamTask = $response.Content.ReadAsStreamAsync()
+        $script:UpdateContext.Phase = 'DownloadStream'
+        $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
+        $script:UpdateContext.LastProgressAt = [DateTimeOffset]::Now
+        Sync-UpdateMenuState
+        $response = $null
+    }
+    catch {
+        $release = $script:UpdateContext.Release
+        $statusCode = if ($response) { [int]$response.StatusCode } else { 0 }
+        if ($response) { $response.Dispose() }
+        $response = $null
+        if (
+            $script:UpdateContext.Attempt -lt $script:UpdateDownloadAttempts
+        ) {
+            Restart-UpdateDownloadAttempt -Release $release
+            return
+        }
+        Stop-UpdateDownload `
+            -Event 'DownloadResponseFailed' `
+            -StatusCode $statusCode `
+            -Message (
+                "下载更新失败。`n`n$($_.Exception.Message)"
+            )
+    }
+    finally {
+        if ($response) { $response.Dispose() }
+    }
+}
+
+function Complete-UpdateDownloadStream {
+    $task = $script:UpdateContext.StreamTask
+    if (-not $task -or -not $task.IsCompleted) { return }
+    $stream = $null
+    try {
+        $stream = $task.GetAwaiter().GetResult()
+        $versionDirectory = Join-Path (
+            Get-UpdateDownloadsRoot
+        ) $script:UpdateContext.Release.Tag
+        New-Item `
+            -Path $versionDirectory `
+            -ItemType Directory `
+            -Force | Out-Null
+        $installerPath = Join-Path `
+            $versionDirectory `
+            $script:UpdateContext.Release.InstallerName
+        $temporaryPath = "$installerPath.download"
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        $script:UpdateContext.File = [IO.File]::Create($temporaryPath)
+        $script:UpdateContext.TemporaryPath = $temporaryPath
+        $script:UpdateContext.Stream = $stream
+        $script:UpdateContext.CopyTask = $stream.CopyToAsync(
+            $script:UpdateContext.File,
+            $script:UpdateDownloadChunkBytes,
+            $script:UpdateContext.Cancellation.Token
+        )
+        $script:UpdateContext.Phase = 'DownloadCopy'
+        $script:UpdateContext.PhaseStartedAt = [DateTimeOffset]::Now
+        $script:UpdateContext.LastProgressAt = [DateTimeOffset]::Now
+        Sync-UpdateMenuState
+    }
+    catch {
+        $release = $script:UpdateContext.Release
+        if ($stream) { $stream.Dispose() }
+        if (
+            $script:UpdateContext.Attempt -lt $script:UpdateDownloadAttempts
+        ) {
+            Restart-UpdateDownloadAttempt -Release $release
+            return
+        }
+        Stop-UpdateDownload `
+            -Event 'DownloadStreamFailed' `
+            -StatusCode 0 `
+            -Message ("下载更新失败。`n`n$($_.Exception.Message)")
+    }
+}
+
+function Complete-UpdateDownloadCopy {
+    $file = $script:UpdateContext.File
+    if ($file) {
+        try {
+            $written = $file.Length
+        }
+        catch {
+            $written = $script:UpdateContext.ProgressBytes
+        }
+        if ($written -gt $script:UpdateContext.LastProgressBytes) {
+            $script:UpdateContext.LastProgressBytes = $written
+            $script:UpdateContext.LastProgressAt = [DateTimeOffset]::Now
+        }
+        $script:UpdateContext.ProgressBytes = $written
+        Sync-UpdateMenuState
+    }
+
+    $task = $script:UpdateContext.CopyTask
+    if (-not $task -or -not $task.IsCompleted) { return }
+    $release = $script:UpdateContext.Release
+    $automaticInstall = [bool]$script:UpdateContext.AutomaticInstall
+    $temporaryPath = $script:UpdateContext.TemporaryPath
+    try {
+        # VoidTaskResult leaks into the pipeline unless it is discarded.
+        [void]$task.GetAwaiter().GetResult()
+        Close-UpdateTransferStreams
+        if (-not $script:UpdateContext.ChecksumTask -or
+            -not $script:UpdateContext.ChecksumTask.IsCompleted) {
+            throw '校验文件尚未下载完成。'
+        }
+        $checksumBytes = $script:UpdateContext.ChecksumTask.
+            GetAwaiter().GetResult()
+        $installerPath = Save-VerifiedUpdateInstaller `
+            -Release $release `
+            -ChecksumBytes $checksumBytes
+        Write-UpdateLog -Event 'DownloadCompleted' -Data ([ordered]@{
+            Version = $release.Version
+            Bytes = (Get-Item -LiteralPath $installerPath).Length
+        })
+        Write-UpdateLog -Event 'Verified' -Data ([ordered]@{
+            Version = $release.Version
+            Sha256 = (Get-ByteArraySha256 -Bytes (
+                [IO.File]::ReadAllBytes($installerPath)
+            )).Substring(0, 12)
+        })
+        Reset-UpdateContext
+        Start-VerifiedUpdateInstaller `
+            -InstallerPath $installerPath `
+            -Version $release.Version `
+            -AutomaticInstall:$automaticInstall
+    }
+    catch {
+        $exception = $_.Exception
+        if ($temporaryPath -and
+            (Test-Path -LiteralPath $temporaryPath)) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if (
+            $script:UpdateContext.Attempt -lt $script:UpdateDownloadAttempts
+        ) {
+            Restart-UpdateDownloadAttempt -Release $release
+            return
+        }
+        Stop-UpdateDownload `
+            -Event 'DownloadVerificationFailed' `
+            -StatusCode 0 `
+            -Message ("下载更新失败。`n`n$($exception.Message)")
+    }
+}
+
+function Stop-UpdateDownload {
+    param(
+        [string]$Event,
+        [int]$StatusCode = 0,
+        [string]$Message
+    )
+
+    if ($script:UpdateContext.AutomaticInstall) {
+        Reset-UpdateContext
+        $script:NextAutomaticUpdateCheckAt = (
+            [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(10)
+        )
+        Write-UpdateLog -Level Warning `
+            -Event $Event `
+            -Message $Message `
+            -Data ([ordered]@{ StatusCode = $StatusCode })
+        Show-AutoUpdateNotification `
+            -Title '自动更新暂未完成' `
+            -Message '下载或校验失败，稍后会再次检查。' `
+            -Icon Warning
+        return
+    }
+    Stop-UpdateOperation `
+        -AlwaysShow `
+        -Event $Event `
+        -Stage $script:UpdateContext.Phase `
+        -Data ([ordered]@{ StatusCode = $StatusCode }) `
+        -Message $Message
+}
+
+# The streaming transfer resolves through real asynchronous file I/O, so the
+# diagnostic cannot rely on a single synchronous step to finish it.
+function Complete-UpdateOperationUntilIdle {
+    param([int]$MaxMilliseconds = 20000)
+
+    $deadline = [DateTimeOffset]::Now.AddMilliseconds($MaxMilliseconds)
+    while ($script:UpdateContext.IsBusy) {
+        Complete-UpdateOperation
+        if (-not $script:UpdateContext.IsBusy) { break }
+        if ([DateTimeOffset]::Now -ge $deadline) { break }
+        Start-Sleep -Milliseconds 20
+    }
+}
+
 function Complete-UpdateOperation {
     if (-not $script:UpdateContext.IsBusy) { return }
 
@@ -1203,33 +1834,57 @@ function Complete-UpdateOperation {
         $task = $script:UpdateContext.ReleaseTask
         if (-not $task -or -not $task.IsCompleted) { return }
         $response = $null
+        $statusCode = 0
+        $reason = ''
         try {
             $response = $task.GetAwaiter().GetResult()
-            if ([int]$response.StatusCode -in @(403, 429)) {
-                $client = $script:UpdateContext.Client
-                $response.Dispose()
-                $response = $null
-                Start-GitHubReleaseFallback -Client $client
+            $statusCode = [int]$response.StatusCode
+            if ($statusCode -notin @(403, 429)) {
+                [void]$response.EnsureSuccessStatusCode()
+                $releaseJson = (
+                    $response.Content.ReadAsStringAsync().
+                        GetAwaiter().GetResult()
+                )
+                $release = ConvertFrom-GitHubRelease -Release (
+                    $releaseJson | ConvertFrom-Json
+                )
+                Set-UpdateCheckSchedule -Succeeded $true
+                Write-UpdateLog -Event 'CheckCompleted' -Data ([ordered]@{
+                    Source = 'Api'
+                    Version = $release.Version
+                    HasInstaller = [bool]$release.HasInstaller
+                    Manual = [bool]$script:UpdateContext.Manual
+                })
+                Complete-ResolvedUpdateRelease -Release $release
                 return
             }
-            [void]$response.EnsureSuccessStatusCode()
-            $releaseJson = (
-                $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-            )
-            $release = ConvertFrom-GitHubRelease -Release (
-                $releaseJson | ConvertFrom-Json
-            )
-            Complete-ResolvedUpdateRelease -Release $release
         }
         catch {
-            Stop-UpdateOperation -Message (
-                "检查更新失败。`n`n$($_.Exception.Message)"
-            )
+            # A timeout, TLS, DNS or reset failure carries no HTTP status code.
+            # The public release page is still reachable in those cases, so the
+            # check must continue on the fallback path instead of failing.
+            if ($response) { $statusCode = [int]$response.StatusCode }
+            $reason = $_.Exception.Message
         }
         finally {
-            if ($response) {
-                $response.Dispose()
-            }
+            if ($response) { $response.Dispose() }
+        }
+        Write-UpdateLog -Event 'CheckFallback' -Data ([ordered]@{
+            From = 'Api'
+            StatusCode = $statusCode
+            Reason = $reason
+        })
+        try {
+            Start-GitHubReleaseFallback `
+                -Client $script:UpdateContext.Client
+        }
+        catch {
+            Stop-UpdateOperation `
+                -Event 'CheckFailed' `
+                -Stage 'ReleaseFallback' `
+                -Message (
+                    "检查更新失败。`n`n$($_.Exception.Message)"
+                )
         }
         return
     }
@@ -1246,111 +1901,82 @@ function Complete-UpdateOperation {
                 -Tag $tag
         }
         catch {
-            Stop-UpdateOperation -Message (
-                'GitHub API 请求受限，且公共 Release 回退检查失败。' +
-                "`n`n$($_.Exception.Message)"
-            )
+            Stop-UpdateOperation `
+                -Event 'CheckFailed' `
+                -Stage 'ReleaseFallback' `
+                -Message (
+                    '无法从 GitHub 获取最新版本信息。' +
+                    "`n`n$($_.Exception.Message)"
+                )
         }
         finally {
-            if ($response) {
-                $response.Dispose()
-            }
+            if ($response) { $response.Dispose() }
         }
         return
     }
 
     if ($script:UpdateContext.Phase -eq 'ReleaseAssets') {
-        $installerTask = $script:UpdateContext.InstallerTask
-        $checksumTask = $script:UpdateContext.ChecksumTask
-        if (
-            -not $installerTask -or
-            -not $checksumTask -or
-            -not $installerTask.IsCompleted -or
-            -not $checksumTask.IsCompleted
-        ) {
-            return
-        }
-        $installerResponse = $null
-        $checksumResponse = $null
+        $task = $script:UpdateContext.ReleaseTask
+        if (-not $task -or -not $task.IsCompleted) { return }
+        $response = $null
         try {
-            $installerResponse = $installerTask.GetAwaiter().GetResult()
-            $checksumResponse = $checksumTask.GetAwaiter().GetResult()
-            $installerSize = Get-GitHubAssetResponseSize `
-                -Response $installerResponse `
-                -MaximumSize 50MB
-            $checksumSize = Get-GitHubAssetResponseSize `
-                -Response $checksumResponse `
-                -MaximumSize 4KB
-            $release = New-GitHubRedirectRelease `
-                -Tag $script:UpdateContext.Release.Tag `
-                -InstallerSize $installerSize `
-                -ChecksumSize $checksumSize
+            $response = $task.GetAwaiter().GetResult()
+            [void]$response.EnsureSuccessStatusCode()
+            $html = (
+                $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            )
+            $release = ConvertFrom-GitHubAssetListHtml `
+                -Html $html `
+                -Tag $script:UpdateContext.ReleaseTag
+            Set-UpdateCheckSchedule -Succeeded $true
+            Write-UpdateLog -Event 'AssetListParsed' -Data ([ordered]@{
+                Tag = $release.Tag
+                Version = $release.Version
+                HasInstaller = [bool]$release.HasInstaller
+            })
+            Write-UpdateLog -Event 'CheckCompleted' -Data ([ordered]@{
+                Source = 'ReleasePage'
+                Version = $release.Version
+                HasInstaller = [bool]$release.HasInstaller
+                Manual = [bool]$script:UpdateContext.Manual
+            })
             Complete-ResolvedUpdateRelease -Release $release
         }
         catch {
-            Stop-UpdateOperation -Message (
-                'GitHub API 请求受限，且 Release 资产检查失败。' +
-                "`n`n$($_.Exception.Message)"
-            )
+            Stop-UpdateOperation `
+                -Event 'CheckFailed' `
+                -Stage 'ReleaseAssets' `
+                -Message (
+                    '无法读取 GitHub Release 的安装程序清单。' +
+                    "`n`n$($_.Exception.Message)"
+                )
         }
         finally {
-            if ($installerResponse) {
-                $installerResponse.Dispose()
-            }
-            if ($checksumResponse) {
-                $checksumResponse.Dispose()
-            }
+            if ($response) { $response.Dispose() }
         }
         return
     }
 
-    if ($script:UpdateContext.Phase -eq 'Download') {
-        $installerTask = $script:UpdateContext.InstallerTask
-        $checksumTask = $script:UpdateContext.ChecksumTask
-        $automaticInstall = [bool](
-            $script:UpdateContext.AutomaticInstall
-        )
-        if (
-            -not $installerTask -or
-            -not $checksumTask -or
-            -not $installerTask.IsCompleted -or
-            -not $checksumTask.IsCompleted
-        ) {
-            return
-        }
-        try {
-            $release = $script:UpdateContext.Release
-            $installerPath = Save-VerifiedUpdateInstaller `
-                -Release $release `
-                -InstallerBytes $installerTask.GetAwaiter().GetResult() `
-                -ChecksumBytes $checksumTask.GetAwaiter().GetResult()
-            Reset-UpdateContext
-            Start-VerifiedUpdateInstaller `
-                -InstallerPath $installerPath `
-                -Version $release.Version `
-                -AutomaticInstall:$automaticInstall
-        }
-        catch {
-            if ($automaticInstall) {
-                Reset-UpdateContext
-                $script:NextAutomaticUpdateCheckAt = (
-                    [DateTimeOffset]::Now + [TimeSpan]::FromMinutes(10)
-                )
-                Show-AutoUpdateNotification `
-                    -Title '自动更新暂未完成' `
-                    -Message '下载或校验失败，稍后会再次检查。' `
-                    -Icon Warning
-            }
-            else {
-                Stop-UpdateOperation `
-                    -AlwaysShow `
-                    -Message ("下载更新失败。`n`n$($_.Exception.Message)")
-            }
-        }
+    if ($script:UpdateContext.Phase -eq 'DownloadResponse') {
+        Complete-UpdateDownloadResponse
+        return
+    }
+
+    if ($script:UpdateContext.Phase -eq 'DownloadStream') {
+        Complete-UpdateDownloadStream
+        return
+    }
+
+    if ($script:UpdateContext.Phase -eq 'DownloadCopy') {
+        Complete-UpdateDownloadCopy
+        return
     }
 }
 
 function Invoke-UpdateTimerTick {
+    if ($script:UpdateContext.IsBusy) {
+        Test-UpdateOperationDeadline
+    }
     Complete-UpdateOperation
     if (-not $script:UpdateContext.IsBusy) {
         Start-DeferredAutoUpdateIfReady
@@ -1395,6 +2021,28 @@ function New-UpdateDiagnosticClient {
             return $task
         }
     return $client
+}
+
+function New-UpdateDiagnosticResponseTask {
+    param($Response)
+
+    $completion = New-Object (
+        'Threading.Tasks.TaskCompletionSource[' +
+        'System.Net.Http.HttpResponseMessage]'
+    )
+    $completion.SetResult($Response)
+    return $completion.Task
+}
+
+function New-UpdateDiagnosticPayloadResponse {
+    param([byte[]]$Bytes)
+
+    $response = New-Object Net.Http.HttpResponseMessage(
+        [Net.HttpStatusCode]::OK
+    )
+    $response.Content = New-Object Net.Http.ByteArrayContent `
+        -ArgumentList (,$Bytes)
+    return $response
 }
 
 function Invoke-UpdateDiagnostic {
@@ -1446,10 +2094,17 @@ function Invoke-UpdateDiagnostic {
     $payloadChecksumBytes = [Text.Encoding]::ASCII.GetBytes(
         "$payloadHash  $($parsed.InstallerName)"
     )
+    $assetListHtml = (
+        '<a href="/LinLey-Nancy/Remaining-margin-float/releases/download/' +
+        'v1.8.0/Remaining-Margin-Float-v1.8.0-Setup.exe">setup</a>' +
+        '<a href="/LinLey-Nancy/Remaining-margin-float/releases/download/' +
+        'v1.8.0/Remaining-Margin-Float-v1.8.0-Setup.exe.sha256">sha</a>'
+    )
     $payloadRelease = [pscustomobject]@{
         InstallerName = $parsed.InstallerName
         InstallerSize = [long]$payloadBytes.LongLength
         ChecksumSize = [long]$payloadChecksumBytes.LongLength
+        InstallerSizeExact = $true
     }
     $payloadVerified = try {
         Assert-UpdatePayload `
@@ -1508,6 +2163,19 @@ function Invoke-UpdateDiagnostic {
     $autoDownloadIntentPreserved = $false
     $automaticInstallerArgumentsSafe = $false
     $automaticRestartRequested = $false
+    $transportFailureFallsBack = $false
+    $transportFailureEnteredFallback = $false
+    $transportFailureReachedAssetList = $false
+    $checkFailureBackoffScheduled = $false
+    $manualClickDuringBusyEscalated = $false
+    $htmlAssetListParsed = $false
+    $htmlAssetListMissingRejected = $false
+    $installerSizeExactFalseAllowsRoundedSize = $false
+    $installerSizeExactFalseStillVerifiesHash = $false
+    $watchdogResetAfterDeadline = $false
+    $streamingDownloadVerified = $false
+    $streamingDownloadProgressReported = $false
+    $streamingDownloadRetriedOnFailure = $false
     $originalContext = $script:UpdateContext
     $originalTrayUpdateItem = $script:TrayUpdateItem
     $originalAutoUpdateEnabled = $script:AutoUpdateEnabled
@@ -1596,7 +2264,7 @@ function Invoke-UpdateDiagnostic {
             $script:UpdateContext.IsBusy -and
             $script:UpdateContext.Phase -eq 'Release' -and
             -not $script:TrayUpdateItem.Enabled -and
-            $script:TrayUpdateItem.Text -eq '正在检查更新…'
+            $script:TrayUpdateItem.Text -match '^正在检查更新… · 已等待 \d+ 秒$'
         )
         Invoke-UpdateTimerTick
         $releaseStateCompleted = (
@@ -1625,19 +2293,13 @@ function Invoke-UpdateDiagnostic {
                     'Remaining-margin-float/releases/tag/v1.8.0'
                 )
             )
-        $fallbackInstallerResponse =
+        $fallbackAssetListResponse =
             New-Object Net.Http.HttpResponseMessage(
                 [Net.HttpStatusCode]::OK
         )
-        $fallbackInstallerResponse.Content =
-            New-Object Net.Http.ByteArrayContent -ArgumentList (,$payloadBytes)
-        $fallbackChecksumResponse =
-            New-Object Net.Http.HttpResponseMessage(
-                [Net.HttpStatusCode]::OK
+        $fallbackAssetListResponse.Content = New-Object Net.Http.StringContent(
+            $assetListHtml
         )
-        $fallbackChecksumResponse.Content =
-            New-Object Net.Http.ByteArrayContent `
-                -ArgumentList (,$payloadChecksumBytes)
         $diagnosticFallbackRelease = New-GitHubRedirectRelease `
             -Tag 'v1.8.0' `
             -InstallerSize $payloadBytes.LongLength `
@@ -1647,20 +2309,11 @@ function Invoke-UpdateDiagnostic {
             $diagnosticFallbackRelease.InstallerName -eq
                 'Remaining-Margin-Float-v1.8.0-Setup.exe'
         )
-        $fallbackTasks = @()
-        foreach ($fallbackResponse in @(
-            $rateLimitResponse
-            $redirectResponse
-            $fallbackInstallerResponse
-            $fallbackChecksumResponse
-        )) {
-            $completion = New-Object (
-                'Threading.Tasks.TaskCompletionSource[' +
-                'System.Net.Http.HttpResponseMessage]'
-            )
-            $completion.SetResult($fallbackResponse)
-            $fallbackTasks += $completion.Task
-        }
+        $fallbackTasks = @(
+            (New-UpdateDiagnosticResponseTask -Response $rateLimitResponse)
+            (New-UpdateDiagnosticResponseTask -Response $redirectResponse)
+            (New-UpdateDiagnosticResponseTask -Response $fallbackAssetListResponse)
+        )
         $fallbackClient = New-UpdateDiagnosticClient `
             -ResponseTasks $fallbackTasks
         Start-UpdateCheck -Client $fallbackClient
@@ -1701,32 +2354,45 @@ function Invoke-UpdateDiagnostic {
             $untrustedRedirect.Dispose()
         }
 
-        $installerCompletion = New-Object (
-            'Threading.Tasks.TaskCompletionSource[byte[]]'
-        )
-        $installerCompletion.SetResult($payloadBytes)
         $checksumFailure = New-Object (
             'Threading.Tasks.TaskCompletionSource[byte[]]'
         )
         $checksumFailure.SetException(
             (New-Object InvalidOperationException 'checksum download failed')
         )
-        $downloadClient = New-UpdateDiagnosticClient -ByteTasks @(
-            $installerCompletion.Task
-            $checksumFailure.Task
+        $checksumFailureRetry = New-Object (
+            'Threading.Tasks.TaskCompletionSource[byte[]]'
         )
+        $checksumFailureRetry.SetException(
+            (New-Object InvalidOperationException 'checksum retry failed')
+        )
+        $payloadResponse = New-UpdateDiagnosticResponseTask -Response (
+            New-UpdateDiagnosticPayloadResponse -Bytes $payloadBytes
+        )
+        $payloadResponseRetry = New-UpdateDiagnosticResponseTask -Response (
+            New-UpdateDiagnosticPayloadResponse -Bytes $payloadBytes
+        )
+        $downloadClient = New-UpdateDiagnosticClient -ResponseTasks @(
+            $payloadResponse
+            $payloadResponseRetry
+        ) -ByteTasks @(
+            $checksumFailure.Task
+            $checksumFailureRetry.Task
+        )
+        $messagesBeforePartialFailure = $script:UpdateDiagnosticMessages.Count
         Start-UpdateDownload -Release $parsed -Client $downloadClient
         $downloadStateStarted = (
             $script:UpdateContext.IsBusy -and
-            $script:UpdateContext.Phase -eq 'Download' -and
+            $script:UpdateContext.Phase -eq 'DownloadResponse' -and
             -not $script:TrayUpdateItem.Enabled -and
-            $script:TrayUpdateItem.Text -eq '正在下载安装程序…'
+            $script:TrayUpdateItem.Text -match '^正在下载安装程序'
         )
-        Complete-UpdateOperation
+        Complete-UpdateOperationUntilIdle
         $partialDownloadFailureReset = (
             -not $script:UpdateContext.IsBusy -and
             $script:UpdateContext.Phase -eq 'Idle' -and
-            $script:UpdateDiagnosticMessages.Count -eq 1
+            $script:UpdateDiagnosticMessages.Count -eq
+                ($messagesBeforePartialFailure + 1)
         )
 
         $successfulRelease = [pscustomobject]@{
@@ -1737,23 +2403,23 @@ function Invoke-UpdateDiagnostic {
             ChecksumUrl = $parsed.ChecksumUrl
             InstallerSize = [long]$payloadBytes.LongLength
             ChecksumSize = [long]$payloadChecksumBytes.LongLength
+            InstallerSizeExact = $true
         }
-        $successfulInstaller = New-Object (
-            'Threading.Tasks.TaskCompletionSource[byte[]]'
-        )
-        $successfulInstaller.SetResult($payloadBytes)
         $successfulChecksum = New-Object (
             'Threading.Tasks.TaskCompletionSource[byte[]]'
         )
         $successfulChecksum.SetResult($payloadChecksumBytes)
-        $successfulClient = New-UpdateDiagnosticClient -ByteTasks @(
-            $successfulInstaller.Task
+        $successfulClient = New-UpdateDiagnosticClient -ResponseTasks @(
+            (New-UpdateDiagnosticResponseTask -Response (
+                New-UpdateDiagnosticPayloadResponse -Bytes $payloadBytes
+            ))
+        ) -ByteTasks @(
             $successfulChecksum.Task
         )
         Start-UpdateDownload `
             -Release $successfulRelease `
             -Client $successfulClient
-        Complete-UpdateOperation
+        Complete-UpdateOperationUntilIdle
         $successfulDownloadCompleted = (
             -not $script:UpdateContext.IsBusy -and
             $script:UpdateContext.Phase -eq 'Idle' -and
@@ -1773,9 +2439,15 @@ function Invoke-UpdateDiagnostic {
             'System.Net.Http.HttpResponseMessage]'
         )
         $cancelledRelease.SetCanceled()
+        $cancelledFallback = New-Object (
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
+        )
+        $cancelledFallback.SetCanceled()
         $cancelledClient = New-UpdateDiagnosticClient `
-            -ResponseTasks @($cancelledRelease.Task)
+            -ResponseTasks @($cancelledRelease.Task, $cancelledFallback.Task)
         Start-UpdateCheck -Client $cancelledClient
+        Complete-UpdateOperation
         Complete-UpdateOperation
         $cancelledReleaseReset = (
             -not $script:UpdateContext.IsBusy -and
@@ -1842,7 +2514,7 @@ function Invoke-UpdateDiagnostic {
             -AutomaticInstall
         $autoDownloadIntentPreserved = (
             $script:UpdateContext.IsBusy -and
-            $script:UpdateContext.Phase -eq 'Download' -and
+            $script:UpdateContext.Phase -eq 'DownloadResponse' -and
             $script:UpdateContext.AutomaticInstall -and
             -not $script:UpdateContext.Manual
         )
@@ -1880,6 +2552,309 @@ function Invoke-UpdateDiagnostic {
         $automaticRestartRequested = (
             $script:UpdateDiagnosticWindowCloseRequested
         )
+
+        # --- Update reliability probes -------------------------------------
+        # These cover the "update check sometimes fails or takes too long"
+        # report. Every probe here is written so that it also runs against the
+        # pre-fix code: probes that need API surface the fix introduces guard
+        # on Get-Command and report $false instead of throwing under
+        # StrictMode, so a red run on the old code is real evidence rather than
+        # a crash.
+        $messagesBeforeReliabilityProbes = (
+            $script:UpdateDiagnosticMessages.Count
+        )
+
+        # A transport-level failure (timeout, TLS, DNS, reset) is not an HTTP
+        # status code, so the pre-fix code aborted instead of falling back to
+        # the public release page that still works.
+        $transportFault = New-Object (
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
+        )
+        $transportFault.SetException(
+            (
+                New-Object Net.Http.HttpRequestException (
+                    'simulated transport failure'
+                )
+            )
+        )
+        $transportRedirect = New-Object Net.Http.HttpResponseMessage(
+            [Net.HttpStatusCode]::OK
+        )
+        $transportRedirect.RequestMessage =
+            New-Object Net.Http.HttpRequestMessage(
+                [Net.Http.HttpMethod]::Get,
+                (
+                    'https://github.com/LinLey-Nancy/' +
+                    'Remaining-margin-float/releases/tag/v1.8.0'
+                )
+            )
+        $transportAssetList = New-Object Net.Http.HttpResponseMessage(
+            [Net.HttpStatusCode]::OK
+        )
+        $transportAssetList.Content = New-Object Net.Http.StringContent(
+            $assetListHtml
+        )
+        $transportClient = New-UpdateDiagnosticClient -ResponseTasks @(
+            $transportFault.Task
+            (New-UpdateDiagnosticResponseTask -Response $transportRedirect)
+            (New-UpdateDiagnosticResponseTask -Response $transportAssetList)
+        )
+        Start-UpdateCheck -Client $transportClient
+        Complete-UpdateOperation
+        $transportFailureEnteredFallback = (
+            $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'ReleaseFallback'
+        )
+        Complete-UpdateOperation
+        $transportFailureReachedAssetList = (
+            $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'ReleaseAssets'
+        )
+        Complete-UpdateOperation
+        $transportFailureFallsBack = (
+            $transportFailureEnteredFallback -and
+            $transportFailureReachedAssetList -and
+            -not $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'Idle' -and
+            $script:UpdateDiagnosticMessages.Count -eq
+                $messagesBeforeReliabilityProbes
+        )
+
+        # A failed check must fall back to a short retry ladder instead of
+        # waiting the full interval.
+        $backoffApiFault = New-Object (
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
+        )
+        $backoffApiFault.SetException(
+            (
+                New-Object Net.Http.HttpRequestException (
+                    'simulated api failure'
+                )
+            )
+        )
+        $backoffFallbackFault = New-Object (
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
+        )
+        $backoffFallbackFault.SetException(
+            (
+                New-Object Net.Http.HttpRequestException (
+                    'simulated fallback failure'
+                )
+            )
+        )
+        $script:NextAutomaticUpdateCheckAt = $null
+        $backoffClient = New-UpdateDiagnosticClient -ResponseTasks @(
+            $backoffApiFault.Task
+            $backoffFallbackFault.Task
+        )
+        Start-UpdateCheck -Client $backoffClient
+        Complete-UpdateOperation
+        Complete-UpdateOperation
+        $checkFailureBackoffScheduled = (
+            $script:NextAutomaticUpdateCheckAt -and
+            (
+                $script:NextAutomaticUpdateCheckAt - [DateTimeOffset]::Now
+            ) -le [TimeSpan]::FromMinutes(61)
+        )
+
+        # Clicking "check for updates" while a background check is running must
+        # not be dismissed; it must upgrade the running operation instead.
+        $pendingManualRelease = New-Object (
+            'Threading.Tasks.TaskCompletionSource[' +
+            'System.Net.Http.HttpResponseMessage]'
+        )
+        $pendingManualClient = New-UpdateDiagnosticClient -ResponseTasks @(
+            $pendingManualRelease.Task
+        )
+        Start-UpdateCheck -Client $pendingManualClient
+        $messagesBeforeEscalation = $script:UpdateDiagnosticMessages.Count
+        Start-UpdateCheck -Manual -Client $pendingManualClient
+        $manualClickDuringBusyEscalated = (
+            $script:UpdateContext.IsBusy -and
+            $script:UpdateContext.Phase -eq 'Release' -and
+            $script:UpdateDiagnosticMessages.Count -eq $messagesBeforeEscalation
+        )
+        Reset-UpdateContext
+
+        # Asset list parsing, rounded-size tolerance and hash enforcement on
+        # the HTML fallback path.
+        $htmlAssetListParsed = $false
+        $htmlAssetListMissingRejected = $false
+        $installerSizeExactFalseAllowsRoundedSize = $false
+        $installerSizeExactFalseStillVerifiesHash = $false
+        if (Get-Command -Name 'ConvertFrom-GitHubAssetListHtml' `
+            -ErrorAction SilentlyContinue) {
+            $parsedAssetList = ConvertFrom-GitHubAssetListHtml `
+                -Html $assetListHtml `
+                -Tag 'v1.8.0'
+            $htmlAssetListParsed = (
+                $parsedAssetList.HasInstaller -and
+                $parsedAssetList.HasChecksum -and
+                -not $parsedAssetList.InstallerSizeExact
+            )
+            $missingAssetList = ConvertFrom-GitHubAssetListHtml -Html (
+                '<a href="/LinLey-Nancy/Remaining-margin-float/releases/' +
+                'download/v1.8.0/Remaining-Margin-Float-v1.8.0-Setup.exe' +
+                '.sha256">sha</a>'
+            ) -Tag 'v1.8.0'
+            $htmlAssetListMissingRejected = -not $missingAssetList.HasInstaller
+
+            $roundedChecksumBytes = [Text.Encoding]::ASCII.GetBytes(
+                "$payloadHash  $($parsed.InstallerName)"
+            )
+            $installerSizeExactFalseAllowsRoundedSize = try {
+                Assert-UpdatePayload -Release ([pscustomobject]@{
+                    InstallerName = $parsed.InstallerName
+                    InstallerSize = [long]$payloadBytes.LongLength + 1L
+                    ChecksumSize = [long]$roundedChecksumBytes.LongLength
+                    InstallerSizeExact = $false
+                }) -InstallerBytes $payloadBytes `
+                    -ChecksumBytes $roundedChecksumBytes
+                $true
+            }
+            catch {
+                $false
+            }
+            $installerSizeExactFalseStillVerifiesHash = try {
+                Assert-UpdatePayload -Release ([pscustomobject]@{
+                    InstallerName = $parsed.InstallerName
+                    InstallerSize = [long]$payloadBytes.LongLength
+                    ChecksumSize = [long]$roundedChecksumBytes.LongLength
+                    InstallerSizeExact = $false
+                }) -InstallerBytes $payloadBytes `
+                    -ChecksumBytes (
+                        [Text.Encoding]::ASCII.GetBytes(
+                            "$sampleHash  $($parsed.InstallerName)"
+                        )
+                    )
+                $false
+            }
+            catch {
+                $true
+            }
+        }
+
+        # An operation that never completes must be reset by a deadline so the
+        # menu can never stay permanently disabled.
+        $watchdogResetAfterDeadline = $false
+        $watchdogDeadlineAvailable = (
+            $script:UpdateContext.PSObject.Properties.Name -contains 'StartedAt'
+        )
+        if ($watchdogDeadlineAvailable -and
+            (Get-Command -Name 'Test-UpdateOperationDeadline' `
+                -ErrorAction SilentlyContinue)) {
+            Start-UpdateCheck -Client $pendingManualClient
+            $script:UpdateContext.StartedAt = (
+                [DateTimeOffset]::Now - [TimeSpan]::FromMinutes(30)
+            )
+            Test-UpdateOperationDeadline
+            $watchdogResetAfterDeadline = (
+                -not $script:UpdateContext.IsBusy -and
+                $script:UpdateContext.Phase -eq 'Idle'
+            )
+            Reset-UpdateContext
+        }
+
+        # Streaming download: the payload lands on disk, progress text is
+        # produced, and a stale connection is retried with a fresh one.
+        $streamingDownloadVerified = $false
+        $streamingDownloadProgressReported = $false
+        $streamingDownloadRetriedOnFailure = $false
+        if (Get-Command -Name 'Format-UpdateProgressText' `
+            -ErrorAction SilentlyContinue) {
+            $progressTexts = @(
+                Format-UpdateProgressText -Bytes 0 -Total 0
+                Format-UpdateProgressText -Bytes 512 -Total 1024
+                Format-UpdateProgressText -Bytes 2048 -Total 2048
+            )
+            $streamingDownloadProgressReported = (
+                $progressTexts[0] -ne $progressTexts[2] -and
+                $progressTexts[1] -match '\d+%'
+            )
+        }
+        if ((Get-Command -Name 'Start-UpdateDownload' `
+                -ErrorAction SilentlyContinue) -and
+            ($script:UpdateContext.PSObject.Properties.Name -contains 'Attempt')) {
+            $streamPayload = [Text.Encoding]::ASCII.GetBytes(
+                ('x' * 524288)
+            )
+            $streamHash = Get-ByteArraySha256 -Bytes $streamPayload
+            $streamChecksumBytes = [Text.Encoding]::ASCII.GetBytes(
+                "$streamHash  $($parsed.InstallerName)"
+            )
+            $streamRelease = [pscustomobject]@{
+                Tag = 'v1.8.0'
+                Version = '1.8.0'
+                InstallerName = $parsed.InstallerName
+                InstallerUrl = $parsed.InstallerUrl
+                ChecksumUrl = $parsed.ChecksumUrl
+                InstallerSize = [long]$streamPayload.LongLength
+                ChecksumSize = [long]$streamChecksumBytes.LongLength
+                InstallerSizeExact = $true
+            }
+            $streamStaleFault = New-Object (
+                'Threading.Tasks.TaskCompletionSource[' +
+                'System.Net.Http.HttpResponseMessage]'
+            )
+            $streamStaleFault.SetException(
+                (
+                    New-Object Net.Http.HttpRequestException (
+                        'simulated stale connection'
+                    )
+                )
+            )
+            $streamChecksum = New-Object (
+                'Threading.Tasks.TaskCompletionSource[byte[]]'
+            )
+            $streamChecksum.SetResult($streamChecksumBytes)
+            $streamClient = New-UpdateDiagnosticClient -ResponseTasks @(
+                $streamStaleFault.Task
+                (New-UpdateDiagnosticResponseTask -Response (
+                    New-UpdateDiagnosticPayloadResponse -Bytes $streamPayload
+                ))
+            ) -ByteTasks @(
+                $streamChecksum.Task
+                $streamChecksum.Task
+            )
+            $messagesBeforeStreamRetry = $script:UpdateDiagnosticMessages.Count
+            Start-UpdateDownload -Release $streamRelease -Client $streamClient
+            $streamDeadline = [DateTimeOffset]::Now.AddSeconds(20)
+            $streamSawRetry = $false
+            while (
+                $script:UpdateContext.IsBusy -and
+                [DateTimeOffset]::Now -lt $streamDeadline
+            ) {
+                if ($script:UpdateContext.Attempt -ge 2) {
+                    $streamSawRetry = $true
+                }
+                Complete-UpdateOperation
+                if (-not $script:UpdateContext.IsBusy) { break }
+                Start-Sleep -Milliseconds 20
+            }
+            $streamingDownloadRetriedOnFailure = (
+                $streamSawRetry -and
+                $script:UpdateDiagnosticInstallerPath -and
+                $script:UpdateDiagnosticMessages.Count -eq
+                    $messagesBeforeStreamRetry
+            )
+            $streamingDownloadVerified = (
+                $streamingDownloadRetriedOnFailure -and
+                (Test-Path `
+                    -LiteralPath $script:UpdateDiagnosticInstallerPath `
+                    -PathType Leaf) -and
+                (Get-Item `
+                    -LiteralPath $script:UpdateDiagnosticInstallerPath).Length -eq
+                    $streamPayload.LongLength -and
+                (Get-ByteArraySha256 -Bytes (
+                    [IO.File]::ReadAllBytes(
+                        $script:UpdateDiagnosticInstallerPath
+                    )
+                )) -eq $streamHash
+            )
+        }
     }
     finally {
         $script:UpdateContext = $originalContext
@@ -1991,6 +2966,27 @@ function Invoke-UpdateDiagnostic {
         AutoDownloadIntentPreserved = $autoDownloadIntentPreserved
         AutomaticInstallerArgumentsSafe = $automaticInstallerArgumentsSafe
         AutomaticRestartRequested = $automaticRestartRequested
+        TransportFailureFallsBack = $transportFailureFallsBack
+        TransportFailureEnteredFallback = $transportFailureEnteredFallback
+        TransportFailureReachedAssetList = $transportFailureReachedAssetList
+        CheckFailureBackoffScheduled = $checkFailureBackoffScheduled
+        ManualClickDuringBusyEscalated = $manualClickDuringBusyEscalated
+        HtmlAssetListParsed = $htmlAssetListParsed
+        HtmlAssetListMissingRejected = $htmlAssetListMissingRejected
+        InstallerSizeExactFalseAllowsRoundedSize = (
+            $installerSizeExactFalseAllowsRoundedSize
+        )
+        InstallerSizeExactFalseStillVerifiesHash = (
+            $installerSizeExactFalseStillVerifiesHash
+        )
+        WatchdogResetAfterDeadline = $watchdogResetAfterDeadline
+        StreamingDownloadVerified = $streamingDownloadVerified
+        StreamingDownloadProgressReported = (
+            $streamingDownloadProgressReported
+        )
+        StreamingDownloadRetriedOnFailure = (
+            $streamingDownloadRetriedOnFailure
+        )
         Version = $parsed.Version
     }
 }

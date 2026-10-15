@@ -535,6 +535,17 @@ foreach ($propertyName in @(
     'AutoDownloadIntentPreserved'
     'AutomaticInstallerArgumentsSafe'
     'AutomaticRestartRequested'
+    'TransportFailureFallsBack'
+    'CheckFailureBackoffScheduled'
+    'ManualClickDuringBusyEscalated'
+    'HtmlAssetListParsed'
+    'HtmlAssetListMissingRejected'
+    'InstallerSizeExactFalseAllowsRoundedSize'
+    'InstallerSizeExactFalseStillVerifiesHash'
+    'WatchdogResetAfterDeadline'
+    'StreamingDownloadVerified'
+    'StreamingDownloadProgressReported'
+    'StreamingDownloadRetriedOnFailure'
 )) {
     Assert-Diagnostic `
         -Condition ([bool]$updates.$propertyName) `
@@ -708,6 +719,9 @@ Assert-Diagnostic -Condition (
     [bool]$transitions.CompactHeaderRestored -and
     [bool]$transitions.ExpandedHeaderHierarchy
 ) -Message 'Expanded header alignment and font hierarchy'
+Assert-Diagnostic -Condition (
+    [bool]$transitions.CollapseControlInWindowCorner
+) -Message 'Collapse control sits in the window corner clear of the account row'
 Assert-Diagnostic -Condition ([bool]$transitions.TokenSummaryVisualReady) `
     -Message 'Token summary visual grouping'
 Assert-Diagnostic -Condition ([bool]$transitions.AlertKeysIsolateQuotaPeriods) `

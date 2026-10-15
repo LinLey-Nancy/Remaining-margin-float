@@ -253,7 +253,9 @@ Sync-StartupMenuState
 Sync-LowAlertMenuState
 Sync-UpdateMenuState
 if (-not $isDiagnosticRun) {
-    $script:NextAutomaticUpdateCheckAt = [DateTimeOffset]::Now.AddSeconds(8)
+    # Startup usually happens before WiFi, VPN or a proxy is ready; a first
+    # attempt at 8 seconds is the one most likely to fail.
+    $script:NextAutomaticUpdateCheckAt = [DateTimeOffset]::Now.AddSeconds(30)
 }
 
 $timer = New-Object Windows.Threading.DispatcherTimer

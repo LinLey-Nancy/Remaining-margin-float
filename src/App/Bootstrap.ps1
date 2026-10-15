@@ -480,7 +480,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.13.2'
+$script:AppVersion = '1.13.3'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -541,6 +541,7 @@ $script:AutoUpdateMenuItem = $null
 $script:TrayAutoUpdateItem = $null
 $script:AutoUpdateEnabled = $false
 $script:NextAutomaticUpdateCheckAt = $null
+$script:AutomaticUpdateFailureCount = 0
 $script:NextAutoUpdateNetworkRetryAt = $null
 $script:DeferredAutoUpdateRelease = $null
 $script:DeferredAutoUpdateInstaller = $null
@@ -568,6 +569,23 @@ $script:UpdateContext = [pscustomobject]@{
     InstallerTask = $null
     ChecksumTask = $null
     Release = $null
+    ReleaseTag = $null
+    SourceClient = $null
+    Response = $null
+    StreamTask = $null
+    CopyTask = $null
+    TemporaryPath = $null
+    StartedAt = $null
+    PhaseStartedAt = $null
+    ProgressBytes = 0L
+    ProgressTotal = 0L
+    LastProgressBytes = 0L
+    LastProgressAt = $null
+    Attempt = 1
+    ManualEscalated = $false
+    Stream = $null
+    File = $null
+    Cancellation = $null
 }
 $script:LastDeepSeekSnapshot = $null
 $script:LastKimiSnapshot = $null
