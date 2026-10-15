@@ -1,3 +1,12 @@
+# Remaining Margin Float v1.13.1
+
+## 修复
+
+- 支持 Codex 最新的 500 美元套餐。开通后悬浮窗会正确显示套餐名，并且和 200 美元
+  套餐一样只看每周额度，不再显示 5 小时额度
+
+---
+
 # Remaining Margin Float v1.13.0
 
 ## 新增

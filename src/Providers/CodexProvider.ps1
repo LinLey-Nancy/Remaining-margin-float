@@ -707,6 +707,7 @@ function Get-PlanLabel {
         'plus' = 'Plus'
         'pro' = 'Pro'
         'prolite' = 'Pro Lite'
+        'promax' = 'Pro (Max)'
         'team' = 'Team'
         'business' = 'Business'
         'enterprise' = 'Enterprise'
@@ -719,15 +720,15 @@ function Get-PlanLabel {
 function Get-CodexPrimaryQuotaPeriod {
     param([string]$PlanType)
 
-    # Codex Pro is exposed as either "pro" or "prolite" for the $200 and
-    # $100 variants. These plans only expose the weekly allowance. Plus keeps
-    # the five-hour allowance as its primary quota.
+    # Codex Pro is exposed as "pro", "prolite" or "promax" for the $200, $100
+    # and $500 variants. These plans only expose the weekly allowance. Plus
+    # keeps the five-hour allowance as its primary quota.
     $normalizedPlan = if ([string]::IsNullOrWhiteSpace($PlanType)) {
         ''
     } else {
         $PlanType.Trim().ToLowerInvariant().Replace('_', '').Replace('-', '').Replace(' ', '')
     }
-    if ($normalizedPlan -in @('pro', 'prolite')) { return 'Weekly' }
+    if ($normalizedPlan -in @('pro', 'prolite', 'promax')) { return 'Weekly' }
     return 'FiveHour'
 }
 

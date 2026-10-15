@@ -1247,6 +1247,26 @@ if ($CheckTransitions) {
         [string]$CodexQuotaPanel.Visibility -eq 'Collapsed' -and
         [string]$WeeklyQuotaBand.Visibility -eq 'Visible'
     )
+    # The $500 Pro tier ships its own plan_type; it must look exactly like the
+    # $200 tier and never fall back to the five-hour headline.
+    $proMaxSnapshot = $proDowngradedSnapshot.PSObject.Copy()
+    $proMaxSnapshot.Plan = 'Pro (Max)'
+    $proMaxSnapshot.PlanType = 'promax'
+    $proMaxSnapshot.FiveHourRemainingPercent = 100
+    $proMaxSnapshot.FiveHourUsedPercent = 0
+    Update-UsageView -Snapshot $proMaxSnapshot -DisplayOnly
+    $proMaxKeepsWeeklyHeader = (
+        $RemainingValue.Text -eq '91' -and
+        $WindowLabel.Text -eq '每周余量' -and
+        [string]$PlanBadge.Text -eq 'Pro (Max)' -and
+        $UsageTrendTitle.Text -eq '每周额度趋势' -and
+        [Math]::Abs($UltraRemainingProgressRow.Height.Value - 91) -lt 0.01 -and
+        [Math]::Abs(
+            (Get-ExpandedHeightForSnapshot -Snapshot $proMaxSnapshot) - 474
+        ) -lt 0.01 -and
+        [string]$CodexQuotaPanel.Visibility -eq 'Collapsed' -and
+        [string]$WeeklyQuotaBand.Visibility -eq 'Visible'
+    )
     Update-UsageView -Snapshot $plusSnapshot -DisplayOnly
     $startupLocalRapidSuppressed = (
         [string]$RapidDropText.Text -match '本地快照不计入快速下降'
@@ -2411,6 +2431,7 @@ if ($CheckTransitions) {
         PlusWeeklyUnavailableKeepsFiveHourHeader = $plusWeeklyUnavailableKeepsFiveHourHeader
         PlusFiveHourUnknownWithHealthyWeeklyKeepsUnknownHeader = $plusFiveHourUnknownWithHealthyWeeklyKeepsUnknownHeader
         ProDowngradedWeeklyKeepsWeeklyHeader = $proDowngradedWeeklyKeepsWeeklyHeader
+        ProMaxKeepsWeeklyHeader = $proMaxKeepsWeeklyHeader
         TrendHealthyBackgroundColor = $trendHealthyBackgroundColor
         TrendHealthyPaletteColor = $trendHealthyPaletteColor
         TrendLowBackgroundColor = $trendLowBackgroundColor

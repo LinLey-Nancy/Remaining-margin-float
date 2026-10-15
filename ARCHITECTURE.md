@@ -92,8 +92,8 @@ Provider 最终向 UI 返回统一快照。`Core\UsageSnapshot.ps1` 在渲染前
 
 Codex 快照还携带 `FiveHour*` 与 `Weekly*` 两组周期字段，包括可用性、已用百分比、
 剩余百分比和重置时间，并通过 `PlanType` 与 `PrimaryQuotaPeriod` 明确套餐和主周期。
-Plus 的 `RemainingPercent` / `HasProgress` 代表 5 小时窗口；`pro` / `prolite` 代表
-每周窗口。趋势与历史样本按 `FiveHour` / `Weekly` 隔离，`RemainingPercent`、
+Plus 的 `RemainingPercent` / `HasProgress` 代表 5 小时窗口；`pro` / `prolite` /
+`promax` 代表每周窗口。趋势与历史样本按 `FiveHour` / `Weekly` 隔离，`RemainingPercent`、
 `HasProgress`、`PrimaryQuotaPeriod` 与 `ResetAt` 始终取套餐主窗口。头部展示是
 例外：每周窗口可用且剩余为 0 时，紧凑数字、窗标签、进度条、贴边能量条、重置行
 与托盘文本改绑每周窗口（`Get-CodexQuotaBinding`），但快照字段保持不变，以免把
@@ -232,7 +232,8 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   `token_count` 而回扫整个历史日志；今日 Token 汇总仍覆盖当天全部会话。
 - Codex 官方与本地限额都必须按窗口时长识别 300 分钟的 5 小时窗口和
   10080 分钟的每周窗口，不得假定 `primary` / `secondary` 的固定含义。Plus 缺少
-  明确的 5 小时字段时展示为 5 小时未知；`pro` / `prolite` 始终选择每周字段。
+  明确的 5 小时字段时展示为 5 小时未知；`pro` / `prolite` / `promax`（Pro 的
+  $100、$200、$500 三档）始终选择每周字段。
   头部改绑每周窗口必须读取原始 `Weekly*` 字段：回写后的 `HasProgress` /
   `RemainingPercent` 在窗口不可用时同样是 0，据此判断会把「余量未知」误判为
   「每周用完」。绑定只作用于展示函数，不得写进 `Get-CodexQuotaPresentation`，

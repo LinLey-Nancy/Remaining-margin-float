@@ -221,6 +221,17 @@ Assert-Diagnostic -Condition (
     [bool]$contracts.CodexProWithoutWeeklyRemainsUnknown
 ) -Message 'Codex Pro does not fall back to five-hour quota when weekly data is missing'
 Assert-Diagnostic -Condition (
+    $contracts.CodexProMaxPrimaryPeriod -eq 'Weekly' -and
+    @($contracts.CodexProMaxAliasPeriods | Where-Object { $_ -ne 'Weekly' }).Count -eq 0 -and
+    $contracts.CodexProMaxLabel -eq 'Pro (Max)'
+) -Message 'Codex Pro Max selects the weekly primary quota period'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexProMaxSnapshotUsesWeekly
+) -Message 'Codex Pro Max presents the weekly window instead of the five-hour window'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexProMaxWithoutWeeklyRemainsUnknown
+) -Message 'Codex Pro Max does not fall back to five-hour quota when weekly data is missing'
+Assert-Diagnostic -Condition (
     [bool]$contracts.CodexNonFiniteQuotaValuesRejected
 ) -Message 'Codex quota parser rejects non-finite percentage and duration values'
 Assert-Diagnostic -Condition (
@@ -770,6 +781,9 @@ Assert-Diagnostic `
 Assert-Diagnostic `
     -Condition ([bool]$transitions.ProDowngradedWeeklyKeepsWeeklyHeader) `
     -Message 'Codex Pro keeps the weekly header when five-hour is depleted'
+Assert-Diagnostic `
+    -Condition ([bool]$transitions.ProMaxKeepsWeeklyHeader) `
+    -Message 'Codex Pro Max shows its plan badge and keeps the weekly header'
 Assert-Diagnostic `
     -Condition ([bool]$transitions.TrendTimeAxisAligned) `
     -Message 'Trend chart uses elapsed-time x coordinates'

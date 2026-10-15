@@ -314,6 +314,16 @@ if ($CheckProviderContracts) {
     $proWithoutWeeklySnapshot = Get-CodexUsageSnapshot `
         -OfficialUsageOverride $proWithoutWeeklyUsage `
         -SkipOfficialRequest
+    $proMaxUsage = $codexUsage.PSObject.Copy()
+    $proMaxUsage.PlanType = 'promax'
+    $proMaxSnapshot = Get-CodexUsageSnapshot `
+        -OfficialUsageOverride $proMaxUsage `
+        -SkipOfficialRequest
+    $proMaxWithoutWeeklyUsage = $proMaxUsage.PSObject.Copy()
+    $proMaxWithoutWeeklyUsage.WeeklyWindow = $null
+    $proMaxWithoutWeeklySnapshot = Get-CodexUsageSnapshot `
+        -OfficialUsageOverride $proMaxWithoutWeeklyUsage `
+        -SkipOfficialRequest
 
     $deepSeekEvents = @([DeepSeekLogScanner]::ReadFile($deepSeekUsageFixturePath))
     $deepSeekPrimaryEvent = $deepSeekEvents |
@@ -542,6 +552,13 @@ if ($CheckProviderContracts) {
             Get-CodexPrimaryQuotaPeriod -PlanType 'Pro Lite'
             Get-CodexPrimaryQuotaPeriod -PlanType 'pro_lite'
         )
+        CodexProMaxPrimaryPeriod = Get-CodexPrimaryQuotaPeriod -PlanType 'promax'
+        CodexProMaxAliasPeriods = @(
+            Get-CodexPrimaryQuotaPeriod -PlanType 'pro-max'
+            Get-CodexPrimaryQuotaPeriod -PlanType 'Pro Max'
+            Get-CodexPrimaryQuotaPeriod -PlanType 'pro_max'
+        )
+        CodexProMaxLabel = Get-PlanLabel -PlanType 'promax'
         CodexSnapshotPrimaryPeriod = $codexSnapshot.PrimaryQuotaPeriod
         CodexSnapshotRemainingPercent = $codexSnapshot.RemainingPercent
         CodexSnapshotFiveHourUsedPercent = $codexSnapshot.FiveHourUsedPercent
@@ -554,6 +571,23 @@ if ($CheckProviderContracts) {
             $proWithoutWeeklySnapshot.WindowLabel -eq '每周余量未知' -and
             [bool]$proWithoutWeeklySnapshot.FiveHourAvailable -and
             -not [bool]$proWithoutWeeklySnapshot.WeeklyAvailable
+        )
+        CodexProMaxSnapshotUsesWeekly = (
+            [string]$proMaxSnapshot.PlanType -eq 'promax' -and
+            [string]$proMaxSnapshot.Plan -eq 'Pro (Max)' -and
+            [string]$proMaxSnapshot.PrimaryQuotaPeriod -eq 'Weekly' -and
+            [string]$proMaxSnapshot.WindowLabel -eq '每周余量' -and
+            [int]$proMaxSnapshot.RemainingPercent -eq
+                [int]$proMaxSnapshot.WeeklyRemainingPercent -and
+            [int]$proMaxSnapshot.FiveHourRemainingPercent -ne
+                [int]$proMaxSnapshot.WeeklyRemainingPercent
+        )
+        CodexProMaxWithoutWeeklyRemainsUnknown = (
+            $proMaxWithoutWeeklySnapshot.PrimaryQuotaPeriod -eq 'Weekly' -and
+            -not [bool]$proMaxWithoutWeeklySnapshot.HasProgress -and
+            $proMaxWithoutWeeklySnapshot.WindowLabel -eq '每周余量未知' -and
+            [bool]$proMaxWithoutWeeklySnapshot.FiveHourAvailable -and
+            -not [bool]$proMaxWithoutWeeklySnapshot.WeeklyAvailable
         )
         CodexNonFiniteQuotaValuesRejected = (
             $null -eq (ConvertTo-CodexQuotaWindow `
