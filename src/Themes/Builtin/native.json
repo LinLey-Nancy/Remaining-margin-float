@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "id": "native",
+  "name": "浅色原生",
+  "description": "浅色原生主题",
+  "layout": {
+    "base": "native",
+    "quotaStyle": "bar",
+    "heroAlignment": "Left"
+  },
+  "colors": {
+    "TextPrimary": "#202831",
+    "TextSecondary": "#526070",
+    "TextMuted": "#738093",
+    "Surface": "#FAFBFC",
+    "SurfaceSubtle": "#F0F4FA",
+    "Border": "#D4DCE6",
+    "Divider": "#E1E7EF",
+    "Track": "#DBE2EC",
+    "SummarySurface": "#EFF3F8",
+    "SummaryBorder": "#DFE6EE",
+    "ButtonSurface": "#F0F4FA",
+    "ButtonHover": "#E1EAF7",
+    "ButtonBorder": "#D2DDEC",
+    "BadgeSurface": "#E4EEFF",
+    "BadgeBorder": "#C9DBF8",
+    "BadgeText": "#416FD6",
+    "Unknown": "#8794A2"
+  },
+  "typography": {
+    "textFamily": "Microsoft YaHei UI",
+    "numberFamily": "Segoe UI Variable Display",
+    "compactNumberSize": 23,
+    "detailsNumberSize": 48
+  },
+  "shape": {
+    "windowRadius": 14,
+    "cardRadius": 9,
+    "progressThickness": 3
+  },
+  "quotaColors": [
+    {
+      "percent": 0,
+      "color": "#BA4B4D"
+    },
+    {
+      "percent": 15,
+      "color": "#CC7954"
+    },
+    {
+      "percent": 30,
+      "color": "#B69548"
+    },
+    {
+      "percent": 60,
+      "color": "#539C9E"
+    },
+    {
+      "percent": 100,
+      "color": "#416FD6"
+    }
+  ]
+}

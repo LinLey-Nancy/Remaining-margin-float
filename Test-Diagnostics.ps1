@@ -90,6 +90,9 @@ function Invoke-EmptyProfilePerformanceDiagnostic {
     }
 }
 
+& powershell.exe -NoProfile -File (Join-Path $PSScriptRoot 'Test-Themes.ps1') -ScriptPath $resolvedScriptPath
+if ($LASTEXITCODE -ne 0) { throw 'Theme diagnostics failed.' }
+
 $configProfiles = Invoke-JsonDiagnostic -Name 'CheckConfigProfiles'
 Assert-Diagnostic -Condition (
     [string]$configProfiles.KimiDefault -eq 'https://api.kimi.com/coding/v1' -and

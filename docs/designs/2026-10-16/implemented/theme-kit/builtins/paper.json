@@ -1,0 +1,63 @@
+{
+    "schemaVersion":  1,
+    "id":  "paper",
+    "name":  "柔和纸感",
+    "description":  "柔和纸感主题",
+    "layout":  {
+                   "base":  "paper",
+                   "quotaStyle":  "rail",
+                   "heroAlignment":  "Right"
+               },
+    "colors":  {
+                   "TextPrimary":  "#343A31",
+                   "TextSecondary":  "#62685C",
+                   "TextMuted":  "#7D8275",
+                   "Surface":  "#F8F7F1",
+                   "SurfaceSubtle":  "#F0F0E6",
+                   "Border":  "#D9DACF",
+                   "Divider":  "#E1E2D7",
+                   "Track":  "#DFE0D6",
+                   "SummarySurface":  "#F1F1E8",
+                   "SummaryBorder":  "#E2E3D7",
+                   "ButtonSurface":  "#EFF0E6",
+                   "ButtonHover":  "#E3E7D8",
+                   "ButtonBorder":  "#D7DCCB",
+                   "BadgeSurface":  "#E1E6D6",
+                   "BadgeBorder":  "#D0D8C1",
+                   "BadgeText":  "#687957",
+                   "Unknown":  "#92978B"
+               },
+    "typography":  {
+                       "textFamily":  "Microsoft YaHei UI",
+                       "numberFamily":  "Segoe UI Variable Display",
+                       "compactNumberSize":  23,
+                       "detailsNumberSize":  48
+                   },
+    "shape":  {
+                  "windowRadius":  8,
+                  "cardRadius":  5,
+                  "progressThickness":  3
+              },
+    "quotaColors":  [
+                        {
+                            "percent":  0,
+                            "color":  "#AC6259"
+                        },
+                        {
+                            "percent":  15,
+                            "color":  "#BD815F"
+                        },
+                        {
+                            "percent":  30,
+                            "color":  "#B29A66"
+                        },
+                        {
+                            "percent":  60,
+                            "color":  "#95936A"
+                        },
+                        {
+                            "percent":  100,
+                            "color":  "#7E8D65"
+                        }
+                    ]
+}

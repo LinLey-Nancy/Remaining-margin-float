@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist'),
     [switch]$SkipArchive
 )
@@ -58,6 +58,14 @@ function Get-BundledApplicationScript {
     [void]$bundle.AppendLine('$script:RmfBundledXaml = @''')
     [void]$bundle.Append($xaml.TrimEnd("`r", "`n"))
     [void]$bundle.AppendLine()
+    [void]$bundle.AppendLine("'@")
+
+    $themeDefinitions = @(foreach ($themeId in @('classic','native','instrument','paper')) {
+        $themePath = Join-Path $sourceRoot ('Themes\Builtin\' + $themeId + '.json')
+        Get-Content -LiteralPath $themePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    })
+    [void]$bundle.AppendLine('$script:RmfBundledThemes = @''')
+    [void]$bundle.AppendLine(($themeDefinitions | ConvertTo-Json -Depth 8))
     [void]$bundle.AppendLine("'@")
 
     foreach ($relativeComponentPath in $componentPaths) {

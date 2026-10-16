@@ -230,6 +230,11 @@ $trayExitItem.Add_Click((New-RmfEventHandler -Kind Event -Callback {
 )
 [void]$script:TrayMenu.Items.Add($trayAlertItem)
 [void]$script:TrayMenu.Items.Add($trayDisplayItem)
+$script:RmfTrayThemeMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:RmfTrayThemeMenu.Text = '主题'
+Add-RmfThemeMenuItems -Menu $script:RmfTrayThemeMenu -Tray
+[void]$script:TrayMenu.Items.Add($script:RmfTrayThemeMenu)
+Sync-RmfThemeMenus
 [void]$script:TrayMenu.Items.Add($trayDataItem)
 [void]$script:TrayMenu.Items.Add($trayMoreItem)
 [void]$script:TrayMenu.Items.Add($traySeparator)
@@ -305,6 +310,18 @@ if ($releaseGuiCheck) {
                 $script:ActiveProvider = 'Codex'
                 $script:CodexOfficialAccessEnabled = $false
                 Invoke-Refresh
+                $savedThemeId = $script:ActiveThemeId
+                try {
+                    $nativeItem = $script:RmfThemeMenu.Items[1]
+                    $nativeItem.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.MenuItem]::ClickEvent, $nativeItem)))
+                    $nativeSelected = $script:ActiveThemeId -eq 'native'
+                    $script:RmfTrayThemeMenu.DropDownItems[2].PerformClick()
+                    $instrumentSelected = $script:ActiveThemeId -eq 'instrument'
+                    $script:RmfTrayThemeMenu.DropDownItems[3].PerformClick()
+                    $paperSelected = $script:ActiveThemeId -eq 'paper'
+                    $script:RmfGuiCheckPassed = ($script:RmfGuiCheckPassed -and $nativeSelected -and
+                        $instrumentSelected -and $paperSelected)
+                } finally { Set-RmfTheme -Id $savedThemeId -SkipSave }
                 $script:RmfRefreshDataProbePassed = (
                     $script:LastSnapshot -and
                     [string]$WindowLabel.Text -ne '读取失败'

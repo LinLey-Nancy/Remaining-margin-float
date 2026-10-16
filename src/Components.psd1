@@ -1,4 +1,4 @@
-@{
+﻿@{
     Components = @(
         'App\Bootstrap.ps1'
         'Core\WindowGeometry.ps1'
@@ -17,12 +17,16 @@
         'Providers\DeepSeekProvider.ps1'
         'Providers\KimiProvider.ps1'
         'Diagnostics\DataDiagnostics.ps1'
+        'Themes\ThemeCatalog.ps1'
         'UI\WindowHost.ps1'
         'Infrastructure\Startup.ps1'
         'UI\WindowState.ps1'
+        'Themes\ThemeHost.ps1'
+        'Themes\ThemeAuthoring.ps1'
         'UI\ConfigProfileDialogs.ps1'
         'App\RefreshCoordinator.ps1'
         'UI\Interaction.ps1'
+        'Diagnostics\ThemeDiagnostics.ps1'
         'Diagnostics\VisualDiagnostics.ps1'
         'UI\TrayHost.ps1'
     )

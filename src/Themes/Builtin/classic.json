@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "id": "classic",
+  "name": "经典（当前默认）",
+  "description": "经典（当前默认）主题",
+  "layout": {
+    "base": "classic",
+    "quotaStyle": "bar",
+    "heroAlignment": "Left"
+  },
+  "colors": {
+    "TextPrimary": "#292D2A",
+    "TextSecondary": "#626A65",
+    "TextMuted": "#8A918C",
+    "Surface": "#FAFAF7",
+    "SurfaceSubtle": "#F4F5F1",
+    "Border": "#E1E3DE",
+    "Divider": "#E7E8E3",
+    "Track": "#DCDDD8",
+    "SummarySurface": "#F5F6F2",
+    "SummaryBorder": "#E5E8E3",
+    "ButtonSurface": "#F1F3EF",
+    "ButtonHover": "#E9EEE9",
+    "ButtonBorder": "#E0E3DD",
+    "BadgeSurface": "#F1EFEA",
+    "BadgeBorder": "#E1DDD3",
+    "BadgeText": "#8A7658",
+    "Unknown": "#89908C"
+  },
+  "typography": {
+    "textFamily": "Microsoft YaHei UI",
+    "numberFamily": "Segoe UI Variable Display",
+    "compactNumberSize": 23,
+    "detailsNumberSize": 34
+  },
+  "shape": {
+    "windowRadius": 16,
+    "cardRadius": 9,
+    "progressThickness": 3
+  },
+  "quotaColors": [
+    {
+      "percent": 0,
+      "color": "#A4736F"
+    },
+    {
+      "percent": 50,
+      "color": "#9A8968"
+    },
+    {
+      "percent": 100,
+      "color": "#718478"
+    }
+  ]
+}

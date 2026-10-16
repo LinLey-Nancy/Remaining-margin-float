@@ -46,7 +46,25 @@ WPF Dispatcher，待当前回调结束后继续执行。
 | `Providers` | Codex、DeepSeek 与 Kimi Code 数据读取、解析和快照生成 |
 | `Infrastructure` | 本地配置、DPAPI、开机启动、版本更新、持久化和脱敏运行日志 |
 | `UI` | WPF 窗口、状态渲染、交互、托盘与 XAML |
+| `Themes` | 四套内置定义、自制主题校验与导入、WPF 主题适配、显示契约及 AI 制作套件 |
 | `Diagnostics` | 数据、窗口、视觉和发布所需的自诊断流程 |
+
+## 主题边界
+
+`Themes/ThemeCatalog.ps1` 读取 `Builtin/*.json` 与用户数据目录 `themes/*.json`，只接受
+v1 声明式字段、受限颜色/字号/尺寸、严格递增的余量色阶。`ThemeHost.ps1` 适配已有
+WPF 命名元素，保持 Provider、额度窗口、历史采样与通知逻辑独立；经典主题保留原外观，
+三个新主题拥有工具栏、大数字统计和各自的横条/圆环/竖条布局。状态颜色按数值分段插值，
+不同配额窗口独立着色，高对比度由系统接管。
+
+`ThemeAuthoring.ps1` 提供 `Get-RmfThemeViewModel` 与可离线导出的制作套件。
+显示契约含 `main`、`weekly`、`metrics`、`tokens`、`trends` 与来源/版本等格式化字段；
+套件仅包含固定演示数据，不导出真实账户或凭据。主题不执行脚本、XAML 或网络资源。
+`settings.json` 中的 `ThemeId` 缺失时默认经典，已选文件损坏/缺失时回退经典并记录日志。
+构建将四套 JSON 嵌入单脚本，安装版无需源码目录即可切换、导入与导出。
+
+制作接口与用户流程见 [docs/THEMES.md](docs/THEMES.md)。`Test-Themes.ps1` 以隔离配置
+验证主题切换、持久化、导入拒绝、配额着色和多数据源，并可输出真实 WPF 截图。
 
 ## 配置档案（多账号）
 
