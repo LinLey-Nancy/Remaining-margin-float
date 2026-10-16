@@ -1,0 +1,63 @@
+{
+    "schemaVersion":  1,
+    "id":  "instrument",
+    "name":  "深色仪表",
+    "description":  "深色仪表主题",
+    "layout":  {
+                   "base":  "instrument",
+                   "quotaStyle":  "ring",
+                   "heroAlignment":  "Left"
+               },
+    "colors":  {
+                   "TextPrimary":  "#EDF2EF",
+                   "TextSecondary":  "#C1CCC7",
+                   "TextMuted":  "#9BAAA4",
+                   "Surface":  "#22292B",
+                   "SurfaceSubtle":  "#2A3335",
+                   "Border":  "#465254",
+                   "Divider":  "#3B4749",
+                   "Track":  "#465153",
+                   "SummarySurface":  "#273032",
+                   "SummaryBorder":  "#3C494B",
+                   "ButtonSurface":  "#2D3939",
+                   "ButtonHover":  "#394B45",
+                   "ButtonBorder":  "#4A5B54",
+                   "BadgeSurface":  "#294C3D",
+                   "BadgeBorder":  "#426A56",
+                   "BadgeText":  "#A9DFC1",
+                   "Unknown":  "#9CA9A5"
+               },
+    "typography":  {
+                       "textFamily":  "Microsoft YaHei UI",
+                       "numberFamily":  "Consolas",
+                       "compactNumberSize":  23,
+                       "detailsNumberSize":  34
+                   },
+    "shape":  {
+                  "windowRadius":  10,
+                  "cardRadius":  5,
+                  "progressThickness":  3
+              },
+    "quotaColors":  [
+                        {
+                            "percent":  0,
+                            "color":  "#E37878"
+                        },
+                        {
+                            "percent":  15,
+                            "color":  "#E39A72"
+                        },
+                        {
+                            "percent":  30,
+                            "color":  "#D5B46D"
+                        },
+                        {
+                            "percent":  60,
+                            "color":  "#B9CC88"
+                        },
+                        {
+                            "percent":  100,
+                            "color":  "#8FD8B2"
+                        }
+                    ]
+}

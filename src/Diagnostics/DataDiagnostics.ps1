@@ -3866,7 +3866,7 @@ function Get-MultiAccountSimulation {
             $script:BudgetAlertState['Codex|account-x|Weekly|Budget'] -eq $false
         ) 'a second account alerts on its own and an under-budget window stays quiet'
 
-        # --- B4 the menu really is ten rows -------------------------------
+        # --- B4 grouped menu includes independent themes -------------------------------
         Set-ActiveProvider -Provider 'Kimi'
         Sync-ProviderMenuState
         $contextMenu = $script:ConfigProfileMenuItem.Parent
@@ -3885,7 +3885,8 @@ function Get-MultiAccountSimulation {
             @($menuHeaders | Where-Object { $_ -eq '退出' }).Count -eq 1 -and
             @($menuHeaders | Where-Object { $_ -eq '数据源' }).Count -eq 1 -and
             @($menuHeaders | Where-Object { $_ -eq '立即刷新' }).Count -eq 1 -and
-            $menuRows -eq 10
+            @($menuHeaders | Where-Object { $_ -eq '主题' }).Count -eq 1 -and
+            $menuRows -eq 11
         )
         Record 'B4' $groupedMenu ('menu rows = ' + $menuRows)
     }

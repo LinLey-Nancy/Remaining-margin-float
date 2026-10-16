@@ -1,4 +1,6 @@
 ﻿param(
+    [switch]$CheckThemes,
+    [string]$Theme = '',
     [switch]$CheckData,
     [switch]$CheckDeepSeekData,
     [switch]$CheckDeepSeekUsage,
@@ -43,6 +45,7 @@ $releaseGuiCheck = (
     ) -eq '1'
 )
 $isDiagnosticRun = (
+    $CheckThemes -or
     $CheckData -or
     $CheckDeepSeekData -or
     $CheckDeepSeekUsage -or

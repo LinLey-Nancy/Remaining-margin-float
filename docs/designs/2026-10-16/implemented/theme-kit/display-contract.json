@@ -1,0 +1,71 @@
+{
+    "schemaVersion":  1,
+    "note":  "下方为演示数据，与真实账户无关；字段由宿主统一绑定。",
+    "providers":  [
+                      "Codex",
+                      "Kimi",
+                      "DeepSeek"
+                  ],
+    "sample":  {
+                   "provider":  "Codex",
+                   "plan":  "Plus",
+                   "main":  {
+                                "suffix":  "%",
+                                "percent":  8,
+                                "progressAvailable":  true,
+                                "prefix":  "",
+                                "resetDate":  "16:20",
+                                "value":  "8",
+                                "label":  "5 小时余量",
+                                "resetCountdown":  "3 小时 8 分钟后"
+                            },
+                   "weekly":  {
+                                  "resetCountdown":  "6 天后",
+                                  "percent":  24,
+                                  "value":  "24%",
+                                  "visible":  true
+                              },
+                   "metrics":  {
+                                   "fourthTitle":  "命中率",
+                                   "summaryVisible":  true,
+                                   "firstTitle":  "今日 Token",
+                                   "thirdTitle":  "缓存",
+                                   "secondarySummaryValue":  "245.8K · 命中 64.2%",
+                                   "thirdValue":  "245.8K",
+                                   "primaryVisible":  false,
+                                   "summaryValue":  "382.6K · 输出 81.4K",
+                                   "firstValue":  "382.6K",
+                                   "summaryTitle":  "今日 Token",
+                                   "secondValue":  "81.4K",
+                                   "secondTitle":  "输出",
+                                   "secondarySummaryTitle":  "今日缓存",
+                                   "fourthValue":  "64.2%"
+                               },
+                   "tokens":  {
+                                  "output":  "81.4K",
+                                  "cached":  "245.8K",
+                                  "hitRate":  "64.2%",
+                                  "total":  "382.6K",
+                                  "available":  true
+                              },
+                   "trends":  {
+                                  "prediction":  "预计约 45 分钟后耗尽",
+                                  "title":  "5 小时额度趋势",
+                                  "weeklySummary":  "下降 23pp",
+                                  "fiveHourSummary":  "下降 10pp",
+                                  "monitoring":  "快速下降监控已开启"
+                              },
+                   "source":  "演示数据",
+                   "sampleTime":  "刚刚",
+                   "version":  "1.14.0",
+                   "expanded":  true
+               },
+    "bindings":  {
+                     "metrics":  "统计与缓存区域",
+                     "trends":  "趋势与预测区域",
+                     "source":  "数据来源",
+                     "weekly":  "补充配额窗口",
+                     "sampleTime":  "采样时间",
+                     "main":  "主数字、进度、周期与重置"
+                 }
+}

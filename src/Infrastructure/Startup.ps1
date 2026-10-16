@@ -604,6 +604,7 @@ function Get-AppSettingsSnapshot {
         Top = $saveTop
         Expanded = $false
         Topmost = $window.Topmost
+        ThemeId = $script:ActiveThemeId
         Provider = $script:ActiveProvider
         ActiveKimiConfigId = Get-ActiveConfigProfileId -Provider 'Kimi'
         ActiveDeepSeekConfigId = Get-ActiveConfigProfileId -Provider 'DeepSeek'
@@ -687,6 +688,15 @@ function Restore-Settings {
             ) {
                 $script:EdgeDockSide = [string]$settings.EdgeDockSide
             }
+            if (-not $isDiagnosticRun -and $settings.PSObject.Properties['ThemeId']) {
+                $requestedTheme = [string]$settings.ThemeId
+                if ($script:RmfThemes.Contains($requestedTheme)) {
+                    $script:ActiveThemeId = $requestedTheme
+                } else {
+                    $script:ActiveThemeId = 'classic'
+                    Write-RuntimeLog -Level Warning -Event 'Theme.Fallback' -Message '保存的主题不可用，已回退经典主题。'
+                }
+            }
             if ($settings.PSObject.Properties['Provider']) {
                 $storedProvider = [string]$settings.Provider
                 # An empty Provider is the deliberate blank state; only a value
@@ -756,4 +766,9 @@ function Restore-Settings {
         }
         Sync-ActiveAlertSettings
     }
+    if (-not [string]::IsNullOrWhiteSpace($Theme)) {
+        if (-not $script:RmfThemes.Contains($Theme)) { throw '启动参数指定的主题不存在。' }
+        $script:ActiveThemeId = $Theme
+    }
+    Set-RmfTheme -Id $script:ActiveThemeId -SkipSave
 }

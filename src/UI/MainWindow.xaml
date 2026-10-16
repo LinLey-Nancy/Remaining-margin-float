@@ -17,6 +17,31 @@
     SnapsToDevicePixels="True"
     UseLayoutRounding="True">
     <Window.Resources>
+        <SolidColorBrush x:Key="FixedC9D2CA" Color="#C9D2CA"/>
+        <SolidColorBrush x:Key="FixedE9EEE9" Color="#E9EEE9"/>
+        <SolidColorBrush x:Key="Fixed718478" Color="#718478"/>
+        <SolidColorBrush x:Key="Fixed46544A" Color="#46544A"/>
+        <SolidColorBrush x:Key="FixedE0E3DD" Color="#E0E3DD"/>
+        <SolidColorBrush x:Key="FixedF1F3EF" Color="#F1F3EF"/>
+        <SolidColorBrush x:Key="Fixed0CFFFFFF" Color="#0CFFFFFF"/>
+        <SolidColorBrush x:Key="Fixed244F6B58" Color="#244F6B58"/>
+        <SolidColorBrush x:Key="Fixed626965" Color="#626965"/>
+        <SolidColorBrush x:Key="Fixed69716C" Color="#69716C"/>
+        <SolidColorBrush x:Key="Fixed796B53" Color="#796B53"/>
+        <SolidColorBrush x:Key="Fixed96A39A" Color="#96A39A"/>
+        <SolidColorBrush x:Key="FixedDCDDD8" Color="#DCDDD8"/>
+        <SolidColorBrush x:Key="FixedDCE1DC" Color="#DCE1DC"/>
+        <SolidColorBrush x:Key="FixedDCE2DC" Color="#DCE2DC"/>
+        <SolidColorBrush x:Key="FixedDDE2DC" Color="#DDE2DC"/>
+        <SolidColorBrush x:Key="FixedE0E5DF" Color="#E0E5DF"/>
+        <SolidColorBrush x:Key="FixedE1DDD3" Color="#E1DDD3"/>
+        <SolidColorBrush x:Key="FixedE5E8E3" Color="#E5E8E3"/>
+        <SolidColorBrush x:Key="FixedEEF2ED" Color="#EEF2ED"/>
+        <SolidColorBrush x:Key="FixedF02B3831" Color="#F02B3831"/>
+        <SolidColorBrush x:Key="FixedF1EFEA" Color="#F1EFEA"/>
+        <SolidColorBrush x:Key="FixedF2FFFFFF" Color="#F2FFFFFF"/>
+        <SolidColorBrush x:Key="FixedF5F6F2" Color="#F5F6F2"/>
+        <SolidColorBrush x:Key="FixedFFFFFF" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="TextPrimary" Color="#292D2A"/>
         <SolidColorBrush x:Key="TextSecondary" Color="#626A65"/>
         <SolidColorBrush x:Key="TextMuted" Color="#8A918C"/>
@@ -33,9 +58,9 @@
         <Style x:Key="SoftButton" TargetType="Button">
             <Setter Property="Height" Value="34"/>
             <Setter Property="Padding" Value="12,0"/>
-            <Setter Property="Background" Value="#F1F3EF"/>
-            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
-            <Setter Property="BorderBrush" Value="#E0E3DD"/>
+            <Setter Property="Background" Value="{DynamicResource FixedF1F3EF}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource FixedE0E3DD}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
@@ -53,15 +78,15 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#E9EEE9"/>
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#C9D2CA"/>
-                                <Setter Property="Foreground" Value="#46544A"/>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource FixedE9EEE9}"/>
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource FixedC9D2CA}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource Fixed46544A}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.72"/>
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#718478"/>
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource Fixed718478}"/>
                                 <Setter TargetName="ButtonBorder" Property="BorderThickness" Value="2"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -77,13 +102,13 @@
             <Setter Property="CornerRadius" Value="14"/>
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                    <Setter Property="BorderBrush" Value="#718478"/>
+                    <Setter Property="BorderBrush" Value="{DynamicResource Fixed718478}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="MetricTitleText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
             <Setter Property="FontSize" Value="9.5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -92,7 +117,7 @@
 
         <Style x:Key="MetricValueText" TargetType="TextBlock">
             <Setter Property="Margin" Value="0,2,0,0"/>
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="FontFamily" Value="Segoe UI Variable Display"/>
             <Setter Property="FontSize" Value="21"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -102,21 +127,21 @@
 
         <Style x:Key="MetricHintText" TargetType="TextBlock">
             <Setter Property="Margin" Value="0"/>
-            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
             <Setter Property="FontSize" Value="9"/>
             <Setter Property="LineHeight" Value="13"/>
         </Style>
 
         <Style x:Key="SectionTitleText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
             <Setter Property="FontSize" Value="11.5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
 
         <Style x:Key="ChartMetaText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
             <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
             <Setter Property="FontSize" Value="9"/>
         </Style>
@@ -132,8 +157,8 @@
                 Opacity="0"/>
 
         <Border x:Name="Surface"
-                Background="{StaticResource Surface}"
-                BorderBrush="{StaticResource Border}"
+                Background="{DynamicResource Surface}"
+                BorderBrush="{DynamicResource Border}"
                 BorderThickness="1"
                 CornerRadius="16"
                 ClipToBounds="True">
@@ -146,25 +171,51 @@
                                   Opacity="0.07"/>
             </Border.Effect>
 
-            <Grid>
+            <Grid x:Name="SurfaceLayoutRoot">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="69"/>
+                    <RowDefinition x:Name="ThemeToolbarRow" Height="0"/>
+                    <RowDefinition x:Name="ThemeHeaderRow" Height="69"/>
                     <RowDefinition Height="1"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
+                <Grid x:Name="ThemeToolbar" Grid.Row="0" Margin="15,8,42,3" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Button x:Name="ThemeProviderButton" Style="{StaticResource SoftButton}" Padding="8,0" Height="27" VerticalAlignment="Top" Content="Codex ▾"/>
+                    <StackPanel Grid.Column="1" Margin="10,0,6,0">
+                        <TextBlock x:Name="ThemeAccountText" FontSize="10" FontFamily="Microsoft YaHei UI" Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="ThemeAccountHint" FontSize="8.5" FontFamily="Microsoft YaHei UI" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <Border Grid.Column="2" Padding="6,3" VerticalAlignment="Top" CornerRadius="4" Background="{DynamicResource FixedF1EFEA}"><TextBlock x:Name="ThemePlanText" FontSize="10" Foreground="{DynamicResource Champagne}"/></Border>
+                </Grid>
+
                 <Border x:Name="CompactHit"
-                        Grid.Row="0"
+                        Grid.Row="1"
                         Style="{StaticResource CompactHitStyle}"
                         Padding="7,5,7,5"
                         Cursor="Hand"
                         ToolTip="拖动移动 · 单击查看详情"
                         Focusable="True">
-                    <Grid>
+                    <Grid x:Name="ThemeHeaderContent">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
                             <RowDefinition x:Name="CompactProgressRow" Height="12"/>
                         </Grid.RowDefinitions>
+
+                        <TextBlock x:Name="ThemeCompactProvider" Text="Codex" Grid.RowSpan="2" FontSize="8" FontWeight="SemiBold" FontFamily="Microsoft YaHei UI" Foreground="{DynamicResource TextPrimary}" Visibility="Collapsed" IsHitTestVisible="False" VerticalAlignment="Top"/>
+                        <TextBlock x:Name="ThemeCompactPeriod" Grid.RowSpan="2" FontSize="8" FontFamily="Microsoft YaHei UI" Foreground="{DynamicResource TextSecondary}" Visibility="Collapsed" IsHitTestVisible="False" VerticalAlignment="Bottom" HorizontalAlignment="Center"/>
+                        <Grid x:Name="ThemeRing" Grid.RowSpan="2" Width="44" Height="44" Visibility="Collapsed" IsHitTestVisible="False">
+                            <Ellipse x:Name="ThemeRingTrack" Margin="3" Stroke="{DynamicResource FixedDCDDD8}" StrokeThickness="3"/>
+                            <Path x:Name="ThemeRingArc" Stroke="{DynamicResource Sage}" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            <Viewbox Margin="7" Stretch="Uniform" StretchDirection="DownOnly">
+                            <TextBlock x:Name="ThemeRingNumber" Foreground="{DynamicResource StatusStrong}" FontSize="18" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Viewbox>
+                        </Grid>
+                        <Border x:Name="ThemeRail" Grid.RowSpan="2" Width="5" Height="52" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource FixedDCDDD8}" CornerRadius="2.5" Visibility="Collapsed" IsHitTestVisible="False" ClipToBounds="True">
+                            <Border x:Name="ThemeRailFill" VerticalAlignment="Bottom" Background="{DynamicResource Sage}" CornerRadius="2.5" Height="0"/>
+                        </Border>
+                        <TextBlock x:Name="ThemeHeroLabel" Grid.RowSpan="2" Foreground="{DynamicResource TextPrimary}" FontFamily="Microsoft YaHei UI" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Top" Visibility="Collapsed" IsHitTestVisible="False"/>
+                        <TextBlock x:Name="ThemeHeroReset" Grid.RowSpan="2" Foreground="{DynamicResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="9.5" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" Visibility="Collapsed" IsHitTestVisible="False"/>
 
                         <StackPanel x:Name="RemainingSummaryPanel"
                                     Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -200,7 +251,7 @@
                                        Margin="0,0,0,0"
                                        HorizontalAlignment="Center"
                                        Text="Codex 余量"
-                                       Foreground="{StaticResource TextSecondary}"
+                                       Foreground="{DynamicResource TextSecondary}"
                                        FontFamily="Microsoft YaHei UI"
                                        FontSize="9"/>
                         </StackPanel>
@@ -218,7 +269,7 @@
                                        Margin="0,0,0,5"
                                        Visibility="Collapsed"
                                        Text="Codex 余量"
-                                       Foreground="{StaticResource TextMuted}"
+                                       Foreground="{DynamicResource TextMuted}"
                                        FontFamily="Microsoft YaHei UI"
                                        FontSize="8.5"
                                        FontWeight="SemiBold"/>
@@ -237,26 +288,26 @@
                                 <TextBlock x:Name="DetailsResetPrefix"
                                            Grid.Column="0"
                                            Text="下次重置 "
-                                           Foreground="{StaticResource TextMuted}"
+                                           Foreground="{DynamicResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"/>
                                 <TextBlock x:Name="DetailsResetDate"
                                            Grid.Column="1"
                                            Text="--"
-                                           Foreground="{StaticResource TextSecondary}"
+                                           Foreground="{DynamicResource TextSecondary}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"
                                            FontWeight="SemiBold"/>
                                 <TextBlock x:Name="DetailsResetSeparator"
                                            Grid.Column="2"
                                            Text=" · "
-                                           Foreground="{StaticResource TextMuted}"
+                                           Foreground="{DynamicResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"/>
                                 <TextBlock x:Name="DetailsResetCountdown"
                                            Grid.Column="3"
                                            Text="--"
-                                           Foreground="{StaticResource TextMuted}"
+                                           Foreground="{DynamicResource TextMuted}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="12.5"
                                            TextTrimming="CharacterEllipsis"
@@ -267,7 +318,7 @@
                                     Height="3"
                                     VerticalAlignment="Bottom"
                                     CornerRadius="1.5"
-                                    Background="#DCDDD8"
+                                    Background="{DynamicResource FixedDCDDD8}"
                                     ClipToBounds="True"
                                     ToolTip="剩余 -- · 已使用 --">
                                 <Grid>
@@ -276,7 +327,7 @@
                                         <ColumnDefinition x:Name="UsedProgressColumn" Width="100*"/>
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" Background="{DynamicResource Sage}"/>
-                                    <Border Grid.Column="1" Background="#DCDDD8"/>
+                                    <Border Grid.Column="1" Background="{DynamicResource FixedDCDDD8}"/>
                                 </Grid>
                             </Border>
                         </Grid>
@@ -284,17 +335,17 @@
                 </Border>
 
                 <Border x:Name="CompactDivider"
-                        Grid.Row="1"
-                        Background="{StaticResource Divider}"
+                        Grid.Row="2"
+                        Background="{DynamicResource Divider}"
                         Margin="16,0"/>
 
                 <Grid x:Name="DetailsPanel"
-                      Grid.Row="2"
+                      Grid.Row="3"
                       Margin="20,12,20,12"
                       Visibility="Collapsed"
                       Opacity="0">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="46"/>
+                        <RowDefinition x:Name="ThemeAccountRow" Height="46"/>
                         <RowDefinition Height="4"/>
                         <RowDefinition x:Name="QuotaMetricRow" Height="132"/>
                         <RowDefinition Height="52"/>
@@ -316,7 +367,7 @@
                                    Grid.Column="0"
                                    VerticalAlignment="Center"
                                    Text="本地 Codex"
-                                   Foreground="{StaticResource TextPrimary}"
+                                   Foreground="{DynamicResource TextPrimary}"
                                    FontFamily="Microsoft YaHei UI"
                                    FontSize="15"
                                    FontWeight="SemiBold"
@@ -326,13 +377,13 @@
                                 Margin="9,1,0,0"
                                 Padding="7,2"
                                 VerticalAlignment="Center"
-                                Background="#F1EFEA"
-                                BorderBrush="#E1DDD3"
+                                Background="{DynamicResource FixedF1EFEA}"
+                                BorderBrush="{DynamicResource FixedE1DDD3}"
                                 BorderThickness="1"
                                 CornerRadius="5">
                             <TextBlock x:Name="PlanBadge"
                                        Text="Codex"
-                                       Foreground="#796B53"
+                                       Foreground="{DynamicResource Fixed796B53}"
                                        FontFamily="Segoe UI Variable Text"
                                        FontSize="9"
                                        FontWeight="SemiBold"/>
@@ -343,14 +394,14 @@
                                    Grid.ColumnSpan="2"
                                    Margin="0,5,0,0"
                                    Text="未找到账号信息"
-                                   Foreground="{StaticResource TextSecondary}"
+                                   Foreground="{DynamicResource TextSecondary}"
                                    FontFamily="Segoe UI Variable Text"
                                    FontSize="10.5"
                                    TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                     </Grid>
 
-                    <Border Grid.Row="2"
+                    <Border x:Name="ThemeQuotaCard" Grid.Row="2"
                             Background="{DynamicResource SageSoft}"
                             CornerRadius="12"
                             Padding="14,6">
@@ -374,7 +425,7 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center">
                                         <TextBlock Text="5 小时"
-                                                   Foreground="{StaticResource TextPrimary}"
+                                                   Foreground="{DynamicResource TextPrimary}"
                                                    FontFamily="Microsoft YaHei UI"
                                                    FontSize="11.5"
                                                    FontWeight="SemiBold"/>
@@ -405,7 +456,7 @@
                                     <Border Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
                                             Height="3"
                                             VerticalAlignment="Center"
-                                            Background="#DCE1DC"
+                                            Background="{DynamicResource FixedDCE1DC}"
                                             CornerRadius="1.5"
                                             ClipToBounds="True">
                                         <Grid>
@@ -413,7 +464,7 @@
                                                 <ColumnDefinition x:Name="FiveHourRemainingColumn" Width="0*"/>
                                                 <ColumnDefinition x:Name="FiveHourUsedColumn" Width="100*"/>
                                             </Grid.ColumnDefinitions>
-                                            <Border Background="{DynamicResource Sage}"/>
+                                            <Border x:Name="ThemeFiveHourFill" Background="{DynamicResource Sage}"/>
                                         </Grid>
                                     </Border>
                                 </Grid>
@@ -422,7 +473,7 @@
                                         Grid.Row="1"
                                         Height="1"
                                         VerticalAlignment="Center"
-                                        Background="#DCE2DC"/>
+                                        Background="{DynamicResource FixedDCE2DC}"/>
 
                                 <Grid x:Name="WeeklyQuotaBand" Grid.Row="2">
                                     <Grid.RowDefinitions>
@@ -436,7 +487,7 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="每周额度"
                                                VerticalAlignment="Center"
-                                               Foreground="{StaticResource TextPrimary}"
+                                               Foreground="{DynamicResource TextPrimary}"
                                                FontFamily="Microsoft YaHei UI"
                                                FontSize="11.5"
                                                FontWeight="SemiBold"/>
@@ -456,22 +507,22 @@
                                                 VerticalAlignment="Center">
                                         <TextBlock x:Name="WeeklyRemainingValue"
                                                    Text="--"
-                                                   Foreground="{StaticResource TextPrimary}"
+                                                   Foreground="{DynamicResource TextPrimary}"
                                                    FontFamily="Segoe UI Variable Display"
                                                    FontSize="18"
                                                    FontWeight="SemiBold"
                                                    LineHeight="22"/>
                                         <TextBlock Margin="4,3,0,0"
                                                    Text="剩余"
-                                                   Foreground="{StaticResource TextSecondary}"
+                                                   Foreground="{DynamicResource TextSecondary}"
                                                    FontFamily="Microsoft YaHei UI"
                                                    FontSize="9.5"
                                                    FontWeight="SemiBold"/>
                                     </StackPanel>
-                                    <Border Grid.Row="1" Grid.ColumnSpan="3"
+                                    <Border x:Name="ThemeWeeklyTrack" Grid.Row="1" Grid.ColumnSpan="3"
                                             Height="3"
                                             VerticalAlignment="Center"
-                                            Background="#DCE1DC"
+                                            Background="{DynamicResource FixedDCE1DC}"
                                             CornerRadius="1.5"
                                             ClipToBounds="True">
                                         <Grid>
@@ -479,7 +530,7 @@
                                                 <ColumnDefinition x:Name="WeeklyRemainingColumn" Width="0*"/>
                                                 <ColumnDefinition x:Name="WeeklyUsedColumn" Width="100*"/>
                                             </Grid.ColumnDefinitions>
-                                            <Border Background="#96A39A"/>
+                                            <Border x:Name="ThemeWeeklyFill" Background="{DynamicResource Fixed96A39A}"/>
                                         </Grid>
                                     </Border>
                                 </Grid>
@@ -526,7 +577,7 @@
                                 <Border Grid.Row="1"
                                         Height="1"
                                         VerticalAlignment="Center"
-                                        Background="#E0E5DF"/>
+                                        Background="{DynamicResource FixedE0E5DF}"/>
 
                                 <Grid Grid.Row="2">
                                     <Grid.ColumnDefinitions>
@@ -562,8 +613,8 @@
                     <Border x:Name="TokenSummaryCard"
                             Grid.Row="3"
                             Margin="0,6,0,0"
-                            Background="#F5F6F2"
-                            BorderBrush="#E5E8E3"
+                            Background="{DynamicResource FixedF5F6F2}"
+                            BorderBrush="{DynamicResource FixedE5E8E3}"
                             BorderThickness="1"
                             CornerRadius="9"
                             Padding="10,5">
@@ -573,12 +624,26 @@
                                 <ColumnDefinition Width="25"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
+                            <Grid x:Name="ThemeTokenGrid" Grid.ColumnSpan="3" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="今日 Token" Foreground="{DynamicResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="9.5"/>
+                                    <TextBlock x:Name="ThemeTokenTotal" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="21" FontWeight="SemiBold" Margin="0,1,0,0"/>
+                                    <TextBlock x:Name="ThemeTokenOutput" Foreground="{DynamicResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                </StackPanel>
+                                <Border Grid.Column="1" Width="1" Margin="0,3" Background="{DynamicResource Divider}"/>
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                    <TextBlock Text="今日缓存" Foreground="{DynamicResource TextSecondary}" FontFamily="Microsoft YaHei UI" FontSize="9.5"/>
+                                    <TextBlock x:Name="ThemeTokenCached" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI Variable Display" FontSize="21" FontWeight="SemiBold" Margin="0,1,0,0"/>
+                                    <TextBlock x:Name="ThemeTokenHit" Foreground="{DynamicResource TextMuted}" FontFamily="Microsoft YaHei UI" FontSize="9"/>
+                                </StackPanel>
+                            </Grid>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock x:Name="BreakdownTitle" Text="今日缓存" Style="{StaticResource MetricTitleText}"/>
                                 <TextBlock x:Name="TokenBreakdown"
                                            Margin="0,4,0,0"
                                            Text="-- cached  ·  命中 --"
-                                           Foreground="{StaticResource TextPrimary}"
+                                           Foreground="{DynamicResource TextPrimary}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="10.5"
                                            FontWeight="SemiBold"/>
@@ -588,7 +653,7 @@
                                     Width="1"
                                     Margin="12,2"
                                     HorizontalAlignment="Center"
-                                    Background="#DDE2DC"/>
+                                    Background="{DynamicResource FixedDDE2DC}"/>
                             <StackPanel Grid.Column="2"
                                         HorizontalAlignment="Right"
                                         VerticalAlignment="Center">
@@ -600,7 +665,7 @@
                                            Margin="0,4,0,0"
                                            Text="等待数据"
                                            HorizontalAlignment="Right"
-                                           Foreground="{StaticResource TextPrimary}"
+                                           Foreground="{DynamicResource TextPrimary}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="10.5"
                                            FontWeight="SemiBold"/>
@@ -663,7 +728,7 @@
                                     </Grid.RowDefinitions>
                                     <Grid>
                                         <TextBlock Text="近 5 小时"
-                                                   Foreground="{StaticResource TextSecondary}"
+                                                   Foreground="{DynamicResource TextSecondary}"
                                                    FontFamily="Microsoft YaHei UI"
                                                    FontSize="9.5"
                                                    FontWeight="SemiBold"/>
@@ -683,16 +748,16 @@
                                             ClipToBounds="True">
                                         <Border Width="150" Height="1"
                                                 Canvas.Top="21"
-                                                Background="#DDE2DC"/>
+                                                Background="{DynamicResource FixedDDE2DC}"/>
                                         <Polygon x:Name="Trend5HArea"
-                                                 Fill="#244F6B58"/>
+                                                 Fill="{DynamicResource Fixed244F6B58}"/>
                                         <Polyline x:Name="Trend5HLine"
                                                   Stroke="{DynamicResource StatusStrong}"
                                                   StrokeThickness="2"
                                                   StrokeLineJoin="Round"/>
                                         <Ellipse x:Name="Trend5HStartMarker"
                                                  Width="4" Height="4"
-                                                 Fill="#FFFFFF"
+                                                 Fill="{DynamicResource FixedFFFFFF}"
                                                  Stroke="{DynamicResource StatusStrong}"
                                                  StrokeThickness="1.5"/>
                                         <Ellipse x:Name="Trend5HEndMarker"
@@ -720,7 +785,7 @@
                                     </Grid.RowDefinitions>
                                     <Grid>
                                         <TextBlock Text="近 7 日"
-                                                   Foreground="{StaticResource TextSecondary}"
+                                                   Foreground="{DynamicResource TextSecondary}"
                                                    FontFamily="Microsoft YaHei UI"
                                                    FontSize="9.5"
                                                    FontWeight="SemiBold"/>
@@ -740,16 +805,16 @@
                                             ClipToBounds="True">
                                         <Border Width="150" Height="1"
                                                 Canvas.Top="21"
-                                                Background="#DDE2DC"/>
+                                                Background="{DynamicResource FixedDDE2DC}"/>
                                         <Polygon x:Name="Trend7Area"
-                                                 Fill="#244F6B58"/>
+                                                 Fill="{DynamicResource Fixed244F6B58}"/>
                                         <Polyline x:Name="Trend7Line"
                                                   Stroke="{DynamicResource StatusStrong}"
                                                   StrokeThickness="2"
                                                   StrokeLineJoin="Round"/>
                                         <Ellipse x:Name="Trend7StartMarker"
                                                  Width="4" Height="4"
-                                                 Fill="#FFFFFF"
+                                                 Fill="{DynamicResource FixedFFFFFF}"
                                                  Stroke="{DynamicResource StatusStrong}"
                                                  StrokeThickness="1.5"/>
                                         <Ellipse x:Name="Trend7EndMarker"
@@ -765,8 +830,8 @@
                             </Border>
                         </Grid>
 
-                        <Border Grid.Row="4"
-                                Background="#EEF2ED"
+                        <Border x:Name="ThemeNotice" Grid.Row="4"
+                                Background="{DynamicResource FixedEEF2ED}"
                                 CornerRadius="7"
                                 Padding="9,5">
                             <Grid>
@@ -780,7 +845,7 @@
                                            Margin="13,0,0,0"
                                            VerticalAlignment="Center"
                                            Text="快速下降监控 · 正在积累样本"
-                                           Foreground="{StaticResource TextSecondary}"
+                                           Foreground="{DynamicResource TextSecondary}"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="9.5"
                                            TextTrimming="CharacterEllipsis"/>
@@ -801,14 +866,14 @@
                             <TextBlock x:Name="SourceText"
                                        Margin="0,0,8,0"
                                        Text="Codex 本地会话快照"
-                                       Foreground="{StaticResource TextSecondary}"
+                                       Foreground="{DynamicResource TextSecondary}"
                                        FontFamily="Microsoft YaHei UI"
                                        FontSize="9"
                                        TextTrimming="CharacterEllipsis"/>
                             <TextBlock x:Name="SampleTime"
                                        Grid.Column="1"
                                        Text="采样于 --"
-                                       Foreground="{StaticResource TextMuted}"
+                                       Foreground="{DynamicResource TextMuted}"
                                        FontFamily="Microsoft YaHei UI"
                                        FontSize="9"/>
                         </Grid>
@@ -820,20 +885,20 @@
                                        LineStackingStrategy="BlockLineHeight">
                                 <Run x:Name="VersionLabelText"
                                      Text="版本"
-                                     Foreground="{StaticResource TextMuted}"
+                                     Foreground="{DynamicResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/><Run Text=" "/><Run x:Name="AppVersionText"
                                      Text="v--"
-                                     Foreground="{StaticResource TextSecondary}"
+                                     Foreground="{DynamicResource TextSecondary}"
                                      FontFamily="Segoe UI Variable Text"
                                      FontWeight="SemiBold"
                                      BaselineAlignment="Baseline"/><Run x:Name="VersionSeparatorText"
                                      Text="  ·  "
-                                     Foreground="{StaticResource TextMuted}"
+                                     Foreground="{DynamicResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/><Run x:Name="AutoRefreshText"
                                      Text="60 秒后自动刷新"
-                                     Foreground="{StaticResource TextMuted}"
+                                     Foreground="{DynamicResource TextMuted}"
                                      FontFamily="Microsoft YaHei UI"
                                      BaselineAlignment="Baseline"/>
                             </TextBlock>
@@ -855,7 +920,7 @@
                      number on the left and its reset line on the bottom row,
                      so the top-right corner stays empty for it. -->
                 <Button x:Name="CloseButton"
-                        Grid.Row="0"
+                        Grid.Row="1"
                         Panel.ZIndex="2"
                         HorizontalAlignment="Right"
                         VerticalAlignment="Top"
@@ -868,7 +933,7 @@
                         ToolTip="收起详情"
                         AutomationProperties.Name="收起详情">
                     <TextBlock Text="&#xE70E;"
-                               Foreground="#69716C"
+                               Foreground="{DynamicResource Fixed69716C}"
                                FontFamily="Segoe Fluent Icons"
                                FontSize="11"/>
                 </Button>
@@ -878,7 +943,7 @@
         <Grid x:Name="UltraCompactPanel"
               Panel.ZIndex="3"
               Width="14"
-              Background="#0CFFFFFF"
+              Background="{DynamicResource Fixed0CFFFFFF}"
               HorizontalAlignment="Right"
               VerticalAlignment="Stretch"
               SnapsToDevicePixels="True"
@@ -919,17 +984,17 @@
                         </Border>
                         <Border x:Name="UltraDepletedMask"
                                 Grid.Row="0"
-                                Background="#626965"/>
+                                Background="{DynamicResource Fixed626965}"/>
                         <Border x:Name="UltraLevelMarker"
                                 Grid.Row="1"
                                 Height="2"
                                 VerticalAlignment="Top"
-                                Background="#F2FFFFFF"/>
+                                Background="{DynamicResource FixedF2FFFFFF}"/>
                     </Grid>
                     <Border x:Name="UltraProgressOutline"
                             Panel.ZIndex="2"
                             Background="Transparent"
-                            BorderBrush="#F02B3831"
+                            BorderBrush="{DynamicResource FixedF02B3831}"
                             BorderThickness="1"
                             CornerRadius="2"
                             IsHitTestVisible="False"

@@ -605,6 +605,15 @@ $names = @(
     'FooterStatusText', 'VersionLabelText', 'AppVersionText',
     'VersionSeparatorText', 'AutoRefreshText', 'RefreshButton'
 )
+$names += @(
+    'ThemeToolbarRow', 'ThemeHeaderRow', 'ThemeAccountRow', 'ThemeToolbar',
+    'ThemeProviderButton', 'ThemeAccountText', 'ThemeAccountHint', 'ThemePlanText',
+    'ThemeCompactProvider', 'ThemeCompactPeriod', 'ThemeRing', 'ThemeRingTrack',
+    'ThemeRingArc', 'ThemeRingNumber', 'ThemeRail', 'ThemeRailFill',
+    'ThemeHeroLabel', 'ThemeHeroReset', 'ThemeWeeklyTrack', 'ThemeWeeklyFill',
+    'ThemeFiveHourFill', 'ThemeNotice', 'ThemeQuotaCard', 'ThemeTokenGrid',
+    'ThemeTokenTotal', 'ThemeTokenOutput', 'ThemeTokenCached', 'ThemeTokenHit'
+)
 foreach ($name in $names) {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
 }
@@ -630,7 +639,13 @@ function Apply-SystemAccessibilityTheme {
     foreach ($resourceName in $colorMap.Keys) {
         $brush = $window.Resources[$resourceName]
         if ($brush -is [Windows.Media.SolidColorBrush]) {
-            $brush.Color = $colorMap[$resourceName]
+            if ($brush.IsFrozen) {
+                $brush = $brush.Clone()
+                $brush.Color = $colorMap[$resourceName]
+                $window.Resources[$resourceName] = $brush.PSObject.BaseObject
+            } else {
+                $brush.Color = $colorMap[$resourceName]
+            }
         }
     }
     $Surface.Background = [Windows.SystemColors]::WindowBrush

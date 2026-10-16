@@ -282,8 +282,8 @@ function Set-EdgeDockChrome {
 
     # Docking must not reshape the card. Only the hidden-state chrome becomes
     # transparent so the energy rail reads as a focused edge affordance.
-    $Surface.CornerRadius = New-Object Windows.CornerRadius(16)
-    $HoverHalo.CornerRadius = New-Object Windows.CornerRadius(17)
+    $Surface.CornerRadius = New-Object Windows.CornerRadius($script:RmfActiveTheme.shape.windowRadius)
+    $HoverHalo.CornerRadius = New-Object Windows.CornerRadius($script:RmfActiveTheme.shape.windowRadius + 1)
 
     $SurfaceShadow.BeginAnimation(
         [Windows.Media.Effects.DropShadowEffect]::OpacityProperty,
@@ -470,7 +470,7 @@ function Clear-EdgeDock {
     $UltraCompactPanel.Margin = New-Object Windows.Thickness(0)
     $Surface.Margin = New-Object Windows.Thickness(0)
     $HoverHalo.Margin = New-Object Windows.Thickness(-1)
-    $Surface.CornerRadius = New-Object Windows.CornerRadius(16)
+    $Surface.CornerRadius = New-Object Windows.CornerRadius($script:RmfActiveTheme.shape.windowRadius)
     $HoverHalo.CornerRadius = New-Object Windows.CornerRadius(17)
     $Surface.Background = if ($script:HighContrast) {
         [Windows.SystemColors]::WindowBrush
@@ -766,6 +766,7 @@ function Set-ExpandedState {
         }
     }
 
+    Update-RmfThemeLayout
     Save-Settings
     $transitionTimer.Stop()
     if (
@@ -787,6 +788,7 @@ function Set-ExpandedState {
 
 function Collapse-DetailsIfInactive {
     param([switch]$Force)
+    if ($script:RmfThemeDialogOpen) { return }
 
     if ($script:IsClosing -or -not $script:IsExpanded) { return }
 
@@ -880,6 +882,10 @@ function Get-UsageStatusPalette {
         }
     }
 
+    if ($script:RmfActiveTheme -and $script:ActiveThemeId -ne 'classic') {
+        return Get-RmfThemeStatusPalette -Percent $Percent -Available $Available
+    }
+
     if (-not $Available) {
         return [pscustomobject]@{
             Accent = [Windows.Media.ColorConverter]::ConvertFromString('#89908C')
@@ -960,13 +966,19 @@ function Set-UsageStatusPalette {
         $UltraDepletedMask.Background = [Windows.SystemColors]::GrayTextBrush
     }
     elseif ($Available) {
-        foreach ($stop in @(
+        $energyStops = @(
             [pscustomobject]@{ Color = '#25D982'; Offset = 0.0 },
             [pscustomobject]@{ Color = '#76D955'; Offset = 0.42 },
             [pscustomobject]@{ Color = '#FFD447'; Offset = 0.60 },
             [pscustomobject]@{ Color = '#FF8A3D'; Offset = 0.80 },
             [pscustomobject]@{ Color = '#F34F60'; Offset = 1.0 }
-        )) {
+        )
+        if ($script:ActiveThemeId -ne 'classic') {
+            $energyStops = @(foreach ($entry in @($script:RmfActiveTheme.quotaColors | Sort-Object percent -Descending)) {
+                [pscustomobject]@{ Color = $entry.color; Offset = 1.0 - ([double]$entry.percent / 100.0) }
+            })
+        }
+        foreach ($stop in $energyStops) {
             $energyBrush.GradientStops.Add(
                 (New-Object Windows.Media.GradientStop(
                     [Windows.Media.ColorConverter]::ConvertFromString($stop.Color),
@@ -1062,7 +1074,10 @@ function Set-Progress {
     } else {
         '暂无可用百分比'
     }
+    $script:RmfThemePercent = $remaining
+    $script:RmfThemeProgressAvailable = $Available
     Set-UsageStatusPalette -Percent $remaining -Available $Available
+    Update-RmfThemeStatus
 }
 
 function Format-CompactBalance {
@@ -1388,6 +1403,9 @@ function Set-TrendChart {
         foreach ($point in $renderPoints) {
             $segmentLine.Points.Add($point)
         }
+        if (-not $script:HighContrast -and $script:ActiveThemeId -ne 'classic' -and $allDisplaySamples[0].MetricType -eq 'Percent') {
+            $segmentLine.Stroke = Get-RmfThemeTrendBrush -Samples @($displaySegments[$segmentIndex].Samples)
+        }
         if ($renderPoints.Count -ge 2) {
             $segmentArea.Points.Add((New-Object Windows.Point(
                 $renderPoints[0].X,
@@ -1452,6 +1470,7 @@ function Format-RapidDropDisplaySummary {
 
 function Update-UsageInsightView {
     param($Insights)
+    $script:RmfThemeMonitorRapid = $false
 
     if (-not $Insights -or -not $Insights.CurrentSample) {
         $Trend5HText.Text = '暂无数据'
@@ -1476,6 +1495,7 @@ function Update-UsageInsightView {
         } else {
             '1 小时内下降 · 正在积累样本'
         }
+        Update-RmfThemeStatus
         return
     }
 
@@ -1571,6 +1591,7 @@ function Update-UsageInsightView {
         $RapidDropText.FontWeight = 'Normal'
     }
     elseif ($rapidDrop.IsRapid) {
+        $script:RmfThemeMonitorRapid = $true
         $RapidDropStatusDot.Fill = New-Object Windows.Media.SolidColorBrush(
             [Windows.Media.ColorConverter]::ConvertFromString('#B75B52')
         )
@@ -1595,6 +1616,7 @@ function Update-UsageInsightView {
         $RapidDropText.Foreground = $window.FindResource('TextSecondary')
         $RapidDropText.FontWeight = 'Normal'
     }
+    Update-RmfThemeStatus
 }
 
 function Get-UsageSnapshotChannel {
@@ -3145,6 +3167,8 @@ function Invoke-PendingUsageHistoryUpdate {
         }
     }
     catch {
+        $script:RmfThemeMonitorRapid = $false
+        $script:LastUsageInsights = $null
         $script:LastUsageHistoryError = $_.Exception.Message
         $script:UsageHistoryUpdateLastError = $_.Exception.Message
         Write-RuntimeLog `
@@ -3174,6 +3198,7 @@ function Invoke-PendingUsageHistoryUpdate {
             [Windows.Media.ColorConverter]::ConvertFromString('#9A765E')
         )
         $RapidDropText.Text = '快速下降监控 · 历史记录暂不可用'
+        Update-RmfThemeStatus
     }
     if (
         $script:PendingUsageHistoryUpdates.Count -eq 0 -and
@@ -3208,6 +3233,7 @@ function Clear-UsageView {
     # install with no data source chosen stays completely silent.
     param([string]$Message = '')
 
+    $script:RmfThemeMonitorRapid = $false
     $script:LastSnapshot = $null
     $script:LastUsageInsights = $null
     $script:LastRapidDropInsight = $null
@@ -3229,7 +3255,6 @@ function Clear-UsageView {
         $BudgetText,
         $RapidDropText,
         $SampleTime,
-        $FooterStatusText,
         $ResetCount,
         $SecondaryMetricTitle,
         $BreakdownTitle,
@@ -3256,6 +3281,8 @@ function Clear-UsageView {
         if ($element) { $element.Text = '' }
     }
 
+    $script:RmfThemeDisplaySnapshot = $null
+    $FooterStatusText.Visibility = 'Collapsed'
     $SourceText.Text = $Message
     $RapidDropStatusDot.Visibility = 'Collapsed'
     $ResetSummaryPanel.Visibility = 'Collapsed'
@@ -3286,6 +3313,7 @@ function Clear-UsageView {
         $window.Top = $placement.Top
         $window.Height = $script:EmptyExpandedHeight
     }
+    Update-RmfThemeLayout
 }
 
 function Update-UsageView {
@@ -3313,6 +3341,9 @@ function Update-UsageView {
         if (-not $DisplayOnly) { $script:LastSnapshot = $null }
         return
     }
+    $TokenSummaryCard.Visibility = 'Visible'
+    $FooterStatusText.Visibility = 'Visible'
+    $RapidDropStatusDot.Visibility = 'Visible'
     $isQuotaLayout = [string]$Snapshot.ProviderId -in @('Codex', 'Kimi')
     if ($isQuotaLayout) {
         $codexPrimaryQuota = Get-CodexQuotaPresentation -Snapshot $Snapshot
@@ -3341,6 +3372,7 @@ function Update-UsageView {
         }
     }
     Assert-UsageSnapshotContract -Snapshot $Snapshot
+    $script:RmfThemeDisplaySnapshot = $Snapshot
     $observedAt = [DateTimeOffset]::Now
     if (-not $DisplayOnly) {
         $script:LastSnapshot = $Snapshot
@@ -3745,4 +3777,5 @@ function Update-UsageView {
             -ObservationContext $ObservationContext
     }
     Reset-RefreshCountdown
+    Update-RmfThemeStatus
 }

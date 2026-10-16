@@ -122,7 +122,7 @@ function Complete-WindowDrag {
     }
 }
 
-if (-not $CheckTransitions -and -not $releaseGuiCheck) {
+if (-not $CheckTransitions -and -not $CheckThemes -and -not $releaseGuiCheck) {
     $window.Add_Loaded((New-RmfEventHandler -Kind Routed -Callback {
         Ensure-WindowVisible
         $window.Activate() | Out-Null
@@ -542,11 +542,20 @@ $exitMenu.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
 [void]$contextMenu.Items.Add((New-Object Windows.Controls.Separator))
 [void]$contextMenu.Items.Add($alertMenu)
 [void]$contextMenu.Items.Add($displayMenu)
+$script:RmfThemeMenu = New-Object Windows.Controls.MenuItem
+$script:RmfThemeMenu.Header = '主题'
+Add-RmfThemeMenuItems -Menu $script:RmfThemeMenu
+[void]$contextMenu.Items.Add($script:RmfThemeMenu)
 [void]$contextMenu.Items.Add($dataMenu)
 [void]$contextMenu.Items.Add($moreMenu)
 [void]$contextMenu.Items.Add((New-Object Windows.Controls.Separator))
 [void]$contextMenu.Items.Add($exitMenu)
 $Surface.ContextMenu = $contextMenu
+Sync-RmfThemeMenus
+$ThemeProviderButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+    $Surface.ContextMenu.IsOpen = $true
+    $sourceMenu.IsSubmenuOpen = $true
+}))
 $contextMenu.Add_Opened((New-RmfEventHandler -Kind Routed -Callback {
     # The stored file may have changed since the menu was built.
     Sync-ProviderMenuState

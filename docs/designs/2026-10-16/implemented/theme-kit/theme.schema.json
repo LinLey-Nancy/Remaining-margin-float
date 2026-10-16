@@ -1,0 +1,290 @@
+{
+    "$schema":  "https://json-schema.org/draft/2020-12/schema",
+    "title":  "Remaining Margin Float Theme v1",
+    "type":  "object",
+    "additionalProperties":  false,
+    "allOf":  [
+                  {
+                      "then":  {
+                                   "properties":  {
+                                                      "layout":  {
+                                                                     "properties":  {
+                                                                                        "heroAlignment":  {
+                                                                                                              "const":  "Left"
+                                                                                                          },
+                                                                                        "quotaStyle":  {
+                                                                                                           "const":  "bar"
+                                                                                                       }
+                                                                                    }
+                                                                 }
+                                                  }
+                               },
+                      "if":  {
+                                 "properties":  {
+                                                    "layout":  {
+                                                                   "properties":  {
+                                                                                      "base":  {
+                                                                                                   "const":  "classic"
+                                                                                               }
+                                                                                  }
+                                                               }
+                                                }
+                             }
+                  }
+              ],
+    "required":  [
+                     "schemaVersion",
+                     "id",
+                     "name",
+                     "description",
+                     "layout",
+                     "colors",
+                     "typography",
+                     "shape",
+                     "quotaColors"
+                 ],
+    "properties":  {
+                       "$schema":  {
+                                       "maxLength":  200,
+                                       "type":  "string"
+                                   },
+                       "schemaVersion":  {
+                                             "const":  1,
+                                             "type":  "integer"
+                                         },
+                       "id":  {
+                                  "pattern":  "^[a-z][a-z0-9-]{2,47}$",
+                                  "type":  "string",
+                                  "not":  {
+                                              "enum":  [
+                                                           "classic",
+                                                           "native",
+                                                           "instrument",
+                                                           "paper"
+                                                       ]
+                                          }
+                              },
+                       "name":  {
+                                    "maxLength":  40,
+                                    "pattern":  "^[^\\u0000-\\u001f]+$",
+                                    "minLength":  1,
+                                    "type":  "string"
+                                },
+                       "description":  {
+                                           "maxLength":  200,
+                                           "pattern":  "^[^\\u0000-\\u001f]+$",
+                                           "minLength":  1,
+                                           "type":  "string"
+                                       },
+                       "layout":  {
+                                      "additionalProperties":  false,
+                                      "properties":  {
+                                                         "heroAlignment":  {
+                                                                               "enum":  [
+                                                                                            "Left",
+                                                                                            "Right"
+                                                                                        ]
+                                                                           },
+                                                         "quotaStyle":  {
+                                                                            "enum":  [
+                                                                                         "bar",
+                                                                                         "ring",
+                                                                                         "rail"
+                                                                                     ]
+                                                                        },
+                                                         "base":  {
+                                                                      "enum":  [
+                                                                                   "classic",
+                                                                                   "native",
+                                                                                   "instrument",
+                                                                                   "paper"
+                                                                               ]
+                                                                  }
+                                                     },
+                                      "type":  "object",
+                                      "required":  [
+                                                       "base",
+                                                       "quotaStyle",
+                                                       "heroAlignment"
+                                                   ]
+                                  },
+                       "colors":  {
+                                      "additionalProperties":  false,
+                                      "properties":  {
+                                                         "TextPrimary":  {
+                                                                             "type":  "string",
+                                                                             "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                         },
+                                                         "TextSecondary":  {
+                                                                               "type":  "string",
+                                                                               "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                           },
+                                                         "TextMuted":  {
+                                                                           "type":  "string",
+                                                                           "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                       },
+                                                         "Surface":  {
+                                                                         "type":  "string",
+                                                                         "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                     },
+                                                         "SurfaceSubtle":  {
+                                                                               "type":  "string",
+                                                                               "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                           },
+                                                         "Border":  {
+                                                                        "type":  "string",
+                                                                        "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                    },
+                                                         "Divider":  {
+                                                                         "type":  "string",
+                                                                         "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                     },
+                                                         "Track":  {
+                                                                       "type":  "string",
+                                                                       "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                   },
+                                                         "SummarySurface":  {
+                                                                                "type":  "string",
+                                                                                "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                            },
+                                                         "SummaryBorder":  {
+                                                                               "type":  "string",
+                                                                               "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                           },
+                                                         "ButtonSurface":  {
+                                                                               "type":  "string",
+                                                                               "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                           },
+                                                         "ButtonHover":  {
+                                                                             "type":  "string",
+                                                                             "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                         },
+                                                         "ButtonBorder":  {
+                                                                              "type":  "string",
+                                                                              "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                          },
+                                                         "BadgeSurface":  {
+                                                                              "type":  "string",
+                                                                              "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                          },
+                                                         "BadgeBorder":  {
+                                                                             "type":  "string",
+                                                                             "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                         },
+                                                         "BadgeText":  {
+                                                                           "type":  "string",
+                                                                           "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                       },
+                                                         "Unknown":  {
+                                                                         "type":  "string",
+                                                                         "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                     }
+                                                     },
+                                      "type":  "object",
+                                      "required":  [
+                                                       "TextPrimary",
+                                                       "TextSecondary",
+                                                       "TextMuted",
+                                                       "Surface",
+                                                       "SurfaceSubtle",
+                                                       "Border",
+                                                       "Divider",
+                                                       "Track",
+                                                       "SummarySurface",
+                                                       "SummaryBorder",
+                                                       "ButtonSurface",
+                                                       "ButtonHover",
+                                                       "ButtonBorder",
+                                                       "BadgeSurface",
+                                                       "BadgeBorder",
+                                                       "BadgeText",
+                                                       "Unknown"
+                                                   ]
+                                  },
+                       "typography":  {
+                                          "additionalProperties":  false,
+                                          "properties":  {
+                                                             "compactNumberSize":  {
+                                                                                       "maximum":  28,
+                                                                                       "type":  "number",
+                                                                                       "minimum":  20
+                                                                                   },
+                                                             "textFamily":  {
+                                                                                "maxLength":  80,
+                                                                                "pattern":  "^[^\\u0000-\\u001f:/\\\\#]+$",
+                                                                                "minLength":  1,
+                                                                                "type":  "string"
+                                                                            },
+                                                             "detailsNumberSize":  {
+                                                                                       "maximum":  52,
+                                                                                       "type":  "number",
+                                                                                       "minimum":  32
+                                                                                   },
+                                                             "numberFamily":  {
+                                                                                  "maxLength":  80,
+                                                                                  "pattern":  "^[^\\u0000-\\u001f:/\\\\#]+$",
+                                                                                  "minLength":  1,
+                                                                                  "type":  "string"
+                                                                              }
+                                                         },
+                                          "type":  "object",
+                                          "required":  [
+                                                           "textFamily",
+                                                           "numberFamily",
+                                                           "compactNumberSize",
+                                                           "detailsNumberSize"
+                                                       ]
+                                      },
+                       "shape":  {
+                                     "additionalProperties":  false,
+                                     "properties":  {
+                                                        "cardRadius":  {
+                                                                           "maximum":  12,
+                                                                           "type":  "number",
+                                                                           "minimum":  0
+                                                                       },
+                                                        "windowRadius":  {
+                                                                             "maximum":  18,
+                                                                             "type":  "number",
+                                                                             "minimum":  6
+                                                                         },
+                                                        "progressThickness":  {
+                                                                                  "maximum":  6,
+                                                                                  "type":  "number",
+                                                                                  "minimum":  2
+                                                                              }
+                                                    },
+                                     "type":  "object",
+                                     "required":  [
+                                                      "windowRadius",
+                                                      "cardRadius",
+                                                      "progressThickness"
+                                                  ]
+                                 },
+                       "quotaColors":  {
+                                           "minItems":  2,
+                                           "description":  "宿主额外校验：百分比严格递增，首项为 0、末项为 100。",
+                                           "items":  {
+                                                         "additionalProperties":  false,
+                                                         "properties":  {
+                                                                            "percent":  {
+                                                                                            "maximum":  100,
+                                                                                            "type":  "number",
+                                                                                            "minimum":  0
+                                                                                        },
+                                                                            "color":  {
+                                                                                          "type":  "string",
+                                                                                          "pattern":  "^#[0-9A-Fa-f]{6}$"
+                                                                                      }
+                                                                        },
+                                                         "type":  "object",
+                                                         "required":  [
+                                                                          "percent",
+                                                                          "color"
+                                                                      ]
+                                                     },
+                                           "type":  "array",
+                                           "maxItems":  12
+                                       }
+                   }
+}
