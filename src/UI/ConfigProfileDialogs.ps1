@@ -265,11 +265,13 @@ function Show-ConfigProfileDialog {
         }
     }
 
-    $detectedCandidates = @()
+    # Keep candidates on the control: event callbacks run in separate scopes.
+    $detectCombo.Tag = @()
     $detectButton.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
         $errorText.Text = ''
         $testResult.Text = '正在检测…'
         $detectedCandidates = @(Get-DetectedConfigCandidate -Provider $Provider)
+        $detectCombo.Tag = $detectedCandidates
         if ($detectedCandidates.Count -eq 0) {
             $testResult.Text = '本机没有检测到可用的地址与密钥。'
             $detectCombo.Visibility = 'Collapsed'
@@ -286,11 +288,13 @@ function Show-ConfigProfileDialog {
         $testResult.Text = '检测到 {0} 条，选中后可一键填入。' -f $detectedCandidates.Count
     }))
 
-    $detectCombo.Add_SelectionChanged((New-RmfEventHandler -Kind Routed -Callback {
-        $index = $detectCombo.SelectedIndex
+    $detectCombo.Add_SelectionChanged((New-RmfEventHandler -Kind SelectionChanged -Callback {
+        param($sender, $eventArgs)
+        $detectedCandidates = @($sender.Tag)
+        $index = $sender.SelectedIndex
         if ($index -lt 0 -or $index -ge $detectedCandidates.Count) { return }
         $candidate = $detectedCandidates[$index]
-        if ($candidate.BaseUrl) { $baseUrlBox.Text = $candidate.BaseUrl }
+        $baseUrlBox.Text = Resolve-ConfigProfileBaseUrl -Provider $Provider -BaseUrl $candidate.BaseUrl
         $apiKeyBox.Password = [string]$candidate.ApiKey
         if ([string]::IsNullOrWhiteSpace($labelBox.Text) -or
             $labelBox.Text -eq $suggestedLabel) {
@@ -406,10 +410,12 @@ function Sync-ConfigProfileMenu {
             $item.IsCheckable = $true
             $item.IsChecked = ($capturedId -eq $activeId)
             $item.ToolTip = $tip
+            $item.Tag = [pscustomobject]@{ Provider = $capturedProvider; ConfigId = $capturedId }
             $item.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+                param($sender, $eventArgs)
                 [void](Set-ActiveConfigProfile `
-                        -Provider $capturedProvider `
-                        -ConfigId $capturedId `
+                        -Provider $sender.Tag.Provider `
+                        -ConfigId $sender.Tag.ConfigId `
                         -Refresh)
             }))
             [void]$menuItem.Items.Add($item)
@@ -420,11 +426,13 @@ function Sync-ConfigProfileMenu {
             $trayEntry.CheckOnClick = $false
             $trayEntry.Checked = ($capturedId -eq $activeId)
             $trayEntry.ToolTipText = $tip
+            $trayEntry.Tag = [pscustomobject]@{ Provider = $capturedProvider; ConfigId = $capturedId }
             $trayEntry.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+                param($sender, $eventArgs)
                 Show-ExistingWindow
                 [void](Set-ActiveConfigProfile `
-                        -Provider $capturedProvider `
-                        -ConfigId $capturedId `
+                        -Provider $sender.Tag.Provider `
+                        -ConfigId $sender.Tag.ConfigId `
                         -Refresh)
             }))
             [void]$trayItem.DropDownItems.Add($trayEntry)
@@ -443,8 +451,10 @@ function Sync-ConfigProfileMenu {
 
     $addItem = New-Object Windows.Controls.MenuItem
     $addItem.Header = '添加配置…'
+    $addItem.Tag = $provider
     $addItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
-        if (Show-ConfigProfileDialog -Provider $provider -Mode 'Add') {
+        param($sender, $eventArgs)
+        if (Show-ConfigProfileDialog -Provider ([string]$sender.Tag) -Mode 'Add') {
             Sync-ProviderMenuState
         }
     }))
@@ -452,9 +462,11 @@ function Sync-ConfigProfileMenu {
 
     $trayAdd = New-Object System.Windows.Forms.ToolStripMenuItem
     $trayAdd.Text = '添加配置…'
+    $trayAdd.Tag = $provider
     $trayAdd.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+        param($sender, $eventArgs)
         Show-ExistingWindow
-        if (Show-ConfigProfileDialog -Provider $provider -Mode 'Add') {
+        if (Show-ConfigProfileDialog -Provider ([string]$sender.Tag) -Mode 'Add') {
             Sync-ProviderMenuState
         }
     }))
@@ -468,20 +480,24 @@ function Sync-ConfigProfileMenu {
     $trayEdit.Enabled = $canEdit
     if ($canEdit) {
         $editTargetId = [string]$activeEntry.Id
+        $editItem.Tag = [pscustomobject]@{ Provider = $provider; ConfigId = $editTargetId }
         $editItem.Add_Click((New-RmfEventHandler -Kind Routed -Callback {
+            param($sender, $eventArgs)
             if (Show-ConfigProfileDialog `
-                    -Provider $provider `
+                    -Provider $sender.Tag.Provider `
                     -Mode 'Edit' `
-                    -ConfigId $editTargetId) {
+                    -ConfigId $sender.Tag.ConfigId) {
                 Sync-ProviderMenuState
             }
         }))
+        $trayEdit.Tag = [pscustomobject]@{ Provider = $provider; ConfigId = $editTargetId }
         $trayEdit.Add_Click((New-RmfEventHandler -Kind Event -Callback {
+            param($sender, $eventArgs)
             Show-ExistingWindow
             if (Show-ConfigProfileDialog `
-                    -Provider $provider `
+                    -Provider $sender.Tag.Provider `
                     -Mode 'Edit' `
-                    -ConfigId $editTargetId) {
+                    -ConfigId $sender.Tag.ConfigId) {
                 Sync-ProviderMenuState
             }
         }))
