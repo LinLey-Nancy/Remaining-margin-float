@@ -234,6 +234,26 @@ $script:DialogTestSwitch = @($script:TrayConfigProfileItem.DropDownItems | Where
         }
         Write-Output "$provider dialog checks passed: add, switch detected profiles, re-detect, save, edit with unchanged key."
     }
+    # Run the real early-exit worker, rather than calling backfill after every
+    # provider module has loaded (which masks missing shared dependencies).
+    [void](Invoke-DialogTestScript @'
+$seedTime = [DateTimeOffset]::Now.AddMinutes(-30)
+$seed = Get-DeepSeekDemoSnapshot
+$seed.SampledAt = $seedTime
+$seed.TotalBalance = 123.45
+[void](Save-UsageStateSnapshot -Snapshot $seed -ObservedAt $seedTime -Reason 'Manual')
+'@)
+    $repairOutput = @(& powershell.exe -NoProfile -NonInteractive -STA -File ([IO.Path]::GetFullPath($ScriptPath)) -RepairUsageHistory)
+    if ($LASTEXITCODE -ne 0) { throw 'Headless history repair process failed.' }
+    $repair = ($repairOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    $repaired = @(Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'RemainingMarginFloat\usage-history.jsonl') -Encoding UTF8 |
+        ForEach-Object { $_ | ConvertFrom-Json } | Where-Object {
+            $_.ProviderId -eq 'DeepSeek' -and [Math]::Abs([double]$_.RemainingValue - 123.45) -lt 0.0001
+        })
+    if ($repair.FailedEntries -ne 0 -or $repair.AddedSamples -lt 1 -or $repaired.Count -lt 1) {
+        throw ('Headless history repair did not restore its seeded sample: ' + ($repair | ConvertTo-Json -Compress))
+    }
+    Write-Output 'Headless history repair checks passed: seeded balance sample restored by the real worker.'
 }
 finally {
     if ($ownerWindow) { $ownerWindow.Close() }
