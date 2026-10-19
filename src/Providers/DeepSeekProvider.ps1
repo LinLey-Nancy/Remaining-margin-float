@@ -60,19 +60,6 @@ function Get-DeepSeekCredential {
     return [pscustomobject]$result
 }
 
-function Get-ObjectPropertyValue {
-    param(
-        $Object,
-        [string]$Name,
-        $Default = $null
-    )
-
-    if ($null -eq $Object) { return $Default }
-    $property = $Object.PSObject.Properties[$Name]
-    if ($property) { return $property.Value }
-    return $Default
-}
-
 function ConvertFrom-DeepSeekUsageLine {
     param([string]$Line)
 

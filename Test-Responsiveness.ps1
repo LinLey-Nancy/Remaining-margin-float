@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ExecutablePath = (
         Join-Path $PSScriptRoot (
             ('dist\Remaining-Margin-Float-v{0}\RemainingMarginFloat.exe' -f
@@ -101,7 +101,7 @@ try {
     }
     [IO.File]::WriteAllText(
         (Join-Path $probeAppData 'settings.json'),
-        '{"Provider":"Codex","CodexOfficialAccessEnabled":true,"AutoUpdateEnabled":false}',
+        '{"Provider":"Codex","CodexOfficialAccessEnabled":true,"AutoUpdateEnabled":false,"OnboardingCompleted":true}',
         (New-Object Text.UTF8Encoding($false))
     )
 }

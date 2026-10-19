@@ -88,6 +88,20 @@ function Format-UsageSnapshotAge {
     )
 }
 
+function Get-ObjectPropertyValue {
+    # The headless history repair exits before provider modules are loaded.
+    param(
+        $Object,
+        [string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) { return $Default }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $Default
+}
+
 function Get-UsageSnapshotFreshness {
     param(
         $Snapshot,

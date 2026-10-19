@@ -94,6 +94,8 @@ function Invoke-EmptyProfilePerformanceDiagnostic {
 if ($LASTEXITCODE -ne 0) { throw 'Theme diagnostics failed.' }
 
 $configProfiles = Invoke-JsonDiagnostic -Name 'CheckConfigProfiles'
+& powershell.exe -NoProfile -NonInteractive -STA -File (Join-Path $PSScriptRoot 'Test-ConfigProfileDialogs.ps1') -ScriptPath $resolvedScriptPath
+if ($LASTEXITCODE -ne 0) { throw 'Configuration dialog regression checks failed.' }
 Assert-Diagnostic -Condition (
     [string]$configProfiles.KimiDefault -eq 'https://api.kimi.com/coding/v1' -and
     [string]$configProfiles.KimiTrimsTrailingSlash -eq 'https://api.kimi.com/coding/v1' -and
@@ -884,6 +886,7 @@ Assert-Diagnostic -Condition (
 
 [pscustomobject]@{
     ConfigProfiles = 'Passed'
+    ConfigProfileDialogs = 'Passed'
     MultiAccountSimulation = 'Passed ({0} steps)' -f $multiAccount.Count
     CodexRateLimitSelection = 'Passed'
     ProviderContracts = 'Passed'
