@@ -165,12 +165,27 @@ $script:InitialRefreshQueued = $true
         [void](Invoke-DialogTestScript @'
 Set-ActiveProvider -Provider $DialogTestProvider
 Sync-ProviderMenuState
+# A disabled parent disables its entire drop-down, so the "当前配置" header must
+# stay enabled or no saved profile can be selected.
+$script:DialogTestMenuEnabled = (
+    [bool]$script:ConfigProfileMenuItem.IsEnabled -and
+    [bool]$script:TrayConfigProfileItem.Enabled -and
+    @($script:ConfigProfileMenuItem.Items | Where-Object {
+        $_ -is [Windows.Controls.MenuItem] -and $_.IsEnabled
+    }).Count -gt 0 -and
+    @($script:TrayConfigProfileItem.DropDownItems | Where-Object {
+        $_ -is [Windows.Forms.ToolStripMenuItem] -and $_.Enabled
+    }).Count -gt 0
+)
 # The real menu entry must retain its provider after Sync returns.
 $script:DialogTestEntry = $script:ConfigProfileMenuItem.Items[$script:ConfigProfileMenuItem.Items.Count - 2]
 if ($DialogTestProvider -eq 'DeepSeek') {
     $script:DialogTestEntry = $script:TrayConfigProfileItem.DropDownItems[$script:TrayConfigProfileItem.DropDownItems.Count - 2]
 }
 '@)
+        if (-not $runspace.SessionStateProxy.GetVariable('DialogTestMenuEnabled')) {
+            throw "$provider configuration menu is disabled as a whole; saved profiles cannot be switched."
+        }
         $entry = $runspace.SessionStateProxy.GetVariable('DialogTestEntry')
         $secondHost = if ($provider -eq 'Kimi') { 'second.example.test' } else { 'api.deepseek.com' }
         $added = [ConfigDialogDriver]::Run($ownerWindow, $entry, $false, $secondHost)

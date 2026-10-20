@@ -1,3 +1,11 @@
+# Remaining Margin Float v1.14.2
+
+## 修复
+
+- 修复 DeepSeek 与 Kimi Code 下「当前配置」子菜单整体变灰、无法展开和切换已保存配置的问题
+
+---
+
 # Remaining Margin Float v1.14.1
 
 ## 修复

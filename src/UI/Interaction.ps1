@@ -364,10 +364,12 @@ $script:CodexOfficialAccessMenuItem.Add_Click((New-RmfEventHandler -Kind Routed 
     [void](Set-CodexOfficialAccess -Enabled $enabled -Confirm:$enabled)
 }))
 # The header of this submenu *is* the current configuration, so the user always
-# knows which account is live without expanding anything.
+# knows which account is live without expanding anything. It must stay enabled:
+# a disabled MenuItem disables its whole drop-down, which made every saved
+# profile for DeepSeek and Kimi Code unreachable. It has no click handler, so
+# clicking it only toggles the submenu.
 $script:ConfigProfileMenuItem = New-Object Windows.Controls.MenuItem
 $script:ConfigProfileMenuItem.Header = '当前配置：空'
-$script:ConfigProfileMenuItem.IsEnabled = $false
 $script:KimiWslMenuItem = New-Object Windows.Controls.MenuItem
 $script:KimiWslMenuItem.Header = '在 WSL 中使用'
 $script:KimiWslMenuItem.IsCheckable = $true

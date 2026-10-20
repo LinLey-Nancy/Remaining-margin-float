@@ -70,9 +70,15 @@
         $captureTodayDay = New-SpendLedgerDay -Date $captureToday
         $captureTodayDay.Spent = 0.58
         $captureLedgerDays.Add($captureTodayDay)
+        # The snapshot carries the live profile id, and the ledger is scoped per
+        # account, so the stub has to use the same one or the cards stay empty.
+        $captureAccountId = if ($Snapshot.PSObject.Properties['AccountId']) {
+            [string]$Snapshot.AccountId
+        } else { '' }
         $captureLedgerProvider = New-SpendLedgerProvider `
             -ProviderId 'DeepSeek' `
-            -Unit 'CNY'
+            -Unit 'CNY' `
+            -AccountId $captureAccountId
         $captureLedgerProvider.Days = $captureLedgerDays.ToArray()
         $captureLedger = Get-EmptySpendLedger
         $captureLedger.Providers = @($captureLedgerProvider)
@@ -543,9 +549,17 @@ if ($CheckTransitions) {
     $ledgerStubTodayDay = New-SpendLedgerDay -Date $ledgerStubToday
     $ledgerStubTodayDay.Spent = 0.58
     $ledgerStubDays.Add($ledgerStubTodayDay)
+    # The snapshot carries the live profile id, and the ledger is scoped per
+    # account, so the stub has to use the same one or the cards stay empty.
+    $ledgerStubAccountId = if (
+        $deepSeekCheckSnapshot.PSObject.Properties['AccountId']
+    ) {
+        [string]$deepSeekCheckSnapshot.AccountId
+    } else { '' }
     $ledgerStubProvider = New-SpendLedgerProvider `
         -ProviderId 'DeepSeek' `
-        -Unit 'CNY'
+        -Unit 'CNY' `
+        -AccountId $ledgerStubAccountId
     $ledgerStubProvider.Days = $ledgerStubDays.ToArray()
     $ledgerStubProvider.LastBalance = [double]$deepSeekCheckSnapshot.TotalBalance
     $ledgerStub = Get-EmptySpendLedger
@@ -853,6 +867,10 @@ if ($CheckTransitions) {
     $script:UsageSyncSession.RapidChannels = @{}
     $startupLocalSnapshot = $deepSeekCheckSnapshot.PSObject.Copy()
     $startupLocalSnapshot.ProviderId = 'Codex'
+    # The source is a DeepSeek demo snapshot and may carry the live profile id.
+    # A Codex snapshot has no saved profile, and the scope key must match the
+    # unsuffixed Codex form regardless of what is configured on this machine.
+    $startupLocalSnapshot.AccountId = ''
     $startupLocalSnapshot.HasProgress = $true
     $startupLocalSnapshot.RemainingPercent = 87
     foreach ($quotaProperty in @{

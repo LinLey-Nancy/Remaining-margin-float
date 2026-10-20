@@ -5,6 +5,19 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+# Every probe runs against a throwaway data root. The shipped app may be open
+# and persisting its own settings, and the probes write settings, the spend
+# ledger and usage history; sharing the live root makes assertions flaky and
+# would overwrite the user's real preferences.
+$diagnosticDataRoot = [IO.Path]::GetFullPath(
+    (Join-Path ([IO.Path]::GetTempPath()) (
+        'RmfDiagnostics-{0}' -f [Guid]::NewGuid().ToString('N')
+    ))
+)
+$diagnosticLocalAppData = Join-Path $diagnosticDataRoot 'LocalAppData'
+[void][IO.Directory]::CreateDirectory($diagnosticLocalAppData)
+$env:LOCALAPPDATA = $diagnosticLocalAppData
+
 $resolvedScriptPath = [IO.Path]::GetFullPath($ScriptPath)
 if (-not (Test-Path -LiteralPath $resolvedScriptPath -PathType Leaf)) {
     throw "Application script is missing: $resolvedScriptPath"
@@ -884,7 +897,7 @@ Assert-Diagnostic -Condition (
 ) -Message 'Official refresh suppresses repeated local preview UI updates'
 
 
-[pscustomobject]@{
+$diagnosticSummary = [pscustomobject]@{
     ConfigProfiles = 'Passed'
     ConfigProfileDialogs = 'Passed'
     MultiAccountSimulation = 'Passed ({0} steps)' -f $multiAccount.Count
@@ -909,3 +922,8 @@ Assert-Diagnostic -Condition (
     Transitions = 'Passed'
     RefreshCoordinator = 'Passed'
 }
+
+if (Test-Path -LiteralPath $diagnosticDataRoot) {
+    Remove-Item -LiteralPath $diagnosticDataRoot -Recurse -Force
+}
+$diagnosticSummary

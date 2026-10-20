@@ -64,7 +64,8 @@ $script:TrayCodexOfficialAccessItem.Add_Click((New-RmfEventHandler -Kind Event -
 }))
 $script:TrayConfigProfileItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayConfigProfileItem.Text = '当前配置：空'
-$script:TrayConfigProfileItem.Enabled = $false
+# Kept enabled on purpose: a disabled ToolStripMenuItem greys out its whole
+# drop-down, so DeepSeek and Kimi Code could not switch saved profiles at all.
 $script:TrayKimiWslItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:TrayKimiWslItem.Text = '在 WSL 中使用'
 $script:TrayKimiWslItem.CheckOnClick = $true
