@@ -707,14 +707,18 @@ function Get-PlanLabel {
         'plus' = 'Plus'
         'pro' = 'Pro'
         'prolite' = 'Pro Lite'
-        'promax' = 'Pro (Max)'
+        'promax' = 'Pro Max'
         'team' = 'Team'
         'business' = 'Business'
         'enterprise' = 'Enterprise'
     }
-    $key = $PlanType.ToLowerInvariant()
+    # Upstream has used "pro_lite", "pro-lite", "Pro Max" and similar spellings
+    # for the same tiers. Compare only letters and digits before matching so the
+    # badge never shows two different names for one plan.
+    $key = $PlanType.Trim().ToLowerInvariant() -replace '[^a-z0-9]', ''
     if ($labels.ContainsKey($key)) { return $labels[$key] }
-    return (Get-Culture).TextInfo.ToTitleCase($PlanType.Replace('_', ' '))
+    $displayName = ($PlanType.Trim() -replace '[_\-]+', ' ')
+    return (Get-Culture).TextInfo.ToTitleCase($displayName)
 }
 
 function Get-CodexPrimaryQuotaPeriod {
@@ -726,7 +730,7 @@ function Get-CodexPrimaryQuotaPeriod {
     $normalizedPlan = if ([string]::IsNullOrWhiteSpace($PlanType)) {
         ''
     } else {
-        $PlanType.Trim().ToLowerInvariant().Replace('_', '').Replace('-', '').Replace(' ', '')
+        $PlanType.Trim().ToLowerInvariant() -replace '[^a-z0-9]', ''
     }
     if ($normalizedPlan -in @('pro', 'prolite', 'promax')) { return 'Weekly' }
     return 'FiveHour'
@@ -913,6 +917,16 @@ function Get-CodexUsageSnapshot {
     $hasWeekly = $null -ne $weeklyWindow
     $planType = [string]$quotaUsage.PlanType
     $primaryQuotaPeriod = Get-CodexPrimaryQuotaPeriod -PlanType $planType
+    # A local Pro session may omit plan_type. If the only available window is
+    # the weekly one, showing "weekly unknown" while a weekly value exists is
+    # worse than inferring the primary window from the data itself.
+    if (
+        [string]::IsNullOrWhiteSpace($planType) -and
+        -not $fiveHourWindow -and
+        $weeklyWindow
+    ) {
+        $primaryQuotaPeriod = 'Weekly'
+    }
     $primaryWindow = if ($primaryQuotaPeriod -eq 'Weekly') {
         $weeklyWindow
     } else {

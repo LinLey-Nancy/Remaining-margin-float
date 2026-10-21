@@ -1,11 +1,32 @@
 ﻿function Get-RmfThemeViewModel {
     # Public display contract: formatted values only. No credentials or provider responses.
     $snapshot = $script:RmfThemeDisplaySnapshot
-    $tokensAvailable = $snapshot -and [bool]$snapshot.Available
+    # Local token statistics do not depend on the remote quota being reachable:
+    # a DeepSeek relay without /user/balance still has valid local counters.
+    $tokensAvailable = (
+        $snapshot -and (
+            [bool]$snapshot.Available -or
+            (
+                [string]$snapshot.ProviderId -eq 'DeepSeek' -and
+                $snapshot.PSObject.Properties['TodayTokens']
+            )
+        )
+    )
+    $providerId = if ($snapshot) {
+        [string]$snapshot.ProviderId
+    } else { [string]$script:ActiveProvider }
+    $planText = [string]$PlanBadge.Text
+    if (
+        $planText -eq '--' -or
+        ($providerId -eq 'Codex' -and $planText -eq 'Codex') -or
+        ($providerId -eq 'Kimi' -and $planText -eq 'Kimi Code')
+    ) {
+        $planText = ''
+    }
     return [pscustomobject][ordered]@{
         schemaVersion = 1
-        provider = if ($snapshot) { [string]$snapshot.ProviderId } else { [string]$script:ActiveProvider }
-        plan = [string]$PlanBadge.Text
+        provider = $providerId
+        plan = $planText
         main = [pscustomobject]@{
             value = [string]$RemainingValue.Text
             prefix = [string]$CompactPrefix.Text

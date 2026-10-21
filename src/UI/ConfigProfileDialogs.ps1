@@ -372,7 +372,13 @@ function Sync-ConfigProfileMenu {
 
     $entries = @(Get-ConfigProfileEntries -Provider $provider -Refresh)
     $activeId = Get-ActiveConfigProfileId -Provider $provider
-    if ([string]::IsNullOrWhiteSpace($activeId)) {
+    # A remembered profile can disappear when configs.json is replaced or
+    # edited by hand. The runtime then falls back to 本机读取, so the menu must
+    # show and check that same profile instead of an empty "当前配置：空".
+    if (
+        [string]::IsNullOrWhiteSpace($activeId) -or
+        @($entries | Where-Object { $_.Id -eq $activeId }).Count -eq 0
+    ) {
         $activeId = Get-ConfigProfileAutoId -Provider $provider
     }
     $activeEntry = $entries | Where-Object { $_.Id -eq $activeId } | Select-Object -First 1
@@ -518,7 +524,7 @@ function Show-BudgetBaselineDialog {
     if ($provider -eq 'DeepSeek') {
         $fiveHourRow = @'
         <StackPanel Grid.Row="2" Margin="0,14,0,0">
-            <TextBlock Text="预算基准（元）" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
+            <TextBlock Text="预算基准（账户币种金额）" FontSize="12" FontWeight="SemiBold" Foreground="#4E5750"/>
             <TextBox x:Name="BudgetAmountBox" Height="34" Margin="0,7,0,0" Padding="9,6"
                      BorderBrush="#D8DDD7" Background="White"
                      AutomationProperties.Name="预算基准"/>
@@ -589,7 +595,11 @@ $weeklyRow
     $providerText = $dialog.FindName('ProviderText')
     $errorText = $dialog.FindName('ErrorText')
     $saveButton = $dialog.FindName('SaveButton')
-    $providerText.Text = '当前数据源：{0}。超出预算时提醒一次，窗口重置后可再次提醒。' -f $provider
+    $providerText.Text = if ($provider -eq 'DeepSeek') {
+        '当前数据源：DeepSeek。本月花费超出预算时提醒一次。'
+    } else {
+        '当前数据源：{0}。超出预算时提醒一次，窗口重置后可再次提醒。' -f $provider
+    }
 
     if ($provider -eq 'DeepSeek') {
         $amountBox = $dialog.FindName('BudgetAmountBox')

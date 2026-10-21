@@ -877,16 +877,21 @@ function Get-LatestUsageStateSnapshot {
     $root = Get-UsageStateHistoryDirectory -RootPath $RootPath
     $attempted = @{}
     $currentEntries = @(
-        Read-UsageStateCurrentEntries -RootPath $root -Now $Now |
-            Where-Object { $_.ProviderId -eq $ProviderId } |
-            Sort-Object ObservedAtUtc -Descending
+        Read-UsageStateCurrentEntries -RootPath $root -Now $Now
     )
-    foreach ($entry in $currentEntries) {
+
+    # Fast path: the current index is small and normally has exactly the
+    # snapshot this account needs. Do not scan the journal until this fails.
+    $exactCurrentEntries = @(
+        $currentEntries | Where-Object {
+            $_.ProviderId -eq $ProviderId -and
+            [string]$_.AccountId -eq $AccountId
+        } | Sort-Object ObservedAtUtc -Descending
+    )
+    foreach ($entry in $exactCurrentEntries) {
         try {
             $attempted[[string]$entry.EntryId] = $true
             $snapshot = Read-UsageStatePayload -Entry $entry -RootPath $root
-            # Only the account this profile owns may be restored; entries from
-            # another account are recorded but never shown here.
             if (
                 $snapshot -and
                 [string](Get-ObjectPropertyValue `
@@ -901,16 +906,76 @@ function Get-LatestUsageStateSnapshot {
             # Fall back to the next valid retained snapshot.
         }
     }
+
     $entries = @(Read-UsageStateEntries -RootPath $root -Now $Now)
+    $allowedAccountIds = @($AccountId)
+    if (-not [string]::IsNullOrWhiteSpace($AccountId)) {
+        # Pre-multi-account snapshots have no AccountId. They may be adopted by
+        # the selected profile only while that profile has no records of its
+        # own; once it does, legacy snapshots stay with the unattributed
+        # account. The journal scan above is needed once the fast path misses,
+        # and it also answers whether this profile has records of its own.
+        $hasOwnEntries = (
+            @($entries | Where-Object {
+                    $_.ProviderId -eq $ProviderId -and
+                    [string]$_.AccountId -eq $AccountId
+                }).Count -gt 0 -or
+            $exactCurrentEntries.Count -gt 0
+        )
+        if (-not $hasOwnEntries) {
+            $allowedAccountIds += ''
+        }
+    }
+
+    # The exact-account pass above may have skipped a legacy or fallback entry
+    # that is now allowed; check the small current index again first.
+    foreach ($entry in @(
+        $currentEntries | Where-Object {
+            $_.ProviderId -eq $ProviderId -and
+            [string]$_.AccountId -in $allowedAccountIds -and
+            -not $attempted.ContainsKey([string]$_.EntryId)
+        } | Sort-Object ObservedAtUtc -Descending
+    )) {
+        try {
+            $attempted[[string]$entry.EntryId] = $true
+            $snapshot = Read-UsageStatePayload -Entry $entry -RootPath $root
+            # Only an allowed account may be restored; entries from another
+            # account are recorded but never shown here.
+            if (
+                $snapshot -and
+                [string](Get-ObjectPropertyValue `
+                    -Object $snapshot `
+                    -Name 'AccountId' `
+                    -Default '') -in $allowedAccountIds
+            ) {
+                return $snapshot
+            }
+        }
+        catch {
+            # Fall back to the next valid retained snapshot.
+        }
+    }
     foreach ($entry in @(
         $entries | Where-Object {
             $_.ProviderId -eq $ProviderId -and
+            [string]$_.AccountId -in $allowedAccountIds -and
             -not $attempted.ContainsKey([string]$_.EntryId)
         } | Sort-Object ObservedAtUtc -Descending
     )) {
         try {
             $snapshot = Read-UsageStatePayload -Entry $entry -RootPath $root
-            if ($snapshot) { return $snapshot }
+            # The journal entry and the encrypted payload must agree; legacy
+            # entries with an empty AccountId remain in the unattributed
+            # account and must never leak into a named profile.
+            if (
+                $snapshot -and
+                [string](Get-ObjectPropertyValue `
+                    -Object $snapshot `
+                    -Name 'AccountId' `
+                    -Default '') -in $allowedAccountIds
+            ) {
+                return $snapshot
+            }
         }
         catch {
             # Keep walking backward if a payload is missing or damaged.
@@ -929,7 +994,7 @@ function Restore-LatestUsageState {
     try {
         $snapshot = Get-LatestUsageStateSnapshot `
             -ProviderId $script:ActiveProvider `
-            -AccountId (Get-ActiveConfigProfileId -Provider $script:ActiveProvider)
+            -AccountId (Get-PersistedConfigProfileId -Provider $script:ActiveProvider)
         if (-not $snapshot) { return $false }
 
         $script:LastSnapshot = $snapshot

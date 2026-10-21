@@ -42,8 +42,10 @@
     }
     Assert-ThemeCheck ($script:RmfThemes.Count -eq 4) 'Four built-in themes'
     Assert-ThemeCheck ($script:ActiveThemeId -eq 'classic') 'Classic is default'
-    $window.Left = 24
-    $window.Top = 24
+    $diagnosticOrigin = Get-RmfDiagnosticWindowOrigin -Margin 12
+    $window.Left = $diagnosticOrigin.Left
+    $window.Top = $diagnosticOrigin.Top
+    $window.ShowActivated = $false
     $window.Show()
     $screenshots = New-Object Collections.Generic.List[string]
     if ($CaptureDirectory) { [void][IO.Directory]::CreateDirectory($CaptureDirectory) }

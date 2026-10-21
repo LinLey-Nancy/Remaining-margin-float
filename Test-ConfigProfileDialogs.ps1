@@ -157,6 +157,10 @@ $script:KimiUseWsl = $false
 $script:isDiagnosticRun = $false
 $script:OnboardingCompleted = $true
 $script:InitialRefreshQueued = $true
+$dialogOrigin = Get-RmfDiagnosticWindowOrigin -Margin 12
+$window.Left = $dialogOrigin.Left
+$window.Top = $dialogOrigin.Top
+$window.ShowActivated = $false
 '@)
     $ownerWindow = $runspace.SessionStateProxy.GetVariable('window')
     $bridge = $runspace.SessionStateProxy.GetVariable('RunspaceEventBridge')

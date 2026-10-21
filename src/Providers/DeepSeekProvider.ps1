@@ -426,7 +426,7 @@ function ConvertTo-DeepSeekSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'DeepSeek'
-        AccountId = (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+        AccountId = (Get-PersistedConfigProfileId -Provider 'DeepSeek')
         Available = $isAvailable
         RemainingPercent = if ($null -ne $budgetPercent) { $budgetPercent } else { 0 }
         HasProgress = $null -ne $budgetPercent
@@ -487,14 +487,12 @@ function Get-DeepSeekUnavailableSnapshot {
     $fault = ''
     if ($Credential) {
         $fault = [string]$Credential.Fault
-        if ($credentialProfileLabel = [string]$Credential.ProfileLabel) {
-            $accountName = '配置 · {0}' -f $credentialProfileLabel
+        $credentialProfileLabel = [string]$Credential.ProfileLabel
+        if ($credentialProfileLabel) {
+            $accountName = 'DeepSeek · {0}' -f $credentialProfileLabel
         }
         if ($fault -eq 'KeyUnreadable') {
             $message = '密钥无法解密，请重新输入'
-        }
-        elseif ($credentialProfileLabel) {
-            $message = '尚未添加配置'
         }
         else {
             $message = '尚未添加配置'
@@ -509,7 +507,7 @@ function Get-DeepSeekUnavailableSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'DeepSeek'
-        AccountId = (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+        AccountId = (Get-PersistedConfigProfileId -Provider 'DeepSeek')
         Available = $false
         # Renders through the blank layout instead of a "no data" placeholder.
         IsEmptyState = $true
@@ -564,10 +562,13 @@ function Get-DeepSeekLocalOnlySnapshot {
         $usage = $null
     }
 
-    $label = [string]$Credential.ProfileLabel
+    $label = if (
+        [string]$Credential.ProfileId -eq
+        (Get-ConfigProfileAutoId -Provider 'DeepSeek')
+    ) { '' } else { [string]$Credential.ProfileLabel }
     return [pscustomobject]@{
         ProviderId = 'DeepSeek'
-        AccountId = (Get-ActiveConfigProfileId -Provider 'DeepSeek')
+        AccountId = (Get-PersistedConfigProfileId -Provider 'DeepSeek')
         Available = $false
         RemainingPercent = 0
         HasProgress = $false
@@ -575,10 +576,16 @@ function Get-DeepSeekLocalOnlySnapshot {
         ResetDate = ''
         ResetCountdown = ''
         ResetCount = ''
-        Plan = ''
-        AccountName = if ($label) { '配置 · {0}' -f $label } else { 'DeepSeek' }
+        Plan = '按量计费'
+        # Keep the account row identical to the normal balance snapshot:
+        # "DeepSeek · <profile>" and the key hint plus its source.
+        AccountName = if ($label) {
+            'DeepSeek · {0}' -f $label
+        } else { 'DeepSeek' }
         AccountEmail = if ([string]$Credential.Hint) {
-            '••••{0}' -f $Credential.Hint
+            '密钥 ••••{0} · {1}' -f $Credential.Hint, $Credential.Source
+        } elseif ([string]$Credential.Source) {
+            [string]$Credential.Source
         } else { '' }
         TodayTokens = if ($usage) { $usage.TodayTokens } else { 0 }
         MonthlyTokens = if ($usage) { $usage.MonthlyTokens } else { 0 }

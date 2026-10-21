@@ -171,7 +171,15 @@ function Get-KimiCredential {
     # A saved profile is an explicit choice: the local CLI must not silently
     # override it, otherwise a second account could never be used.
     if ($profile -and $profile.Kind -ne 'Auto') {
-        $result.Source = '配置 · {0}' -f $profile.Label
+        $isAutomaticFallback = (
+            $script:KimiAutoCredentialRejected -and
+            [string]$profile.Id -eq [string]$script:KimiManualFallbackProfileId
+        )
+        $result.Source = if ($isAutomaticFallback) {
+            '配置 · {0}（自动回退）' -f $profile.Label
+        } else {
+            '配置 · {0}' -f $profile.Label
+        }
         $result.BaseUrl = Resolve-ConfigProfileBaseUrl `
             -Provider 'Kimi' `
             -BaseUrl $profile.BaseUrl
@@ -198,20 +206,6 @@ function Get-KimiCredential {
         [string]::IsNullOrWhiteSpace($env:KIMI_CODE_HOME) -and
         -not [string]::IsNullOrWhiteSpace($dataRoot)
     )
-    # The fallback key now lives in the saved profiles: the legacy kimi.json was
-    # migrated into "配置 1" at startup, so an existing key is still reachable.
-    $manualProfile = Get-ResolvedConfigProfile -Provider 'Kimi'
-    $manualKey = ''
-    if ($manualProfile -and $manualProfile.Kind -ne 'Auto') {
-        $profileSecret = Get-ConfigProfileSecret -Profile $manualProfile
-        if ($profileSecret) { $manualKey = [string]$profileSecret }
-    }
-    # 自动读取的 OAuth/config.toml 凭证被服务端判定失效（401）后，进程内改用已保存
-    # 配置的 Key；没有已保存配置时仍回退到自动凭证，保持原有的“重新登录”提示。
-    $skipAutoToken = (
-        $script:KimiAutoCredentialRejected -and
-        -not [string]::IsNullOrWhiteSpace($manualKey)
-    )
     if (-not [string]::IsNullOrWhiteSpace($dataRoot)) {
         $credentialsRoot = Join-Path $dataRoot 'credentials'
         if (Test-Path -LiteralPath $credentialsRoot) {
@@ -227,10 +221,7 @@ function Get-KimiCredential {
                         -Object $payload `
                         -Name 'access_token' `
                         -Default '')
-                    if (
-                        -not $skipAutoToken -and
-                        -not [string]::IsNullOrWhiteSpace($accessToken)
-                    ) {
+                    if (-not [string]::IsNullOrWhiteSpace($accessToken)) {
                         $result.Token = $accessToken
                         $result.Source = if ($usingWslRoot) {
                             'Kimi Code CLI（WSL · OAuth 登录）'
@@ -258,7 +249,7 @@ function Get-KimiCredential {
                 $autoKey.Substring($autoKey.Length - 4)
             } else { $autoKey }
         }
-        if (-not $skipAutoToken -and -not $result.Token -and $configProvider) {
+        if (-not $result.Token -and $configProvider) {
             $result.Token = $configProvider.ApiKey.Trim()
             $result.Source = if ($usingWslRoot) {
                 'Kimi Code CLI（WSL config.toml）'
@@ -270,20 +261,40 @@ function Get-KimiCredential {
         }
     }
 
-$result.UsageUrl = Resolve-KimiUsageUrl -BaseUrl $result.BaseUrl
+    $result.UsageUrl = Resolve-KimiUsageUrl -BaseUrl $result.BaseUrl
     return [pscustomobject]$result
 }
 
 function Test-KimiManualCredentialFallback {
-    # 当前使用的是自动凭证、且另一条已保存配置里存在不同的 Key 时，
-    # 401 之后才值得切过去重试一次。
+    # 当前使用的是自动凭证、且某条已保存配置里存在不同的 Key 时，401 之后
+    # 才值得切过去重试一次。该函数只负责选中候选并记住 id，实际读取由
+    # Get-KimiCredential 通过 Get-ResolvedConfigProfile 完成。
+    if ($script:KimiAutoCredentialRejected) { return $false }
     $profile = Get-ResolvedConfigProfile -Provider 'Kimi'
-    if (-not $profile -or $profile.Kind -eq 'Auto') { return $false }
+    if (-not $profile -or [string]$profile.Kind -ne 'Auto') { return $false }
     $credential = Get-KimiCredential
-    if ([string]::IsNullOrWhiteSpace($credential.Token)) { return $false }
-    $savedKey = Get-ConfigProfileSecret -Profile $profile
-    if ([string]::IsNullOrWhiteSpace([string]$savedKey)) { return $false }
-    return ($savedKey.Trim() -ne ([string]$credential.Token).Trim())
+    $autoKey = ([string]$credential.Token).Trim()
+    if ([string]::IsNullOrWhiteSpace($autoKey)) { return $false }
+
+    foreach ($entry in @(Get-ConfigProfileEntries -Provider 'Kimi' -Refresh)) {
+        if ([string]$entry.Kind -eq 'Auto') { continue }
+        $savedKey = Get-ConfigProfileSecret -Profile $entry
+        if ([string]::IsNullOrWhiteSpace([string]$savedKey)) { continue }
+        if ($savedKey.Trim() -ne $autoKey) {
+            $script:KimiManualFallbackProfileId = [string]$entry.Id
+            # Everything cached so far belongs to the rejected automatic
+            # credential. Dropping it prevents the other account's numbers from
+            # being presented as the fallback account while the retry is in
+            # flight (or if it fails).
+            $script:KimiOfficialUsageCache = $null
+            $script:LastKimiSnapshot = $null
+            if (Get-Command Reset-ProviderRapidDropSession -ErrorAction SilentlyContinue) {
+                Reset-ProviderRapidDropSession -ProviderId 'Kimi'
+            }
+            return $true
+        }
+    }
+    return $false
 }
 
 function Get-KimiHttpClient {
@@ -798,9 +809,43 @@ function Get-KimiPlanLabel {
         'professional' = 'Professional'
         'enterprise' = 'Enterprise'
     }
-    $key = $PlanType.ToLowerInvariant() -replace '^level_', ''
+    $key = $PlanType.Trim().ToLowerInvariant() -replace '^level[^a-z0-9]*', ''
+    $key = $key -replace '[^a-z0-9]', ''
     if ($labels.ContainsKey($key)) { return $labels[$key] }
-    return (Get-Culture).TextInfo.ToTitleCase($key.Replace('_', ' '))
+    $displayName = ($PlanType.Trim() -replace '^level[_-]', '' -replace '[_\-]+', ' ')
+    return (Get-Culture).TextInfo.ToTitleCase($displayName)
+}
+
+function Get-KimiAccountDisplay {
+    param($Credential)
+
+    $profileIsAuto = (
+        [string]$Credential.ProfileId -eq
+        (Get-ConfigProfileAutoId -Provider 'Kimi')
+    )
+    $name = if ($Credential.ProfileLabel -and -not $profileIsAuto) {
+        'Kimi Code · {0}' -f $Credential.ProfileLabel
+    } else {
+        '本地 Kimi Code'
+    }
+    $email = if ([string]$Credential.Fault -eq 'KeyUnreadable') {
+        '密钥无法解密，请重新输入'
+    }
+    else {
+        switch ($Credential.AuthMethod) {
+            'OAuth' { 'OAuth 登录 · Kimi Code' }
+            'ApiKey' {
+                if ($Credential.Hint) {
+                    '密钥 ••••{0} · {1}' -f $Credential.Hint, $Credential.Source
+                } else { [string]$Credential.Source }
+            }
+            default { '未找到登录信息' }
+        }
+    }
+    return [pscustomobject]@{
+        Name = $name
+        Email = $email
+    }
 }
 
 function Get-KimiUsageSnapshot {
@@ -822,27 +867,29 @@ function Get-KimiUsageSnapshot {
     $localUsage = Get-KimiLocalUsage
 
     # The account row names the configuration the user picked, so two accounts are
-    # never visually identical. Quota comes from the configuration; the token
-    # counters below come from the local CLI log and belong to no account.
-    $accountName = if ($credential.ProfileLabel) {
-        'Kimi Code · {0}' -f $credential.ProfileLabel
-    } else {
-        '本地 Kimi Code'
-    }
-    $accountEmail = switch ($credential.AuthMethod) {
-        'OAuth' { 'OAuth 登录 · Kimi Code' }
-        'ApiKey' {
-            if ($credential.Hint) {
-                '密钥 ••••{0} · {1}' -f $credential.Hint, $credential.Source
-            } else { [string]$credential.Source }
-        }
-        default { '未找到登录信息' }
-    }
+    # never visually identical. The virtual 本机读取 entry already says
+    # "Kimi Code CLI（本机读取）"; prefixing it with "Kimi Code ·" would only
+    # duplicate the provider name and crowd the row.
+    $accountDisplay = Get-KimiAccountDisplay -Credential $credential
+    $accountName = $accountDisplay.Name
+    $accountEmail = $accountDisplay.Email
 
     if (-not $officialUsage) {
+        # Match the documented blank states: a stored-but-undecryptable key is a
+        # fault, a missing credential asks for configuration, and only a real
+        # request failure may mention the official endpoint.
+        $emptyMessage = if ([string]$credential.Fault -eq 'KeyUnreadable') {
+            '密钥无法解密，请重新输入'
+        }
+        elseif ([string]::IsNullOrWhiteSpace([string]$credential.Token)) {
+            '尚未添加配置'
+        }
+        else {
+            'Kimi 官方接口暂无可用余量数据'
+        }
         return [pscustomobject]@{
             ProviderId = 'Kimi'
-            AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
+            AccountId = (Get-PersistedConfigProfileId -Provider 'Kimi')
             Available = $false
             # Renders through the blank layout instead of a placeholder window.
             IsEmptyState = $true
@@ -882,8 +929,8 @@ function Get-KimiUsageSnapshot {
             ContextPercent = 0
             SampledAt = Get-Date
             ResetAt = $null
-            Status = '等待数据'
-            Source = 'Kimi 官方接口暂无可用余量数据'
+            Status = $emptyMessage
+            Source = $emptyMessage
             Model = $localUsage.Model
         }
     }
@@ -947,7 +994,7 @@ function Get-KimiUsageSnapshot {
 
     return [pscustomobject]@{
         ProviderId = 'Kimi'
-        AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
+        AccountId = (Get-PersistedConfigProfileId -Provider 'Kimi')
         Available = $true
         RemainingPercent = $remainingPercent
         HasProgress = $hasPrimaryQuota
@@ -1009,9 +1056,21 @@ function Get-KimiUsageSnapshot {
 function Get-KimiUnavailableSnapshot {
     param([string]$Reason = '请先在 Kimi Code 中登录')
 
+    $accountName = '本地 Kimi Code'
+    $accountEmail = '未找到登录信息'
+    try {
+        $accountDisplay = Get-KimiAccountDisplay -Credential (Get-KimiCredential)
+        $accountName = $accountDisplay.Name
+        $accountEmail = $accountDisplay.Email
+    }
+    catch {
+        # A failure snapshot must still render even if credentials are
+        # unreadable; the reason line carries the actual error.
+    }
+
     return [pscustomobject]@{
         ProviderId = 'Kimi'
-        AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
+        AccountId = (Get-PersistedConfigProfileId -Provider 'Kimi')
         Available = $false
         RemainingPercent = 0
         HasProgress = $false
@@ -1034,8 +1093,8 @@ function Get-KimiUnavailableSnapshot {
         PlanType = ''
         Plan = '--'
         PrimaryQuotaPeriod = 'FiveHour'
-        AccountName = '本地 Kimi Code'
-        AccountEmail = '未找到登录信息'
+        AccountName = $accountName
+        AccountEmail = $accountEmail
         TodayTokens = 0
         TodayInputTokens = 0
         TodayOutputTokens = 0
@@ -1049,7 +1108,7 @@ function Get-KimiUnavailableSnapshot {
         ContextPercent = 0
         SampledAt = Get-Date
         ResetAt = $null
-        Status = '等待登录'
+        Status = '等待数据'
         Source = $Reason
         Model = '暂无本地记录'
     }
@@ -1058,7 +1117,7 @@ function Get-KimiUnavailableSnapshot {
 function Get-KimiDemoSnapshot {
     return [pscustomobject]@{
         ProviderId = 'Kimi'
-        AccountId = (Get-ActiveConfigProfileId -Provider 'Kimi')
+        AccountId = (Get-PersistedConfigProfileId -Provider 'Kimi')
         Available = $true
         RemainingPercent = 90
         HasProgress = $true

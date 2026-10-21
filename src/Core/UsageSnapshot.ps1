@@ -166,6 +166,13 @@ function Get-CodexCurrentUsageOverride {
 
     $planType = [string]$OfficialUsage.PlanType
     $primaryPeriod = Get-CodexPrimaryQuotaPeriod -PlanType $planType
+    if (
+        [string]::IsNullOrWhiteSpace($planType) -and
+        -not $fiveHourWindow -and
+        $weeklyWindow
+    ) {
+        $primaryPeriod = 'Weekly'
+    }
     $primaryWindow = if ($primaryPeriod -eq 'Weekly') {
         $weeklyWindow
     } else {

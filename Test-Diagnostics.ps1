@@ -149,6 +149,10 @@ Assert-Diagnostic -Condition (
     [bool]$configProfiles.ProfileOverridesLocalCli
 ) -Message 'The selected configuration outranks the locally detected one'
 Assert-Diagnostic -Condition (
+    [bool]$configProfiles.AutoCredentialFallsBackToSavedProfile -and
+    [bool]$configProfiles.PersistedIdResolvesMissingSelection
+) -Message 'A rejected local credential falls back to a saved profile without ghost account ids'
+Assert-Diagnostic -Condition (
     [bool]$configProfiles.CorruptedDocumentFallsBack -and
     [bool]$configProfiles.MigrationCreatesOneEntry -and
     [bool]$configProfiles.MigrationIsIdempotent -and
@@ -169,6 +173,11 @@ Assert-Diagnostic -Condition (
     [bool]$configProfiles.BudgetExceededFlag -and
     [bool]$configProfiles.BudgetNotExceededFlag
 ) -Message 'The budget baseline is evaluated per quota window and per account'
+Assert-Diagnostic -Condition (
+    [bool]$configProfiles.DeepSeekBudgetAmountPreserved -and
+    [bool]$configProfiles.DeepSeekBudgetUsesMonthlySpend -and
+    [bool]$configProfiles.DeepSeekBudgetRowVisible
+) -Message 'DeepSeek monetary budgets keep their amount, compare monthly spend and render'
 Assert-Diagnostic -Condition (
     [bool]$configProfiles.EmptySnapshotIsBlank -and
     [bool]$configProfiles.EmptyFaultShowsStatusOnly
@@ -241,7 +250,7 @@ Assert-Diagnostic -Condition (
 Assert-Diagnostic -Condition (
     $contracts.CodexProMaxPrimaryPeriod -eq 'Weekly' -and
     @($contracts.CodexProMaxAliasPeriods | Where-Object { $_ -ne 'Weekly' }).Count -eq 0 -and
-    $contracts.CodexProMaxLabel -eq 'Pro (Max)'
+    $contracts.CodexProMaxLabel -eq 'Pro Max'
 ) -Message 'Codex Pro Max selects the weekly primary quota period'
 Assert-Diagnostic -Condition (
     [bool]$contracts.CodexProMaxSnapshotUsesWeekly
@@ -249,6 +258,9 @@ Assert-Diagnostic -Condition (
 Assert-Diagnostic -Condition (
     [bool]$contracts.CodexProMaxWithoutWeeklyRemainsUnknown
 ) -Message 'Codex Pro Max does not fall back to five-hour quota when weekly data is missing'
+Assert-Diagnostic -Condition (
+    [bool]$contracts.CodexBlankPlanWeeklyUsesWeekly
+) -Message 'A weekly-only Codex payload without plan_type still uses its weekly window'
 Assert-Diagnostic -Condition (
     [bool]$contracts.CodexNonFiniteQuotaValuesRejected
 ) -Message 'Codex quota parser rejects non-finite percentage and duration values'
@@ -379,6 +391,8 @@ foreach ($propertyName in @(
     'CurrentIndexWritten'
     'CorruptLatestFallback'
     'CorruptManifestFallback'
+    'LegacyStateAdopted'
+    'OwnStateWinsOverNewerLegacy'
     'LargeLegacyRestoreFast'
     'LargeLegacyIncrementalSaveFast'
     'LegacyManifestUntouched'
@@ -447,6 +461,8 @@ Assert-Diagnostic -Condition ([bool]$history.PersistenceRoundTrip) `
     -Message 'History persistence round trip'
 Assert-Diagnostic -Condition ([bool]$history.RestartReloadRoundTrip) `
     -Message 'History restart reload round trip'
+Assert-Diagnostic -Condition ([bool]$history.AccountHistoryIsolated) `
+    -Message 'Usage history keeps accounts isolated through trend analysis and persistence'
 Assert-Diagnostic -Condition ([bool]$history.LegacyHistoryMigration) `
     -Message 'Legacy history schema migration'
 Assert-Diagnostic -Condition ([bool]$history.LegacyWeeklyCodexMigrated) `

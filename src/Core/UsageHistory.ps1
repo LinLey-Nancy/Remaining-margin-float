@@ -88,6 +88,15 @@ function Get-UsageQuotaPeriod {
     return ''
 }
 
+function Get-UsageAccountId {
+    param($Value)
+
+    if ($Value -and $Value.PSObject.Properties['AccountId']) {
+        return [string]$Value.AccountId
+    }
+    return ''
+}
+
 function Get-UsageHistoryCalendarMetadata {
     param(
         [DateTimeOffset]$ObservedAt,
@@ -135,6 +144,12 @@ function Select-UsageHistoryRetentionWindow {
         $normalized = [pscustomobject]@{
             Version = 3
             ProviderId = [string]$sample.ProviderId
+            # AccountId is part of the sample identity: dropping it here used to
+            # silently merge two profiles whenever the history file was
+            # compacted, exported or imported.
+            AccountId = if ($sample.PSObject.Properties['AccountId']) {
+                [string]$sample.AccountId
+            } else { '' }
             ObservedAtUtc = $observedAt
             LocalDate = $calendar.LocalDate
             TimeZoneId = $calendar.TimeZoneId
@@ -150,10 +165,11 @@ function Select-UsageHistoryRetentionWindow {
             Unit = [string]$sample.Unit
             ResetAtUtc = [string]$sample.ResetAtUtc
         }
-        $key = '{0}|{1}|{2}|{3}|{4}' -f
+        $key = '{0}|{1}|{2}|{3}|{4}|{5}' -f
             $normalized.ProviderId,
             $normalized.MetricType,
             $normalized.QuotaPeriod,
+            $normalized.AccountId,
             $normalized.Unit,
             $normalized.ObservedAtUtc.ToString(
                 'o',
@@ -392,7 +408,7 @@ function Read-UsageHistory {
             Sync-UsageHistoryAccountContext `
                 -Samples $history `
                 -ProviderId $profileProvider `
-                -AccountId (Get-ActiveConfigProfileId -Provider $profileProvider)
+                -AccountId (Get-SelectedConfigProfileId -Provider $profileProvider)
         }
     }
     if ($usesDefaultPath -and $ForAnalysis) {
@@ -575,6 +591,9 @@ function Get-UsageHistoryCoverageFingerprint {
         [void]$lines.Add((
             [ordered]@{
                 ProviderId = [string]$sample.ProviderId
+                AccountId = if ($sample.PSObject.Properties['AccountId']) {
+                    [string]$sample.AccountId
+                } else { '' }
                 ObservedAtUtc = $observedAt.ToString(
                     'o',
                     [Globalization.CultureInfo]::InvariantCulture
@@ -1016,6 +1035,7 @@ function Get-PreviousUsageHistorySample {
             $candidate.ProviderId -eq $CurrentSample.ProviderId -and
             $candidate.MetricType -eq $CurrentSample.MetricType -and
             (Get-UsageQuotaPeriod -Value $candidate) -eq $currentQuotaPeriod -and
+            [string]$candidate.AccountId -eq [string]$CurrentSample.AccountId -and
             $candidate.Unit -eq $CurrentSample.Unit -and
             $candidate.ObservedAtUtc -le $CurrentSample.ObservedAtUtc
         ) {
@@ -1248,6 +1268,7 @@ function Get-UsageTrend {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
             (Get-UsageQuotaPeriod -Value $_) -eq $currentQuotaPeriod -and
+            [string]$_.AccountId -eq [string]$CurrentSample.AccountId -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -le $nowUtc.AddMinutes(5)
         } | Sort-Object ObservedAtUtc
@@ -1269,8 +1290,10 @@ function Get-UsageTrend {
             $nowPoint = [pscustomobject]@{
                 Version = $series[-1].Version
                 ProviderId = $CurrentSample.ProviderId
+                AccountId = Get-UsageAccountId -Value $CurrentSample
                 ObservedAtUtc = $nowUtc
                 MetricType = $CurrentSample.MetricType
+                QuotaPeriod = $currentQuotaPeriod
                 RemainingValue = [double]$CurrentSample.RemainingValue
                 Unit = $CurrentSample.Unit
                 ResetAtUtc = ''
@@ -1312,8 +1335,10 @@ function Get-UsageTrend {
             $anchorPoint = [pscustomobject]@{
                 Version = 3
                 ProviderId = $CurrentSample.ProviderId
+                AccountId = Get-UsageAccountId -Value $CurrentSample
                 ObservedAtUtc = $anchorAtUtc
                 MetricType = $CurrentSample.MetricType
+                QuotaPeriod = $currentQuotaPeriod
                 RemainingValue = [double]$CurrentSample.RemainingValue
                 Unit = $CurrentSample.Unit
                 ResetAtUtc = ''
@@ -1430,6 +1455,7 @@ function Get-DepletionForecast {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
             (Get-UsageQuotaPeriod -Value $_) -eq $currentQuotaPeriod -and
+            [string]$_.AccountId -eq [string]$CurrentSample.AccountId -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -ge $Now.ToUniversalTime().AddDays(-7) -and
             $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
@@ -1790,6 +1816,10 @@ function Measure-RapidUsageDrop {
         return & $emptyResult '' '' 0.0 '' '当前数据不可用'
     }
     $providerId = [string]$Snapshot.ProviderId
+    $accountId = [string](Get-ObjectPropertyValue `
+        -Object $Snapshot `
+        -Name 'AccountId' `
+        -Default '')
     if ($providerId -in @('Codex', 'Kimi')) {
         $providerDisplayName = if ($providerId -eq 'Kimi') { 'Kimi Code' } else { 'Codex' }
         $metricType = 'Percent'
@@ -1844,6 +1874,7 @@ function Measure-RapidUsageDrop {
             $_.ProviderId -eq $providerId -and
             $_.MetricType -eq $metricType -and
             (Get-UsageQuotaPeriod -Value $_) -eq $quotaPeriod -and
+            [string]$_.AccountId -eq $accountId -and
             $_.Unit -eq $unit -and
             $_.ObservedAtUtc -ge $cutoff -and
             $_.ObservedAtUtc -le $Now.ToUniversalTime().AddMinutes(5)
@@ -1908,6 +1939,7 @@ function Select-UsageHistoryAnalysisSamples {
             $_.ProviderId -eq $CurrentSample.ProviderId -and
             $_.MetricType -eq $CurrentSample.MetricType -and
             (Get-UsageQuotaPeriod -Value $_) -eq $quotaPeriod -and
+            [string]$_.AccountId -eq [string]$CurrentSample.AccountId -and
             $_.Unit -eq $CurrentSample.Unit -and
             $_.ObservedAtUtc -le $futureLimit
         } | Sort-Object ObservedAtUtc
@@ -2099,6 +2131,46 @@ function ConvertTo-BudgetBaselinePercent {
     return [Math]::Min(100.0, $parsed)
 }
 
+function ConvertTo-BudgetBaselineAmount {
+    # DeepSeek's budget is a monetary amount, not a percentage. It must not be
+    # clamped to 100 like the Codex/Kimi percentage baseline; 0 still means
+    # "no budget configured".
+    param(
+        $Value,
+        [double]$Fallback = 0.0,
+        [switch]$Strict
+    )
+
+    $parsedValue = 0.0
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $parsed = [double]::TryParse(
+        $text.Trim(),
+        [Globalization.NumberStyles]::Number,
+        [Globalization.CultureInfo]::CurrentCulture,
+        [ref]$parsedValue
+    )
+    if (-not $parsed) {
+        $parsed = [double]::TryParse(
+            $text.Trim(),
+            [Globalization.NumberStyles]::Number,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsedValue
+        )
+    }
+    $isValid = (
+        $parsed -and
+        -not [double]::IsNaN($parsedValue) -and
+        -not [double]::IsInfinity($parsedValue) -and
+        $parsedValue -ge 0 -and
+        $parsedValue -le 1000000000
+    )
+    if ($isValid) { return [Math]::Round($parsedValue, 2) }
+    if ($Strict) {
+        throw '预算基准金额需要是 0 到 1,000,000,000 之间的数字。'
+    }
+    return $Fallback
+}
+
 function Get-UsageAlertProviderIds {
     return @('Codex', 'Kimi', 'DeepSeek')
 }
@@ -2199,7 +2271,7 @@ function ConvertTo-UsageAlertSettings {
                     -Default $defaults.RapidAmount) `
                 -Fallback $defaults.RapidAmount `
                 -Strict:$Strict
-            BudgetAmount = ConvertTo-BudgetBaselinePercent `
+            BudgetAmount = ConvertTo-BudgetBaselineAmount `
                 -Value (Get-ObjectPropertyValue `
                     -Object $Value `
                     -Name 'BudgetAmount' `

@@ -528,13 +528,18 @@ function Complete-DeepSeekRefresh {
             $budgetAmount = [double](Get-DeepSeekConfiguration).Budget
         }
         $credential = Get-DeepSeekCredential
+        # The virtual automatic entry's label already names the provider.
+        $accountLabel = if (
+            [string]$credential.ProfileId -eq
+            (Get-ConfigProfileAutoId -Provider 'DeepSeek')
+        ) { '' } else { [string]$credential.ProfileLabel }
         $snapshot = ConvertTo-DeepSeekSnapshot `
             -BalancePayload $payload `
             -LocalUsage (Get-DeepSeekLocalUsage) `
             -Budget $budgetAmount `
             -KeyHint $credential.Hint `
             -SourceLabel $credential.Source `
-            -AccountLabel $credential.ProfileLabel
+            -AccountLabel $accountLabel
         $script:LastDeepSeekSnapshot = $snapshot
         if ($script:ActiveProvider -eq 'DeepSeek') {
             Update-UsageView -Snapshot $snapshot
@@ -745,9 +750,16 @@ function Complete-KimiRefresh {
         if (-not $response.IsSuccessStatusCode) {
             if ($statusCode -eq 401 -and (Test-KimiManualCredentialFallback)) {
                 # 自动凭证失效但存在手动 Key：进程内标记拒绝并立即用手动 Key 重试。
+                # The 401 body is not a usage payload; never fall through to the
+                # parser below (it used to throw a second, misleading error).
                 $script:KimiAutoCredentialRejected = $true
-                $retryStarted = $true
-                [void](Start-KimiOfficialRequest)
+                Write-RuntimeLog `
+                    -Level 'Warning' `
+                    -Event 'Refresh.KimiCredentialFallback' `
+                    -Message '自动凭证被拒绝，改用已保存配置重试' `
+                    -Data @{ ProfileId = $script:KimiManualFallbackProfileId }
+                $retryStarted = [bool](Start-KimiOfficialRequest)
+                return
             }
             else {
                 $message = switch ($statusCode) {
@@ -1015,6 +1027,7 @@ function Set-KimiUseWsl {
     # 401 marker goes with it so the local read is retried from scratch.
     Reset-ProviderAccountCaches -Provider 'Kimi'
     $script:KimiAutoCredentialRejected = $false
+    $script:KimiManualFallbackProfileId = ''
     $script:KimiWslDataRootCache = $null
     $script:KimiWslDataRootResolved = $false
     Sync-ProviderMenuState
@@ -1048,8 +1061,18 @@ function Set-ActiveConfigProfile {
     $existing = Get-ActiveConfigProfileId -Provider $Provider
     if ($existing -eq $ConfigId) {
         # Re-selecting the same configuration must not blank the screen or fire
-        # another request.
-        return $false
+        # another request, but it *is* the user's way to retry the local read
+        # after an automatic 401 fallback took over.
+        $hasKimiFallback = (
+            $Provider -eq 'Kimi' -and
+            (
+                $script:KimiAutoCredentialRejected -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$script:KimiManualFallbackProfileId
+                )
+            )
+        )
+        if (-not $hasKimiFallback) { return $false }
     }
     Set-ActiveConfigProfileId -Provider $Provider -ConfigId $ConfigId
     if ($script:AppContext.Refresh.Kimi.RequestTask -or $script:AppContext.Refresh.Kimi.RetryAfter) {
@@ -1063,7 +1086,10 @@ function Set-ActiveConfigProfile {
     }
     Reset-ProviderAccountCaches -Provider $Provider
     # The 401 marker belongs to the credential we just left as well.
-    if ($Provider -eq 'Kimi') { $script:KimiAutoCredentialRejected = $false }
+    if ($Provider -eq 'Kimi') {
+        $script:KimiAutoCredentialRejected = $false
+        $script:KimiManualFallbackProfileId = ''
+    }
     Reset-ProviderRapidDropSession -ProviderId $Provider
     Save-Settings
     Sync-ProviderMenuState

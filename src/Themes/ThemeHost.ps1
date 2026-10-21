@@ -224,7 +224,7 @@ function Update-RmfThemeLayout {
     $ThemeAccountHint.Text = $AccountEmail.Text
     $ThemeAccountHint.ToolTip = $AccountEmail.Text
     $ThemePlanText.Text = $PlanBadge.Text
-    $ThemePlanText.Parent.Visibility = if ($PlanBadge.Text) { 'Visible' } else { 'Collapsed' }
+    $ThemePlanText.Parent.Visibility = $PlanBadgeContainer.Visibility
     $RemainingValue.FontSize = if ($expanded) { $theme.typography.detailsNumberSize } else {
         $theme.typography.compactNumberSize
     }

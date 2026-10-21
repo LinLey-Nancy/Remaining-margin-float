@@ -10,6 +10,8 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'tests\ScreenPlacement.ps1')
+
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $productName = "Remaining-Margin-Float-v$Version"
 $packageRoot = Join-Path $outputRoot $productName
@@ -302,6 +304,22 @@ try {
         'LOCALAPPDATA',
         (Join-Path $negativeTestRoot 'gui-localappdata'),
         $processEnvironment
+    )
+    # The GUI check shows the real application window. Anchor it on the
+    # monitor that hosts the terminal running the check so the primary
+    # monitor the user works on stays untouched.
+    $guiCheckAppData = Join-Path (
+        Join-Path $negativeTestRoot 'gui-localappdata'
+    ) 'RemainingMarginFloat'
+    [void](New-Item -ItemType Directory -Path $guiCheckAppData -Force)
+    $guiCheckPlacement = Get-RmfTestScreenPlacement -Margin 24 -Corner 'BottomRight'
+    [IO.File]::WriteAllText(
+        (Join-Path $guiCheckAppData 'settings.json'),
+        (ConvertTo-Json ([ordered]@{
+            Left = $guiCheckPlacement.Left
+            Top = $guiCheckPlacement.Top
+        })),
+        (New-Object Text.UTF8Encoding($false))
     )
     [Environment]::SetEnvironmentVariable(
         'REMAINING_MARGIN_FLOAT_INSTANCE_SCOPE',

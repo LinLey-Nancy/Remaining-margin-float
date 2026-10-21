@@ -30,6 +30,8 @@ if (-not $probeRoot.StartsWith(
 $probeAppData = Join-Path $probeRoot 'RemainingMarginFloat'
 [void](New-Item -ItemType Directory -Path $probeAppData -Force)
 
+. (Join-Path $PSScriptRoot 'tests\ScreenPlacement.ps1')
+
 # Seed a recent legacy full-state snapshot so the packaged application must
 # exercise its trusted background repair path on every machine, including CI.
 $savedDiagnosticMode = Get-Variable -Name isDiagnosticRun -ErrorAction SilentlyContinue
@@ -99,9 +101,22 @@ try {
     if (Test-Path -LiteralPath $backfillMarkerPath) {
         Remove-Item -LiteralPath $backfillMarkerPath -Force
     }
+    # The probe starts a real, visible and topmost application window. Anchor
+    # it on the monitor that hosts the terminal running the check, so the
+    # primary monitor the user works on stays untouched. The corner is the one
+    # that carries the least information in a terminal.
+    $probePlacement = Get-RmfTestScreenPlacement -Margin 24 -Corner 'BottomRight'
+    $probeSettings = [ordered]@{
+        Provider = 'Codex'
+        CodexOfficialAccessEnabled = $true
+        AutoUpdateEnabled = $false
+        OnboardingCompleted = $true
+        Left = $probePlacement.Left
+        Top = $probePlacement.Top
+    }
     [IO.File]::WriteAllText(
         (Join-Path $probeAppData 'settings.json'),
-        '{"Provider":"Codex","CodexOfficialAccessEnabled":true,"AutoUpdateEnabled":false,"OnboardingCompleted":true}',
+        (ConvertTo-Json $probeSettings),
         (New-Object Text.UTF8Encoding($false))
     )
 }

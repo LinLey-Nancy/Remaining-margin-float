@@ -89,8 +89,10 @@
     $captureRoot = [IO.Path]::GetFullPath($CaptureDirectory)
     [void][IO.Directory]::CreateDirectory($captureRoot)
     $window.ShowInTaskbar = $false
-    $window.Left = 24
-    $window.Top = 24
+    $captureOrigin = Get-RmfDiagnosticWindowOrigin -Margin 12
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
+    $window.ShowActivated = $false
     $window.Show()
     Wait-ForCaptureUi -Milliseconds 80
     Set-RefreshBusy -Busy $false
@@ -119,7 +121,7 @@
     }
 
     $script:EdgeDockSide = 'Left'
-    $window.Top = 24
+    $window.Top = $captureOrigin.Top
     Set-Progress -Percent 82
     Set-EdgeDockReveal -Revealed $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
@@ -133,7 +135,7 @@
     Save-VisualPng -Element $window -Path $edgeRightPath
     $captureFiles['edge-energy-right'] = $edgeRightPath
     Clear-EdgeDock
-    $window.Left = 24
+    $window.Left = $captureOrigin.Left
 
     $balancePreviewSnapshot = Get-DeepSeekDemoSnapshot
     $balancePreviewSnapshot.HasProgress = $false
@@ -206,8 +208,8 @@
     Update-UsageView -Snapshot $codexPreviewSnapshot
 
     Clear-EdgeDock
-    $window.Left = 24
-    $window.Top = 24
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
     Set-ExpandedState -Expanded $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
     $codexPlusCompactPath = Join-Path $captureRoot 'codex-plus-compact.png'
@@ -243,8 +245,8 @@
     $captureFiles['codex-plus-edge'] = $codexPlusEdgePath
 
     Clear-EdgeDock
-    $window.Left = 24
-    $window.Top = 24
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
     Set-ExpandedState -Expanded $true -Immediate
     Wait-ForCaptureUi -Milliseconds 40
     if ([Math]::Abs($window.ActualHeight - 522) -gt 0.01) {
@@ -294,8 +296,8 @@
     Update-UsageView -Snapshot $codexProPreviewSnapshot
 
     Clear-EdgeDock
-    $window.Left = 24
-    $window.Top = 24
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
     Set-ExpandedState -Expanded $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
     $codexProCompactPath = Join-Path $captureRoot 'codex-pro-compact.png'
@@ -310,8 +312,8 @@
     $captureFiles['codex-pro-edge'] = $codexProEdgePath
 
     Clear-EdgeDock
-    $window.Left = 24
-    $window.Top = 24
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
     Set-ExpandedState -Expanded $true -Immediate
     Wait-ForCaptureUi -Milliseconds 40
     if ([Math]::Abs($window.ActualHeight - 474) -gt 0.01) {
@@ -337,8 +339,8 @@
         -Snapshot $weeklyDepletedCaptureSnapshot `
         -Values @(80, 62, 48, 35, 24, 15, 8, 0)
     Update-UsageView -Snapshot $weeklyDepletedCaptureSnapshot
-    $window.Left = 24
-    $window.Top = 24
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
     Set-ExpandedState -Expanded $false -Immediate
     Wait-ForCaptureUi -Milliseconds 40
     $weeklyDepletedCompactPath = Join-Path $captureRoot `
@@ -355,8 +357,8 @@
     $captureFiles['codex-weekly-depleted-edge'] = $weeklyDepletedEdgePath
 
     Clear-EdgeDock
-    $window.Left = 24
-    $window.Top = 24
+    $window.Left = $captureOrigin.Left
+    $window.Top = $captureOrigin.Top
     $kimiCaptureSnapshot = Get-KimiDemoSnapshot
     $kimiCaptureSnapshot.AccountName = 'Kimi Code · 备用配置（未加密 API）'
     $kimiCaptureSnapshot.AccountEmail = `
@@ -515,6 +517,7 @@ if ($CheckTransitions) {
                 [pscustomobject]@{
                     Version = 2
                     ProviderId = 'DeepSeek'
+                    AccountId = ''
                     ObservedAtUtc = $diagnosticNow.AddHours(-$item.Hours)
                     LocalDate = $diagnosticNow.AddHours(-$item.Hours).ToString('yyyy-MM-dd')
                     TimeZoneId = [TimeZoneInfo]::Local.Id
@@ -655,10 +658,10 @@ if ($CheckTransitions) {
     )
 
     $resetUiSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 37; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 98; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 97; Unit = '%'; ResetAtUtc = '' }
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 37; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 98; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 97; Unit = '%'; ResetAtUtc = '' }
     )
     $resetUiInsights = Measure-UsageInsights `
         -Samples $resetUiSamples `
@@ -684,12 +687,12 @@ if ($CheckTransitions) {
     )
 
     $multipleResetUiSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-5); MetricType = 'Percent'; RemainingValue = 30; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-4); MetricType = 'Percent'; RemainingValue = 29; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 70; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 69; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 89; Unit = '%'; ResetAtUtc = '' }
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-5); MetricType = 'Percent'; RemainingValue = 30; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-4); MetricType = 'Percent'; RemainingValue = 29; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 70; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-2); MetricType = 'Percent'; RemainingValue = 69; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-1); MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 89; Unit = '%'; ResetAtUtc = '' }
     )
     $multipleResetUiInsights = Measure-UsageInsights `
         -Samples $multipleResetUiSamples `
@@ -718,9 +721,9 @@ if ($CheckTransitions) {
     }
 
     $singlePointSegmentSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddMinutes(-20); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddMinutes(-2); MetricType = 'Percent'; RemainingValue = 35; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' }
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddMinutes(-20); MetricType = 'Percent'; RemainingValue = 36; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddMinutes(-2); MetricType = 'Percent'; RemainingValue = 35; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 90; Unit = '%'; ResetAtUtc = '' }
     )
     $singlePointSegmentInsights = Measure-UsageInsights `
         -Samples $singlePointSegmentSamples `
@@ -745,8 +748,8 @@ if ($CheckTransitions) {
     }
 
     $gapResetUiSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 30; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 95; Unit = '%'; ResetAtUtc = '' }
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-3); MetricType = 'Percent'; RemainingValue = 30; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow; MetricType = 'Percent'; RemainingValue = 95; Unit = '%'; ResetAtUtc = '' }
     )
     $gapResetUiInsights = Measure-UsageInsights `
         -Samples $gapResetUiSamples `
@@ -775,8 +778,8 @@ if ($CheckTransitions) {
     }
 
     $staleAnchorSamples = @(
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-9); MetricType = 'Percent'; RemainingValue = 64; Unit = '%'; ResetAtUtc = '' },
-        [pscustomobject]@{ Version = 2; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-7); MetricType = 'Percent'; RemainingValue = 62; Unit = '%'; ResetAtUtc = '' }
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-9); MetricType = 'Percent'; RemainingValue = 64; Unit = '%'; ResetAtUtc = '' },
+        [pscustomobject]@{ Version = 2; AccountId = ''; ProviderId = 'Codex'; ObservedAtUtc = $diagnosticNow.AddHours(-7); MetricType = 'Percent'; RemainingValue = 62; Unit = '%'; ResetAtUtc = '' }
     )
     $staleAnchorInsights = Measure-UsageInsights `
         -Samples $staleAnchorSamples `
@@ -1285,7 +1288,7 @@ if ($CheckTransitions) {
     # The $500 Pro tier ships its own plan_type; it must look exactly like the
     # $200 tier and never fall back to the five-hour headline.
     $proMaxSnapshot = $proDowngradedSnapshot.PSObject.Copy()
-    $proMaxSnapshot.Plan = 'Pro (Max)'
+    $proMaxSnapshot.Plan = 'Pro Max'
     $proMaxSnapshot.PlanType = 'promax'
     $proMaxSnapshot.FiveHourRemainingPercent = 100
     $proMaxSnapshot.FiveHourUsedPercent = 0
@@ -1293,7 +1296,7 @@ if ($CheckTransitions) {
     $proMaxKeepsWeeklyHeader = (
         $RemainingValue.Text -eq '91' -and
         $WindowLabel.Text -eq '每周余量' -and
-        [string]$PlanBadge.Text -eq 'Pro (Max)' -and
+        [string]$PlanBadge.Text -eq 'Pro Max' -and
         $UsageTrendTitle.Text -eq '每周额度趋势' -and
         [Math]::Abs($UltraRemainingProgressRow.Height.Value - 91) -lt 0.01 -and
         [Math]::Abs(

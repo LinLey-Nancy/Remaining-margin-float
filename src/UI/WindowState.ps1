@@ -2590,14 +2590,79 @@ function Get-UsageBudgetChecks {
 
     if ($providerId -eq 'DeepSeek') {
         $budgetAmount = [double]$settings.BudgetAmount
+        $spentAmount = 0.0
+        $monthComplete = $true
+        $coverageComplete = $true
+        $coverageStartDate = ''
+        $hasSpendData = $false
+        $unit = 'CNY'
+        $summary = ''
+        $isExceeded = $false
+        if ($budgetAmount -gt 0) {
+            try {
+                if (Get-Command Read-SpendLedger -ErrorAction SilentlyContinue) {
+                    $spendSummary = Get-SpendSummary `
+                        -Ledger (Read-SpendLedger) `
+                        -ProviderId 'DeepSeek' `
+                        -AccountId $accountId `
+                        -Now ([DateTimeOffset]::Now)
+                    $unit = [string]$spendSummary.Unit
+                    $spentAmount = [double]$spendSummary.MonthSpent
+                    $monthComplete = [bool]$spendSummary.MonthComplete
+                    $coverageComplete = [bool]$spendSummary.CoverageComplete
+                    $coverageStartDate = [string]$spendSummary.CoverageStartDate
+                    # HasData also counts the previous month kept for display;
+                    # the budget is about the current month only.
+                    $hasSpendData = [int]$spendSummary.CoverageDays -gt 0
+                }
+            }
+            catch {
+                # A damaged ledger must not hide the budget row; it is simply
+                # shown without a spend figure until a sample is available.
+                $hasSpendData = $false
+            }
+            $budgetText = Format-CurrencyAmount `
+                -Amount $budgetAmount `
+                -Currency $unit
+            if (-not $hasSpendData) {
+                $summary = '预算 {0} · 等待余额采样' -f $budgetText
+            }
+            else {
+                $difference = [Math]::Round($spentAmount - $budgetAmount, 2)
+                $isExceeded = $difference -gt 0
+                $summary = if ($isExceeded) {
+                    '预算 {0} · 已超 {1}' -f $budgetText, (
+                        Format-CurrencyAmount -Amount $difference -Currency $unit
+                    )
+                }
+                else {
+                    '预算 {0} · 还能用 {1}' -f $budgetText, (
+                        Format-CurrencyAmount `
+                            -Amount ([Math]::Abs($difference)) `
+                            -Currency $unit
+                    )
+                }
+                if (
+                    -not $coverageComplete -and
+                    -not [string]::IsNullOrWhiteSpace($coverageStartDate)
+                ) {
+                    $summary += ' · 自 {0} 起' -f (
+                        Format-SpendLedgerDateLabel -Date $coverageStartDate
+                    )
+                }
+                if (-not $monthComplete) {
+                    $summary += ' · 含断档'
+                }
+            }
+        }
         $checks.Add([pscustomobject]@{
             Key = "${providerId}|${accountId}|Budget|Amount"
             Title = 'DeepSeek 本月花费超出预算'
             Available = $budgetAmount -gt 0
             BudgetAmount = $budgetAmount
-            SpentAmount = 0.0
-            IsExceeded = $false
-            Summary = ''
+            SpentAmount = $spentAmount
+            IsExceeded = $isExceeded
+            Summary = $summary
         })
         return $checks
     }
@@ -2969,26 +3034,38 @@ function Set-CodexQuotaBand {
 function Get-CodexQuotaPresentation {
     param($Snapshot)
 
-    $period = if (
+    $hasExplicitPeriod = (
         $Snapshot -and
         $Snapshot.PSObject.Properties['PrimaryQuotaPeriod'] -and
         [string]$Snapshot.PrimaryQuotaPeriod -in @('FiveHour', 'Weekly')
-    ) {
+    )
+    $planType = if ($Snapshot -and $Snapshot.PSObject.Properties['PlanType']) {
+        [string]$Snapshot.PlanType
+    } elseif ($Snapshot -and $Snapshot.PSObject.Properties['Plan']) {
+        [string]$Snapshot.Plan
+    } else { '' }
+    $period = if ($hasExplicitPeriod) {
         [string]$Snapshot.PrimaryQuotaPeriod
     }
+    elseif (Get-Command Get-CodexPrimaryQuotaPeriod -ErrorAction SilentlyContinue) {
+        Get-CodexPrimaryQuotaPeriod -PlanType $planType
+    }
+    elseif ($planType.Trim() -match '^Pro(?:\s|$)') {
+        'Weekly'
+    }
     else {
-        $planType = if ($Snapshot -and $Snapshot.PSObject.Properties['PlanType']) {
-            [string]$Snapshot.PlanType
-        } elseif ($Snapshot -and $Snapshot.PSObject.Properties['Plan']) {
-            [string]$Snapshot.Plan
-        } else { '' }
-        if (Get-Command Get-CodexPrimaryQuotaPeriod -ErrorAction SilentlyContinue) {
-            Get-CodexPrimaryQuotaPeriod -PlanType $planType
-        } elseif ($planType.Trim() -match '^Pro(?:\s|$)') {
-            'Weekly'
-        } else {
-            'FiveHour'
-        }
+        'FiveHour'
+    }
+    if (
+        -not $hasExplicitPeriod -and
+        $Snapshot -and
+        [string]::IsNullOrWhiteSpace($planType) -and
+        $Snapshot.PSObject.Properties['FiveHourAvailable'] -and
+        -not [bool]$Snapshot.FiveHourAvailable -and
+        $Snapshot.PSObject.Properties['WeeklyAvailable'] -and
+        [bool]$Snapshot.WeeklyAvailable
+    ) {
+        $period = 'Weekly'
     }
     $prefix = if ($period -eq 'Weekly') { 'Weekly' } else { 'FiveHour' }
     $label = if ($period -eq 'Weekly') { '每周' } else { '5 小时' }
@@ -3283,6 +3360,9 @@ function Clear-UsageView {
 
     $script:RmfThemeDisplaySnapshot = $null
     $FooterStatusText.Visibility = 'Collapsed'
+    $PlanBadgeContainer.Visibility = 'Collapsed'
+    $BudgetRow.Height = New-Object Windows.GridLength(7)
+    $BudgetText.Visibility = 'Collapsed'
     $SourceText.Text = $Message
     $RapidDropStatusDot.Visibility = 'Collapsed'
     $ResetSummaryPanel.Visibility = 'Collapsed'
@@ -3491,7 +3571,20 @@ function Update-UsageView {
         $codexQuotaBinding.ResetCountdown
     } else { [string]$Snapshot.ResetCountdown }
     $AccountName.Text = $Snapshot.AccountName
-    $PlanBadge.Text = $Snapshot.Plan
+    $planText = [string]$Snapshot.Plan
+    $PlanBadge.Text = $planText
+    # "Unknown" plans are an internal sentinel, and a plan label that merely
+    # repeats the provider name adds no information; both would render as a
+    # meaningless pill next to the account name.
+    $planRepeatsProvider = (
+        ([string]$Snapshot.ProviderId -eq 'Codex' -and $planText -eq 'Codex') -or
+        ([string]$Snapshot.ProviderId -eq 'Kimi' -and $planText -eq 'Kimi Code')
+    )
+    $PlanBadgeContainer.Visibility = if (
+        [string]::IsNullOrWhiteSpace($planText) -or
+        $planText -eq '--' -or
+        $planRepeatsProvider
+    ) { 'Collapsed' } else { 'Visible' }
     $AccountEmail.Text = $Snapshot.AccountEmail
     $BudgetText.Text = if (
         $Snapshot.PSObject.Properties['AccountId'] -or
@@ -3500,6 +3593,11 @@ function Update-UsageView {
         Get-UsageBudgetSummaryText -Snapshot $Snapshot
     } else { '' }
     $BudgetText.Visibility = if ($BudgetText.Text) { 'Visible' } else { 'Collapsed' }
+    # The row only needs a text-sized slot when a budget is configured; the
+    # charts otherwise reclaim the space immediately below their title.
+    $BudgetRow.Height = New-Object Windows.GridLength(
+        $(if ($BudgetText.Text) { 18 } else { 7 })
+    )
     [void](Set-UsageSnapshotProvenance -Snapshot $Snapshot)
     $ResetSummaryPanel.Visibility = if (
         $script:IsExpanded -and
@@ -3598,10 +3696,10 @@ function Update-UsageView {
         $MetricTwoTitle.Text = '本月花费'
         $TodayTokens.Text = $monthSpendText
         $MetricTwoHint.Text = $monthSpendHint
-        $MetricThreeTitle.Text = '今日 TOKEN'
+        $MetricThreeTitle.Text = '今日 Token'
         $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
         $ContextText.Text = 'Claude Code 本机累计'
-        $MetricFourTitle.Text = '本月累计 TOKEN'
+        $MetricFourTitle.Text = '本月累计 Token'
         $CacheHit.Text = Format-CompactNumber $Snapshot.MonthlyTokens
         $CacheTokenText.Text = '当月本机去重累计'
         # The exact balance used to live in the first card; keep it visible here
@@ -3706,7 +3804,7 @@ function Update-UsageView {
             [string][int]$codexQuotaBinding.RemainingPercent
         } else { '未知' }
         $CompactSuffix.Text = if ($codexQuotaBinding.Available) { '%' } else { '' }
-        $BreakdownTitle.Text = '今日 TOKEN'
+        $BreakdownTitle.Text = '今日 Token'
         $TokenBreakdown.Text = '{0} · 输出 {1}' -f `
             (Format-CompactNumber $Snapshot.TodayTokens), `
             (Format-CompactNumber $Snapshot.TodayOutputTokens)

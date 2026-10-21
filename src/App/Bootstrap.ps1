@@ -480,7 +480,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.14.2'
+$script:AppVersion = '1.14.3'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -531,6 +531,7 @@ $script:CodexOfficialUsageCache = $null
 $script:KimiHttpClient = $null
 $script:KimiOfficialUsageCache = $null
 $script:KimiAutoCredentialRejected = $false
+$script:KimiManualFallbackProfileId = ''
 $script:DeepSeekHttpClient = $null
 $script:UpdateHttpClient = $null
 $script:UpdateMenuItem = $null
@@ -604,6 +605,7 @@ $script:UsageHistoryUpdateLastError = ''
 $script:LastUsageInsights = $null
 $script:LastUsageHistoryError = ''
 $script:UsageStateDiagnosticCaptureCount = 0
+$script:RmfDiagnosticWindowOriginCache = $null
 # Alert settings are stored per data source; the flat $script: values below
 # mirror the active source and are refreshed by Sync-ActiveAlertSettings.
 $script:AlertSettings = [ordered]@{}

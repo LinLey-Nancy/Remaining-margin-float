@@ -617,7 +617,49 @@ function Get-ResolvedConfigProfile {
         # The remembered profile was deleted or the file was replaced; fall back
         # to the local read instead of staying on a profile that no longer exists.
     }
+    # A rejected automatic credential may retry once with a saved profile. The
+    # override is process-only: restarting prefers the local read again.
+    if (
+        $Provider -eq 'Kimi' -and
+        $script:KimiAutoCredentialRejected -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string]$script:KimiManualFallbackProfileId
+        )
+    ) {
+        $fallback = $entries | Where-Object {
+            $_.Id -eq $script:KimiManualFallbackProfileId -and
+            $_.Kind -ne 'Auto'
+        } | Select-Object -First 1
+        if ($fallback) { return $fallback }
+    }
     return $entries | Where-Object { $_.Id -eq $autoId } | Select-Object -First 1
+}
+
+function Get-SelectedConfigProfileId {
+    # The profile the *user* explicitly selected, but only while it still
+    # resolves. Used for one-time adoption of pre-multi-account history: a
+    # deleted profile or an automatic 401 fallback must not claim it.
+    param(
+        [string]$Provider,
+        [switch]$Refresh
+    )
+
+    $activeId = Get-ActiveConfigProfileId -Provider $Provider
+    if (
+        [string]::IsNullOrWhiteSpace($activeId) -or
+        $activeId -eq (Get-ConfigProfileAutoId -Provider $Provider)
+    ) {
+        return ''
+    }
+    $profile = Get-ResolvedConfigProfile -Provider $Provider -Refresh:$Refresh
+    if (
+        $profile -and
+        [string]$profile.Kind -ne 'Auto' -and
+        [string]$profile.Id -eq $activeId
+    ) {
+        return [string]$profile.Id
+    }
+    return ''
 }
 
 function Get-EffectiveConfigProfileId {
@@ -637,6 +679,42 @@ function Get-EffectiveConfigProfileId {
         if (-not [string]::IsNullOrWhiteSpace($id)) { return $id }
     }
     return Get-ConfigProfileAutoId -Provider $Provider
+}
+
+function Get-PersistedConfigProfileId {
+    # The id stored alongside history, spend and state snapshots. It follows the
+    # *resolved* profile so a remembered id that no longer exists cannot create
+    # a ghost account: the effective fallback is 本机读取, whose persisted id is
+    # the empty string by convention. Never use the raw remembered id here.
+    param(
+        [string]$Provider,
+        [switch]$Refresh
+    )
+
+    $activeId = Get-ActiveConfigProfileId -Provider $Provider
+    $hasKimiFallback = (
+        $Provider -eq 'Kimi' -and
+        $script:KimiAutoCredentialRejected -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string]$script:KimiManualFallbackProfileId
+        )
+    )
+    # The default local-read account persists as the empty string; return early
+    # instead of resolving (and reading the local CLI files) on every refresh.
+    if (
+        -not $hasKimiFallback -and
+        (
+            [string]::IsNullOrWhiteSpace($activeId) -or
+            $activeId -eq (Get-ConfigProfileAutoId -Provider $Provider)
+        )
+    ) {
+        return ''
+    }
+    $profile = Get-ResolvedConfigProfile -Provider $Provider -Refresh:$Refresh
+    if ($profile -and [string]$profile.Kind -ne 'Auto') {
+        return [string]$profile.Id
+    }
+    return ''
 }
 
 function Get-ConfigProfileSecret {

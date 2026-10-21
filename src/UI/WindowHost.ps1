@@ -582,7 +582,7 @@ $names = @(
     'ProgressTrack', 'RemainingProgressColumn',
     'UsedProgressColumn', 'DetailsPanel', 'QuotaMetricRow', 'AccountRow',
     'AccountName', 'TokenSummaryCard', 'TokenSummaryDivider',
-    'PlanBadge', 'AccountEmail', 'CloseButton', 'DetailsResetPrefix',
+    'PlanBadge', 'PlanBadgeContainer', 'AccountEmail', 'CloseButton', 'DetailsResetPrefix',
     'DetailsResetDate', 'DetailsResetSeparator', 'DetailsResetCountdown',
     'CodexQuotaPanel', 'ProviderMetricPanel',
     'FiveHourQuotaRow', 'QuotaDividerRow', 'WeeklyQuotaRow',
@@ -600,7 +600,7 @@ $names = @(
     'Trend5HStartMarker', 'Trend5HEndMarker', 'Trend5HMetaText',
     'Trend7Card', 'Trend7Text', 'Trend7Canvas', 'Trend7Area', 'Trend7Line',
     'Trend7StartMarker', 'Trend7EndMarker', 'Trend7MetaText',
-    'UsageTrendTitle', 'PredictionText', 'BudgetText',
+    'UsageTrendTitle', 'PredictionText', 'BudgetRow', 'BudgetText',
     'RapidDropStatusDot', 'RapidDropText',
     'FooterStatusText', 'VersionLabelText', 'AppVersionText',
     'VersionSeparatorText', 'AutoRefreshText', 'RefreshButton'

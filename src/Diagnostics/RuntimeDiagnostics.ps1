@@ -21,6 +21,106 @@ $script:RuntimeDiagnosticRedactEmailRegex = New-Object Text.RegularExpressions.R
     '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b'
 )
 
+function Get-RmfDiagnosticWindowOrigin {
+    # Diagnostic windows are visible. Put them on the monitor that hosts the
+    # terminal running the checks instead of the primary monitor, which is
+    # usually where the user is working. The terminal is found by walking the
+    # parent process chain; when that is impossible (CI, headless runs) the
+    # primary work area is the fallback.
+    param([double]$Margin = 24)
+
+    if ($null -ne $script:RmfDiagnosticWindowOriginCache) {
+        return $script:RmfDiagnosticWindowOriginCache
+    }
+    $workArea = $null
+    try {
+        if (-not ('RmfDiagnosticWindowProbe' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RmfDiagnosticWindowProbe
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")]
+    public static extern bool GetMonitorInfo(
+        IntPtr hMonitor,
+        ref MONITORINFO lpmi
+    );
+    public static RECT GetWorkArea(IntPtr hwnd)
+    {
+        IntPtr monitor = MonitorFromWindow(hwnd, 2);
+        MONITORINFO info = new MONITORINFO();
+        info.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
+        {
+            return new RECT();
+        }
+        return info.rcWork;
+    }
+}
+'@
+        }
+        $hostWindow = [IntPtr]::Zero
+        $currentPid = [int]$PID
+        for ($level = 0; $level -lt 12; $level++) {
+            $process = Get-CimInstance Win32_Process `
+                -Filter ('ProcessId = {0}' -f $currentPid) `
+                -ErrorAction Stop
+            if (-not $process) { break }
+            $candidate = Get-Process -Id $currentPid -ErrorAction SilentlyContinue
+            if ($candidate -and $candidate.MainWindowHandle -ne [IntPtr]::Zero) {
+                $hostWindow = $candidate.MainWindowHandle
+                break
+            }
+            $parentPid = [int]$process.ParentProcessId
+            if ($parentPid -le 4 -or $parentPid -eq $currentPid) { break }
+            $currentPid = $parentPid
+        }
+        if ($hostWindow -ne [IntPtr]::Zero) {
+            $rect = [RmfDiagnosticWindowProbe]::GetWorkArea($hostWindow)
+            if ($rect.Right -gt $rect.Left -and $rect.Bottom -gt $rect.Top) {
+                $dpi = [Windows.Media.VisualTreeHelper]::GetDpi($window)
+                $logical = ConvertTo-LogicalWorkArea `
+                    -PixelLeft $rect.Left `
+                    -PixelTop $rect.Top `
+                    -PixelRight $rect.Right `
+                    -PixelBottom $rect.Bottom `
+                    -DpiScaleX $dpi.DpiScaleX `
+                    -DpiScaleY $dpi.DpiScaleY
+                $workArea = New-Object Windows.Rect(
+                    $logical.Left,
+                    $logical.Top,
+                    $logical.Width,
+                    $logical.Height
+                )
+            }
+        }
+    }
+    catch {
+        $workArea = $null
+    }
+    if (-not $workArea) {
+        $workArea = [Windows.SystemParameters]::WorkArea
+    }
+    $origin = [pscustomobject]@{
+        Left = $workArea.Left + $Margin
+        Top = $workArea.Top + $Margin
+    }
+    $script:RmfDiagnosticWindowOriginCache = $origin
+    return $origin
+}
+
 function Protect-RuntimeDiagnosticText {
     param([AllowEmptyString()][string]$Text)
 

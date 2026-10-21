@@ -324,6 +324,14 @@ if ($CheckProviderContracts) {
     $proMaxWithoutWeeklySnapshot = Get-CodexUsageSnapshot `
         -OfficialUsageOverride $proMaxWithoutWeeklyUsage `
         -SkipOfficialRequest
+    # Older local Pro sessions may omit plan_type. A weekly-only payload must
+    # still use its weekly window rather than render "weekly unknown".
+    $blankPlanWeeklyUsage = $codexUsage.PSObject.Copy()
+    $blankPlanWeeklyUsage.PlanType = ''
+    $blankPlanWeeklyUsage.FiveHourWindow = $null
+    $blankPlanWeeklySnapshot = Get-CodexUsageSnapshot `
+        -OfficialUsageOverride $blankPlanWeeklyUsage `
+        -SkipOfficialRequest
 
     $deepSeekEvents = @([DeepSeekLogScanner]::ReadFile($deepSeekUsageFixturePath))
     $deepSeekPrimaryEvent = $deepSeekEvents |
@@ -574,7 +582,7 @@ if ($CheckProviderContracts) {
         )
         CodexProMaxSnapshotUsesWeekly = (
             [string]$proMaxSnapshot.PlanType -eq 'promax' -and
-            [string]$proMaxSnapshot.Plan -eq 'Pro (Max)' -and
+            [string]$proMaxSnapshot.Plan -eq 'Pro Max' -and
             [string]$proMaxSnapshot.PrimaryQuotaPeriod -eq 'Weekly' -and
             [string]$proMaxSnapshot.WindowLabel -eq '每周余量' -and
             [int]$proMaxSnapshot.RemainingPercent -eq
@@ -588,6 +596,14 @@ if ($CheckProviderContracts) {
             $proMaxWithoutWeeklySnapshot.WindowLabel -eq '每周余量未知' -and
             [bool]$proMaxWithoutWeeklySnapshot.FiveHourAvailable -and
             -not [bool]$proMaxWithoutWeeklySnapshot.WeeklyAvailable
+        )
+        CodexBlankPlanWeeklyUsesWeekly = (
+            $blankPlanWeeklySnapshot.PrimaryQuotaPeriod -eq 'Weekly' -and
+            [bool]$blankPlanWeeklySnapshot.HasProgress -and
+            $blankPlanWeeklySnapshot.WindowLabel -eq '每周余量' -and
+            [int]$blankPlanWeeklySnapshot.RemainingPercent -eq
+                [int]$blankPlanWeeklySnapshot.WeeklyRemainingPercent -and
+            -not [bool]$blankPlanWeeklySnapshot.FiveHourAvailable
         )
         CodexNonFiniteQuotaValuesRejected = (
             $null -eq (ConvertTo-CodexQuotaWindow `
@@ -1215,6 +1231,8 @@ if ($CheckStateHistory) {
     $closeRefreshSamplesPreserved = $false
     $historyReplacementRecovered = $false
     $missingPayloadBlocksCursor = $false
+    $legacyStateAdopted = $false
+    $ownStateWinsOverNewerLegacy = $false
     $largeLegacyRestoreFast = $false
     $largeLegacyIncrementalSaveFast = $false
     $legacyManifestUntouched = $false
@@ -1608,6 +1626,62 @@ if ($CheckStateHistory) {
             $fallback -and
             [Math]::Abs([double]$fallback.RemainingPercent - 72.5) -lt 0.0001
         )
+
+        # Legacy snapshots without AccountId may be adopted by a named profile
+        # only while that profile has no records of its own.
+        $adoptionRoot = Join-Path $stateRoot 'account-adoption'
+        $legacySnapshot = $snapshot.PSObject.Copy()
+        $legacySnapshot.RemainingPercent = 71
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $legacySnapshot `
+            -ObservedAt $now.AddMinutes(-5) `
+            -Reason 'Manual' `
+            -RootPath $adoptionRoot `
+            -AllowDiagnosticWrite)
+        $adoptedLegacy = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Codex' `
+            -AccountId 'profile-a' `
+            -RootPath $adoptionRoot `
+            -Now $now
+        $legacyStateAdopted = (
+            $adoptedLegacy -and
+            [string](Get-ObjectPropertyValue `
+                -Object $adoptedLegacy `
+                -Name 'AccountId' `
+                -Default '') -eq '' -and
+            [Math]::Abs([double]$adoptedLegacy.RemainingPercent - 71) -lt 0.0001
+        )
+        $ownedSnapshot = $snapshot.PSObject.Copy()
+        $ownedSnapshot | Add-Member `
+            -NotePropertyName AccountId `
+            -NotePropertyValue 'profile-a' `
+            -Force
+        $ownedSnapshot.RemainingPercent = 88
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $ownedSnapshot `
+            -ObservedAt $now.AddMinutes(-4) `
+            -Reason 'Manual' `
+            -RootPath $adoptionRoot `
+            -AllowDiagnosticWrite)
+        # A newer unattributed snapshot must not displace the profile's own one.
+        $newerLegacySnapshot = $snapshot.PSObject.Copy()
+        $newerLegacySnapshot.RemainingPercent = 99
+        [void](Save-UsageStateSnapshot `
+            -Snapshot $newerLegacySnapshot `
+            -ObservedAt $now.AddMinutes(-3) `
+            -Reason 'Manual' `
+            -RootPath $adoptionRoot `
+            -AllowDiagnosticWrite)
+        $ownedRestored = Get-LatestUsageStateSnapshot `
+            -ProviderId 'Codex' `
+            -AccountId 'profile-a' `
+            -RootPath $adoptionRoot `
+            -Now $now
+        $ownStateWinsOverNewerLegacy = (
+            $ownedRestored -and
+            [string]$ownedRestored.AccountId -eq 'profile-a' -and
+            [Math]::Abs([double]$ownedRestored.RemainingPercent - 88) -lt 0.0001
+        )
     }
     finally {
         if (
@@ -1635,6 +1709,8 @@ if ($CheckStateHistory) {
         CloseRefreshSamplesPreserved = $closeRefreshSamplesPreserved
         HistoryReplacementRecovered = $historyReplacementRecovered
         MissingPayloadBlocksCursor = $missingPayloadBlocksCursor
+        LegacyStateAdopted = $legacyStateAdopted
+        OwnStateWinsOverNewerLegacy = $ownStateWinsOverNewerLegacy
         LargeLegacyRestoreFast = $largeLegacyRestoreFast
         LargeLegacyIncrementalSaveFast = $largeLegacyIncrementalSaveFast
         LegacyManifestUntouched = $legacyManifestUntouched
@@ -1662,6 +1738,7 @@ if ($CheckUsageHistory) {
         return [pscustomobject]@{
             Version = 3
             ProviderId = $ProviderId
+            AccountId = ''
             ObservedAtUtc = $now.AddHours(-$HoursAgo)
             MetricType = $MetricType
             QuotaPeriod = if (
@@ -2057,6 +2134,9 @@ if ($CheckUsageHistory) {
     $largeHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
         'RemainingMarginFloat.LargeHistoryDiagnostic.{0}.jsonl' -f $PID
     )
+    $accountHistoryPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'RemainingMarginFloat.HistoryAccountsDiagnostic.{0}.jsonl' -f $PID
+    )
     $calendarTimeZone = [TimeZoneInfo]::CreateCustomTimeZone(
         'RMF Diagnostic UTC+08',
         [TimeSpan]::FromHours(8),
@@ -2075,6 +2155,7 @@ if ($CheckUsageHistory) {
     $diagnosticRedaction = $false
     $minuteSamplesRetained = $false
     $manualRefreshSampleRetained = $false
+    $accountHistoryIsolated = $false
     $largeHistoryReadFast = $false
     $largeHistoryReadMs = -1
     $largeHistorySampleCount = 0
@@ -2302,6 +2383,123 @@ if ($CheckUsageHistory) {
         )
         $manualRefreshSampleRetained = $manualReload.Count -eq 61
 
+        # Account attribution must survive compaction/export/import and must
+        # keep trend analysis from mixing two profiles into one curve.
+        $accountSamples = @(
+            [pscustomobject]@{
+                Version = 3
+                ProviderId = 'Kimi'
+                AccountId = 'account-a'
+                ObservedAtUtc = $now.AddMinutes(-30)
+                MetricType = 'Percent'
+                QuotaPeriod = 'Weekly'
+                RemainingValue = 10.0
+                Unit = '%'
+                ResetAtUtc = ''
+            },
+            [pscustomobject]@{
+                Version = 3
+                ProviderId = 'Kimi'
+                AccountId = 'account-a'
+                ObservedAtUtc = $now.AddMinutes(-20)
+                MetricType = 'Percent'
+                QuotaPeriod = 'Weekly'
+                RemainingValue = 5.0
+                Unit = '%'
+                ResetAtUtc = ''
+            },
+            [pscustomobject]@{
+                Version = 3
+                ProviderId = 'Kimi'
+                AccountId = 'account-b'
+                ObservedAtUtc = $now.AddMinutes(-10)
+                MetricType = 'Percent'
+                QuotaPeriod = 'Weekly'
+                RemainingValue = 90.0
+                Unit = '%'
+                ResetAtUtc = ''
+            },
+            [pscustomobject]@{
+                Version = 3
+                ProviderId = 'Kimi'
+                AccountId = ''
+                ObservedAtUtc = $now.AddMinutes(-5)
+                MetricType = 'Percent'
+                QuotaPeriod = 'Weekly'
+                RemainingValue = 50.0
+                Unit = '%'
+                ResetAtUtc = ''
+            }
+        )
+        $retainedAccounts = @(
+            Select-UsageHistoryRetentionWindow `
+                -Samples $accountSamples `
+                -Now $now `
+                -TimeZone $calendarTimeZone
+        )
+        $accountSamplesA = @(
+            $retainedAccounts | Where-Object {
+                [string]$_.AccountId -eq 'account-a'
+            }
+        )
+        $accountSamplesB = @(
+            $retainedAccounts | Where-Object {
+                [string]$_.AccountId -eq 'account-b'
+            }
+        )
+        $accountRetention = (
+            $retainedAccounts.Count -eq 4 -and
+            $accountSamplesA.Count -eq 2 -and
+            $accountSamplesB.Count -eq 1 -and
+            @($retainedAccounts | Where-Object {
+                    [string]$_.AccountId -eq ''
+                }).Count -eq 1
+        )
+        Save-UsageHistory `
+            -Samples $retainedAccounts `
+            -Path $accountHistoryPath `
+            -Now $now `
+            -TimeZone $calendarTimeZone `
+            -AllowDiagnosticWrite
+        $accountReload = @(
+            Read-UsageHistory `
+                -Path $accountHistoryPath `
+                -Now $now `
+                -TimeZone $calendarTimeZone `
+                -BypassCache
+        )
+        $accountPersistence = (
+            $accountReload.Count -eq 4 -and
+            @($accountReload | Where-Object {
+                    [string]$_.AccountId -eq 'account-a'
+                }).Count -eq 2 -and
+            @($accountReload | Where-Object {
+                    [string]$_.AccountId -eq 'account-b'
+                }).Count -eq 1
+        )
+        $trendAccountA = Get-UsageTrend `
+            -Samples $retainedAccounts `
+            -CurrentSample $accountSamplesA[-1] `
+            -Hours 1 `
+            -Now $now
+        $trendAccountB = Get-UsageTrend `
+            -Samples $retainedAccounts `
+            -CurrentSample $accountSamplesB[0] `
+            -Hours 1 `
+            -Now $now
+        $accountTrendIsolated = (
+            $trendAccountA.Samples.Count -eq 2 -and
+            [bool]$trendAccountA.ComparisonAvailable -and
+            [Math]::Abs([double]$trendAccountA.Change + 5) -lt 0.0001 -and
+            $trendAccountB.Samples.Count -eq 1 -and
+            -not [bool]$trendAccountB.ComparisonAvailable
+        )
+        $accountHistoryIsolated = (
+            $accountRetention -and
+            $accountPersistence -and
+            $accountTrendIsolated
+        )
+
         $largeHistoryLines = New-Object 'string[]' 7200
         for ($index = 0; $index -lt $largeHistoryLines.Length; $index++) {
             $observedAt = $now.AddMinutes(-$index).ToString(
@@ -2384,6 +2582,7 @@ if ($CheckUsageHistory) {
             $oversizedHistoryPath
             $minuteHistoryPath
             $largeHistoryPath
+            $accountHistoryPath
         )) {
             if (Test-Path -LiteralPath $testPath) {
                 Remove-Item -LiteralPath $testPath -Force
@@ -2752,6 +2951,7 @@ if ($CheckUsageHistory) {
         )
         PersistenceRoundTrip = $persistenceRoundTrip
         RestartReloadRoundTrip = $restartReloadRoundTrip
+        AccountHistoryIsolated = $accountHistoryIsolated
         LegacyHistoryMigration = $legacyMigration
         LegacyWeeklyCodexMigrated = $legacyWeeklyCodexMigrated
         WeeklyQuotaHistoryIsolated = (
@@ -2980,6 +3180,8 @@ function Get-ConfigProfilesDiagnostic {
         ResolvedHonoursSelection = $false
         ResolvedAfterDeletion = $false
         ProfileOverridesLocalCli = $false
+        AutoCredentialFallsBackToSavedProfile = $false
+        PersistedIdResolvesMissingSelection = $false
         CorruptedDocumentFallsBack = $false
         ShortKeyRejected = $false
         EmptyLabelRejected = $false
@@ -2997,6 +3199,9 @@ function Get-ConfigProfilesDiagnostic {
         BudgetKeyIncludesAccount = $false
         BudgetExceededFlag = $false
         BudgetNotExceededFlag = $false
+        DeepSeekBudgetAmountPreserved = $false
+        DeepSeekBudgetUsesMonthlySpend = $false
+        DeepSeekBudgetRowVisible = $false
         EmptySnapshotIsBlank = $false
         EmptyFaultShowsStatusOnly = $false
         DetectionReadsClaudeSettings = $false
@@ -3164,6 +3369,35 @@ function Get-ConfigProfilesDiagnostic {
             [string](Get-ResolvedConfigProfile -Provider 'Kimi').Id -eq
             (Get-ConfigProfileAutoId -Provider 'Kimi')
         )
+        # The persisted id follows the resolved profile: a missing remembered
+        # profile must not create a ghost account in history or state files.
+        $result.PersistedIdResolvesMissingSelection = (
+            [string](Get-PersistedConfigProfileId -Provider 'Kimi') -eq '' -and
+            [string](Get-SelectedConfigProfileId -Provider 'Kimi') -eq ''
+        )
+
+        # 401 fallback: the automatic CLI credential is rejected, so one saved
+        # profile with a different key authorizes the retry for this process.
+        $previousAutoRejected = $script:KimiAutoCredentialRejected
+        $previousFallbackId = $script:KimiManualFallbackProfileId
+        try {
+            Set-ActiveConfigProfileId -Provider 'Kimi' -ConfigId ''
+            $script:KimiAutoCredentialRejected = $false
+            $script:KimiManualFallbackProfileId = ''
+            $fallbackSelected = Test-KimiManualCredentialFallback
+            $script:KimiAutoCredentialRejected = $true
+            $fallbackCredential = Get-KimiCredential
+            $result.AutoCredentialFallsBackToSavedProfile = (
+                [bool]$fallbackSelected -and
+                [string]$fallbackCredential.Token -eq 'sk-kimi-personal-111111111' -and
+                [string]$fallbackCredential.Source -like '*自动回退*' -and
+                [string]$fallbackCredential.ProfileId -eq $added.Id
+            )
+        }
+        finally {
+            $script:KimiAutoCredentialRejected = $previousAutoRejected
+            $script:KimiManualFallbackProfileId = $previousFallbackId
+        }
         Set-ActiveConfigProfileId -Provider 'Kimi' -ConfigId ''
 
         # --- removal ---------------------------------------------------
@@ -3409,6 +3643,82 @@ function Get-ConfigProfilesDiagnostic {
             @($unsetChecks | Where-Object { $_.Available }).Count -eq 0 -and
             [string](Get-UsageBudgetSummaryText -Snapshot $budgetSnapshot) -eq ''
         )
+
+        # DeepSeek stores a monetary budget: it must survive conversion above
+        # ¥100 and the check must compare it with the monthly spend ledger.
+        $previousSpendCache = $script:SpendLedgerCache
+        $previousSpendLoaded = $script:SpendLedgerLoaded
+        $previousDeepSeekAlertSettings = if (
+            $script:AlertSettings -and
+            $script:AlertSettings.Contains('DeepSeek')
+        ) {
+            $script:AlertSettings['DeepSeek']
+        } else { $null }
+        try {
+            $deepSeekBudgetSettings = ConvertTo-UsageAlertSettings `
+                -ProviderId 'DeepSeek' `
+                -Value ([pscustomobject]@{ BudgetAmount = 120.0 }) `
+                -Strict
+            $result.DeepSeekBudgetAmountPreserved = (
+                [Math]::Abs(
+                    [double]$deepSeekBudgetSettings.BudgetAmount - 120.0
+                ) -lt 0.0001
+            )
+            if (-not $script:AlertSettings) {
+                $script:AlertSettings = [ordered]@{}
+            }
+            $script:AlertSettings['DeepSeek'] = $deepSeekBudgetSettings
+            $budgetLedger = Get-EmptySpendLedger
+            $budgetProvider = New-SpendLedgerProvider `
+                -ProviderId 'DeepSeek' `
+                -AccountId 'budget-account' `
+                -Unit 'CNY'
+            $budgetDay = New-SpendLedgerDay -Date (
+                (Get-Date).ToString(
+                    'yyyy-MM-dd',
+                    [Globalization.CultureInfo]::InvariantCulture
+                )
+            )
+            $budgetDay.Spent = 130.0
+            $budgetDay.Samples = 2
+            $budgetProvider.Days = @($budgetDay)
+            $budgetLedger.Providers = @($budgetProvider)
+            $script:SpendLedgerCache = $budgetLedger
+            $script:SpendLedgerLoaded = $true
+            $deepSeekBudgetChecks = @(
+                Get-UsageBudgetChecks -Snapshot ([pscustomobject]@{
+                        ProviderId = 'DeepSeek'
+                        AccountId = 'budget-account'
+                        Available = $true
+                    })
+            )
+            $result.DeepSeekBudgetUsesMonthlySpend = (
+                $deepSeekBudgetChecks.Count -eq 1 -and
+                [bool]$deepSeekBudgetChecks[0].IsExceeded -and
+                [Math]::Abs(
+                    [double]$deepSeekBudgetChecks[0].SpentAmount - 130.0
+                ) -lt 0.0001 -and
+                [string]$deepSeekBudgetChecks[0].Summary -match '已超'
+            )
+            $budgetUiSnapshot = Get-DeepSeekDemoSnapshot
+            $budgetUiSnapshot.AccountId = 'budget-account'
+            Update-UsageView -Snapshot $budgetUiSnapshot -DisplayOnly
+            $result.DeepSeekBudgetRowVisible = (
+                [string]$BudgetText.Visibility -eq 'Visible' -and
+                [string]$BudgetText.Text -match '已超' -and
+                [Math]::Abs([double]$BudgetRow.Height.Value - 18) -lt 0.01
+            )
+        }
+        finally {
+            $script:SpendLedgerCache = $previousSpendCache
+            $script:SpendLedgerLoaded = $previousSpendLoaded
+            if ($null -ne $previousDeepSeekAlertSettings) {
+                $script:AlertSettings['DeepSeek'] = $previousDeepSeekAlertSettings
+            }
+            elseif ($script:AlertSettings) {
+                [void]$script:AlertSettings.Remove('DeepSeek')
+            }
+        }
 
         # --- empty state -----------------------------------------------
         $empty = New-EmptyUsageSnapshot
