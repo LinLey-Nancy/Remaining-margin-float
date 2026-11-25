@@ -9,6 +9,10 @@ Remaining Margin Float 是本地运行的开源桌面工具，不包含广告、
   并读取会话中最近一次有效的额度快照。
 - `%USERPROFILE%\.claude\projects\**\*.jsonl`：仅在 DeepSeek 模式下汇总本机
   Claude Code 会话中的 DeepSeek Token。
+- `%USERPROFILE%\.dsh\storages\session_projcache\sessions\*.json`：仅在 DeepSeek
+  模式下汇总 dsh 会话中 DeepSeek 模型的 Token 总量与最近一轮用量；只读取模型名
+  和 Token 计数，不读取提示、回复或工具内容。设置 `DSH_HOME` 环境变量时以该
+  目录为准。
 - `%USERPROFILE%\.kimi-code\credentials\*.json` 与
   `%USERPROFILE%\.kimi-code\config.toml`：仅在 Kimi Code 模式下读取 Kimi
   Code CLI 已保存的 OAuth 访问令牌或 API Key 与 Base URL，用于请求官方配额
@@ -133,7 +137,7 @@ API Key。手动 Key 使用 Windows DPAPI `CurrentUser` 加密，与后四位提
 `%LOCALAPPDATA%\RemainingMarginFloat` 即可清除本应用保存的设置、缓存、
 DeepSeek 加密配置和 Kimi Code 手动配置的加密 API Key（`kimi.json`）；也可
 在“Kimi Code 手动配置…”窗口中勾选清除，仅移除手动 Key。应用不会删除
-Codex、Claude Code 或 Kimi Code 自身的数据。
+Codex、Claude Code、dsh 或 Kimi Code 自身的数据。
 
 ## 第三方版本
 

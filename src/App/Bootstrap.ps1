@@ -140,6 +140,18 @@ public static class DeepSeekLogScanner
         ) ? value : 0.0;
     }
 
+    private static bool IsDeepSeekModel(string model)
+    {
+        if (String.IsNullOrWhiteSpace(model)) {
+            return false;
+        }
+        string trimmed = model.Trim();
+        if (trimmed.StartsWith("claude", StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+        return trimmed.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static DeepSeekUsageEventData ParseLine(string line)
     {
         if (
@@ -151,7 +163,7 @@ public static class DeepSeekLogScanner
         }
 
         string model = Capture(Model, line);
-        if (model.IndexOf("deepseek", StringComparison.OrdinalIgnoreCase) < 0) {
+        if (!IsDeepSeekModel(model)) {
             return null;
         }
         string timestampText = Capture(Timestamp, line);
@@ -480,7 +492,7 @@ public static class UsageHistoryLogScanner
 }
 '@
 
-$script:AppVersion = '1.14.3'
+$script:AppVersion = '1.15.0'
 $script:CompactWidth = 80.0
 $script:CompactHeight = 80.0
 $script:EdgeVisibleWidth = 14.0
@@ -523,6 +535,8 @@ $script:BudgetBaselineMenuItem = $null
 $script:KimiUsageCache = @{}
 $script:DeepSeekUsageCache = @{}
 $script:DeepSeekLatestUsageCache = @{}
+$script:DshSessionUsageCache = @{}
+$script:DshAggregateUsageCache = $null
 $script:DeepSeekAggregateUsageCache = $null
 $script:DeepSeekAggregateCacheHits = 0
 $script:DeepSeekAggregateCacheMisses = 0

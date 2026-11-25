@@ -381,6 +381,16 @@ Assert-Diagnostic -Condition ($deepSeek.ParserUsageTokens -eq 424) `
 Assert-Diagnostic -Condition (
     [Math]::Abs([double]$deepSeek.PricingUsageCostCny - 9.025) -lt 0.0001
 ) -Message 'DeepSeek price calculation'
+Assert-Diagnostic -Condition ([bool]$deepSeek.ClaudeModelLogIgnored) `
+    -Message 'DeepSeek Claude model log ignored'
+Assert-Diagnostic -Condition ([bool]$deepSeek.DshUsageExcludesClaudeModel) `
+    -Message 'dsh usage excludes Claude model sessions'
+Assert-Diagnostic -Condition ($deepSeek.DshUsageTokens -eq 160) `
+    -Message 'dsh usage token totals'
+Assert-Diagnostic -Condition ($deepSeek.DshUsageLastTurnTokens -eq 27) `
+    -Message 'dsh usage last turn'
+Assert-Diagnostic -Condition ($deepSeek.DshUsageModel -eq 'deepseek-flash') `
+    -Message 'dsh usage model'
 
 $stateHistory = Invoke-JsonDiagnostic -Name 'CheckStateHistory'
 foreach ($propertyName in @(

@@ -261,9 +261,16 @@ Provider 的响应和日志契约使用 `tests\fixtures` 中的固定脱敏样�
   `RemainingPercent` 在窗口不可用时同样是 0，据此判断会把「余量未知」误判为
   「每周用完」。绑定只作用于展示函数，不得写进 `Get-CodexQuotaPresentation`，
   否则窗口高度、告警作用域键与启动气泡文案都会被连带改变。
+- DeepSeek 本地用量由两个来源合并：Claude Code 日志只接受 `deepseek` 开头的
+  模型，显式排除 `claude` 模型；dsh 只读取
+  `%USERPROFILE%\.dsh\storages\session_projcache\sessions\*.json` 中 DeepSeek
+  模型会话的累计，按会话最后活动时间归入今日或本月。dsh 原始会话日志是 zstd
+  压缩的多帧 JSONL，Windows PowerShell 5.1 没有可用的解压器，因此以 dsh 自己
+  写出的明文投影缓存为准；该缓存只提供会话级累计，不能拆分单次请求或跨天增量。
 - DeepSeek 日志先按完整路径、修改时间和文件长度构建清单键；清单未变化时复用
   今日、本月和最近消息的聚合结果，新增、删除或修改日志后才使用逐文件缓存重新
-  聚合。日期或月份边界必须进入清单键，避免跨日复用旧统计。
+  聚合。日期或月份边界必须进入清单键，避免跨日复用旧统计。dsh 投影缓存使用同样
+  的清单键与逐文件缓存。
 - 低余量提醒阈值限制为 1–99 的整数，默认 20；阈值与提醒开关写入 `settings.json`
   的 `AlertSettings` 节点，按 `Codex` / `Kimi` / `DeepSeek` 分组，读取非法旧值时
   回退默认值，不得阻止窗口启动。旧版本的平铺键只用于首次迁移与降级镜像，真源

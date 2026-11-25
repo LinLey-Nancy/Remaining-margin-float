@@ -3667,9 +3667,7 @@ function Update-UsageView {
             $todaySpendText = Format-CurrencyAmount `
                 -Amount $spendSummary.TodaySpent `
                 -Currency $spendCurrency
-            $todaySpendHint = if ($spendSummary.TodayComplete) {
-                '按余额变化统计'
-            } else { '按余额变化 · 含断档' }
+            $todaySpendHint = '按余额变化统计'
         }
         $monthSpendText = '--'
         $monthSpendHint = '等待余额采样'
@@ -3685,9 +3683,7 @@ function Update-UsageView {
                         -Date $spendSummary.CoverageStartDate
                 )
             }
-            $monthSpendHint = if ($spendSummary.MonthComplete) {
-                $coverageText
-            } else { '{0} · 含断档' -f $coverageText }
+            $monthSpendHint = $coverageText
         }
 
         $MetricOneTitle.Text = '今日花费'
@@ -3698,10 +3694,10 @@ function Update-UsageView {
         $MetricTwoHint.Text = $monthSpendHint
         $MetricThreeTitle.Text = '今日 Token'
         $LastTurnTokens.Text = Format-CompactNumber $Snapshot.TodayTokens
-        $ContextText.Text = 'Claude Code 本机累计'
+        $ContextText.Text = ''
         $MetricFourTitle.Text = '本月累计 Token'
         $CacheHit.Text = Format-CompactNumber $Snapshot.MonthlyTokens
-        $CacheTokenText.Text = '当月本机去重累计'
+        $CacheTokenText.Text = ''
         # The exact balance used to live in the first card; keep it visible here
         # rather than losing it, since the header only shows one decimal.
         $BreakdownTitle.Text = if ($Snapshot.Available) {

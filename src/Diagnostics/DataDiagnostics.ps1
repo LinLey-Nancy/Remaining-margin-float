@@ -1150,6 +1150,123 @@ if ($CheckDeepSeekData) {
             TotalTokens = 3000000
         }
     )
+    # A relay can deliver Claude's own models through the same log. They must
+    # never be counted as DeepSeek usage.
+    $claudeModelLogEvent = ConvertFrom-DeepSeekUsageLine -Line (
+        '{"message":{"id":"claude-message","model":"claude-sonnet-5-5",' +
+        '"usage":{"input_tokens":100,"cache_creation_input_tokens":0,' +
+        '"cache_read_input_tokens":0,"output_tokens":10}},' +
+        '"uuid":"claude-uuid","timestamp":"' +
+        $testTimestamp.ToString('o', [Globalization.CultureInfo]::InvariantCulture) +
+        '"}'
+    )
+    $dshUsage = $null
+    $previousDshHome = $env:DSH_HOME
+    $dshRoot = [IO.Path]::GetFullPath(
+        (Join-Path ([IO.Path]::GetTempPath()) (
+            'RemainingMarginFloat.DshDiagnostic.{0}.{1}' -f
+                $PID,
+                [Guid]::NewGuid().ToString('N')
+        ))
+    )
+    try {
+        $dshSessionsRoot = Join-Path $dshRoot 'storages\session_projcache\sessions'
+        [void](New-Item -ItemType Directory -Path $dshSessionsRoot -Force)
+        $dshNowMilliseconds = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+
+        function New-DshDiagnosticDocument {
+            param(
+                [string]$Provider,
+                [string]$Model,
+                [int]$InputTokens,
+                [int]$OutputTokens,
+                [int]$CacheReadTokens
+            )
+
+            return [ordered]@{
+                version = 7
+                record = [ordered]@{
+                    identity = [ordered]@{
+                        formatVersion = 4
+                        createdAt = $dshNowMilliseconds
+                    }
+                    rows = [ordered]@{
+                        tokenUsage = [ordered]@{
+                            ver = 2
+                            seq = 1
+                            val = [ordered]@{
+                                totals = [ordered]@{
+                                    uncachedInputTokens = $InputTokens
+                                    outputTokens = $OutputTokens
+                                    cacheReadTokens = $CacheReadTokens
+                                    cacheWriteTokens = 0
+                                }
+                                last = [ordered]@{
+                                    turn = 1
+                                    step = 1
+                                    buckets = [ordered]@{
+                                        uncachedInputTokens = 20
+                                        outputTokens = 2
+                                        cacheReadTokens = 5
+                                        cacheWriteTokens = 0
+                                    }
+                                }
+                            }
+                        }
+                        modelSelection = [ordered]@{
+                            ver = 2
+                            seq = 1
+                            val = [ordered]@{
+                                lastUsed = [ordered]@{
+                                    provider = $Provider
+                                    model = $Model
+                                }
+                            }
+                        }
+                        sessionListMetadata = [ordered]@{
+                            ver = 1
+                            seq = 1
+                            val = [ordered]@{
+                                lastPromptAt = $dshNowMilliseconds
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        $deepSeekDshDocument = New-DshDiagnosticDocument `
+            -Provider 'deepseek-official' `
+            -Model 'deepseek-flash' `
+            -InputTokens 100 `
+            -OutputTokens 10 `
+            -CacheReadTokens 50
+        $deepSeekDshDocument | ConvertTo-Json -Depth 12 | Set-Content `
+            -LiteralPath (Join-Path $dshSessionsRoot 'session-deepseek.json') `
+            -Encoding UTF8
+        $claudeDshDocument = New-DshDiagnosticDocument `
+            -Provider 'anthropic' `
+            -Model 'claude-sonnet-5-5' `
+            -InputTokens 1000 `
+            -OutputTokens 1000 `
+            -CacheReadTokens 1000
+        $claudeDshDocument | ConvertTo-Json -Depth 12 | Set-Content `
+            -LiteralPath (Join-Path $dshSessionsRoot 'session-claude.json') `
+            -Encoding UTF8
+
+        $env:DSH_HOME = $dshRoot
+        $script:DshSessionUsageCache = @{}
+        $script:DshAggregateUsageCache = $null
+        $dshUsage = Get-DshLocalUsage
+    }
+    finally {
+        $env:DSH_HOME = $previousDshHome
+        $script:DshSessionUsageCache = @{}
+        $script:DshAggregateUsageCache = $null
+        if (Test-Path -LiteralPath $dshRoot) {
+            Remove-Item -LiteralPath $dshRoot -Recurse -Force
+        }
+    }
     $checkSnapshot | Add-Member -NotePropertyName SecureStorageRoundTrip -NotePropertyValue (
         $roundTripSecret -eq $testSecret -and $protectedSecret -notmatch [regex]::Escape($testSecret)
     )
@@ -1159,6 +1276,23 @@ if ($CheckDeepSeekData) {
     $checkSnapshot | Add-Member -NotePropertyName ParserUsageModel -NotePropertyValue $parserEvent.Model
     $checkSnapshot | Add-Member -NotePropertyName PricingUsageTokens -NotePropertyValue $pricingUsage.TotalTokens
     $checkSnapshot | Add-Member -NotePropertyName PricingUsageCostCny -NotePropertyValue $pricingUsage.EstimatedCostCny
+    $checkSnapshot | Add-Member -NotePropertyName ClaudeModelLogIgnored -NotePropertyValue (
+        $null -eq $claudeModelLogEvent
+    )
+    $checkSnapshot | Add-Member -NotePropertyName DshUsageTokens -NotePropertyValue $(
+        if ($dshUsage) { $dshUsage.TodayTokens } else { 0 }
+    )
+    $checkSnapshot | Add-Member -NotePropertyName DshUsageLastTurnTokens -NotePropertyValue $(
+        if ($dshUsage) { $dshUsage.LastTurnTokens } else { 0 }
+    )
+    $checkSnapshot | Add-Member -NotePropertyName DshUsageModel -NotePropertyValue $(
+        if ($dshUsage) { $dshUsage.Model } else { '' }
+    )
+    $checkSnapshot | Add-Member -NotePropertyName DshUsageExcludesClaudeModel -NotePropertyValue (
+        $dshUsage -and
+        [Math]::Abs([double]$dshUsage.TodayTokens - 160) -lt 0.001 -and
+        [Math]::Abs([double]$dshUsage.MonthlyTokens - 160) -lt 0.001
+    )
     $checkSnapshot | ConvertTo-Json -Depth 5
     $script:RmfStopLoading = $true
     return

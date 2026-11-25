@@ -228,7 +228,7 @@ function Measure-DeepSeekUsageEvents {
     return [pscustomobject]$aggregate
 }
 
-function Get-DeepSeekLocalUsage {
+function Get-DeepSeekClaudeLogUsage {
     $result = [ordered]@{
         TodayTokens = 0.0
         TodayInputTokens = 0.0
@@ -373,6 +373,367 @@ function Get-DeepSeekLocalUsage {
     return $usageResult
 }
 
+function Test-DeepSeekLocalModelName {
+    param(
+        [AllowEmptyString()][string]$Model,
+        [AllowEmptyString()][string]$Provider
+    )
+
+    $trimmed = if ($Model) { $Model.Trim() } else { '' }
+    # Claude Code logs mix vendors once the user points ANTHROPIC_BASE_URL at a
+    # relay. Only DeepSeek's own model family belongs in this counter, so an
+    # explicit claude-* name always loses even if the provider label is fuzzy.
+    if ($trimmed -match '^claude') { return $false }
+    if ($trimmed -match '^deepseek') { return $true }
+    return ($Provider -match '^deepseek')
+}
+
+function Get-DshSessionDirectory {
+    $homeDirectory = $env:DSH_HOME
+    if ([string]::IsNullOrWhiteSpace($homeDirectory)) {
+        $homeDirectory = Join-Path $env:USERPROFILE '.dsh'
+    }
+    return Join-Path $homeDirectory 'storages\session_projcache\sessions'
+}
+
+function Read-DshSessionUsageFile {
+    param([System.IO.FileInfo]$File)
+
+    $cacheKey = '{0}:{1}' -f $File.LastWriteTimeUtc.Ticks, $File.Length
+    if ($script:DshSessionUsageCache.ContainsKey($File.FullName)) {
+        $cached = $script:DshSessionUsageCache[$File.FullName]
+        if ($cached.Key -eq $cacheKey) { return $cached.Value }
+    }
+
+    $session = $null
+    try {
+        $document = Get-Content -LiteralPath $File.FullName -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        $record = Get-ObjectPropertyValue -Object $document -Name 'record'
+        $rows = Get-ObjectPropertyValue -Object $record -Name 'rows'
+        $modelSelection = Get-ObjectPropertyValue -Object $rows -Name 'modelSelection'
+        $lastUsed = Get-ObjectPropertyValue `
+            -Object (Get-ObjectPropertyValue -Object $modelSelection -Name 'val') `
+            -Name 'lastUsed'
+        $model = [string](Get-ObjectPropertyValue `
+            -Object $lastUsed `
+            -Name 'model' `
+            -Default '')
+        $provider = [string](Get-ObjectPropertyValue `
+            -Object $lastUsed `
+            -Name 'provider' `
+            -Default '')
+
+        if (-not (Test-DeepSeekLocalModelName -Model $model -Provider $provider)) {
+            $session = $null
+        }
+        else {
+            $usageValue = Get-ObjectPropertyValue `
+                -Object (Get-ObjectPropertyValue `
+                    -Object $rows `
+                    -Name 'tokenUsage') `
+                -Name 'val'
+            $totals = Get-ObjectPropertyValue -Object $usageValue -Name 'totals'
+            $inputTokens = [double](Get-ObjectPropertyValue `
+                -Object $totals `
+                -Name 'uncachedInputTokens' `
+                -Default 0)
+            $outputTokens = [double](Get-ObjectPropertyValue `
+                -Object $totals `
+                -Name 'outputTokens' `
+                -Default 0)
+            $cacheReadTokens = [double](Get-ObjectPropertyValue `
+                -Object $totals `
+                -Name 'cacheReadTokens' `
+                -Default 0)
+            $cacheWriteTokens = [double](Get-ObjectPropertyValue `
+                -Object $totals `
+                -Name 'cacheWriteTokens' `
+                -Default 0)
+
+            $buckets = Get-ObjectPropertyValue `
+                -Object (Get-ObjectPropertyValue -Object $usageValue -Name 'last') `
+                -Name 'buckets'
+            $lastInputTokens = [double](Get-ObjectPropertyValue `
+                -Object $buckets `
+                -Name 'uncachedInputTokens' `
+                -Default 0)
+            $lastOutputTokens = [double](Get-ObjectPropertyValue `
+                -Object $buckets `
+                -Name 'outputTokens' `
+                -Default 0)
+            $lastCacheReadTokens = [double](Get-ObjectPropertyValue `
+                -Object $buckets `
+                -Name 'cacheReadTokens' `
+                -Default 0)
+            $lastCacheWriteTokens = [double](Get-ObjectPropertyValue `
+                -Object $buckets `
+                -Name 'cacheWriteTokens' `
+                -Default 0)
+
+            $totalTokens = $inputTokens + $outputTokens + $cacheReadTokens +
+                $cacheWriteTokens
+            if ($totalTokens -gt 0) {
+                $lastPromptAt = [double](Get-ObjectPropertyValue `
+                    -Object (Get-ObjectPropertyValue `
+                        -Object (Get-ObjectPropertyValue `
+                            -Object $rows `
+                            -Name 'sessionListMetadata') `
+                        -Name 'val') `
+                    -Name 'lastPromptAt' `
+                    -Default 0)
+                $lastActivity = $File.LastWriteTime
+                if ($lastPromptAt -gt 0) {
+                    try {
+                        $lastActivity = [DateTimeOffset]::FromUnixTimeMilliseconds(
+                            [long]$lastPromptAt
+                        ).LocalDateTime
+                    }
+                    catch {
+                        $lastActivity = $File.LastWriteTime
+                    }
+                }
+                $displayModel = if ($model) {
+                    $model
+                }
+                elseif ($provider) { $provider }
+                else { 'dsh' }
+
+                $session = [pscustomobject]@{
+                    SessionId = $File.BaseName
+                    Model = $displayModel
+                    LastActivity = $lastActivity
+                    InputTokens = $inputTokens
+                    OutputTokens = $outputTokens
+                    CachedTokens = $cacheReadTokens
+                    CacheWriteTokens = $cacheWriteTokens
+                    TotalTokens = $totalTokens
+                    LastInputTokens = $lastInputTokens
+                    LastOutputTokens = $lastOutputTokens
+                    LastCachedTokens = $lastCacheReadTokens
+                    LastCacheWriteTokens = $lastCacheWriteTokens
+                    HasLastTurn = $null -ne $buckets
+                }
+            }
+        }
+    }
+    catch {
+        $session = $null
+    }
+
+    $script:DshSessionUsageCache[$File.FullName] = [pscustomobject]@{
+        Key = $cacheKey
+        Value = $session
+    }
+    return $session
+}
+
+function Get-DshLocalUsage {
+    $result = [ordered]@{
+        TodayTokens = 0.0
+        TodayInputTokens = 0.0
+        TodayOutputTokens = 0.0
+        TodayCachedTokens = 0.0
+        MonthlyTokens = 0.0
+        MonthlyEstimatedCostCny = 0.0
+        LastTurnTokens = 0.0
+        LastInputTokens = 0.0
+        LastOutputTokens = 0.0
+        LastCachedTokens = 0.0
+        CacheHitPercent = 0.0
+        Model = ''
+        SampledAt = Get-Date
+    }
+
+    $sessionsRoot = Get-DshSessionDirectory
+    $todayDate = (Get-Date).Date
+    $monthStart = Get-Date -Day 1 -Hour 0 -Minute 0 -Second 0 -Millisecond 0
+    $nextMonth = $monthStart.AddMonths(1)
+
+    if (-not (Test-Path -LiteralPath $sessionsRoot)) {
+        $missingKey = '{0}|missing|{1}' -f (
+            [IO.Path]::GetFullPath($sessionsRoot)
+        ), $todayDate.Ticks
+        if (
+            $script:DshAggregateUsageCache -and
+            $script:DshAggregateUsageCache.Key -eq $missingKey
+        ) {
+            return $script:DshAggregateUsageCache.Value
+        }
+        $emptyResult = [pscustomobject]$result
+        $script:DshAggregateUsageCache = [pscustomobject]@{
+            Key = $missingKey
+            Value = $emptyResult
+        }
+        return $emptyResult
+    }
+
+    $files = @(
+        Get-ChildItem `
+            -LiteralPath $sessionsRoot `
+            -File `
+            -Filter '*.json' `
+            -ErrorAction SilentlyContinue
+    )
+    $inventoryParts = New-Object System.Collections.ArrayList
+    [void]$inventoryParts.Add(
+        (
+            '{0}|{1}|{2}' -f
+                [IO.Path]::GetFullPath($sessionsRoot),
+                $todayDate.Ticks,
+                $monthStart.Ticks
+        )
+    )
+    foreach ($file in $files) {
+        [void]$inventoryParts.Add(
+            (
+                '{0}|{1}|{2}' -f
+                    $file.FullName,
+                    $file.LastWriteTimeUtc.Ticks,
+                    $file.Length
+            )
+        )
+    }
+    $inventoryKey = $inventoryParts -join "`n"
+    if (
+        $script:DshAggregateUsageCache -and
+        $script:DshAggregateUsageCache.Key -eq $inventoryKey
+    ) {
+        return $script:DshAggregateUsageCache.Value
+    }
+
+    $liveFiles = @{}
+    foreach ($file in $files) {
+        $liveFiles[$file.FullName] = $true
+    }
+    foreach ($cachedPath in @($script:DshSessionUsageCache.Keys)) {
+        if (-not $liveFiles.ContainsKey($cachedPath)) {
+            $script:DshSessionUsageCache.Remove($cachedPath)
+        }
+    }
+
+    $latestSession = $null
+    foreach ($file in $files) {
+        $session = Read-DshSessionUsageFile -File $file
+        if (-not $session) { continue }
+
+        $eventTime = $session.LastActivity
+        if ($eventTime -ge $todayDate -and $eventTime -lt $todayDate.AddDays(1)) {
+            $result.TodayTokens += $session.TotalTokens
+            $result.TodayInputTokens += $session.InputTokens
+            $result.TodayOutputTokens += $session.OutputTokens
+            $result.TodayCachedTokens += $session.CachedTokens
+        }
+        if ($eventTime -ge $monthStart -and $eventTime -lt $nextMonth) {
+            $result.MonthlyTokens += $session.TotalTokens
+            $sessionCost = Get-DeepSeekEstimatedEventCostCny `
+                -UsageEvent $session
+            $result.MonthlyEstimatedCostCny += $sessionCost
+        }
+        if (
+            $session.HasLastTurn -and
+            (-not $latestSession -or
+                $eventTime -gt $latestSession.LastActivity)
+        ) {
+            $latestSession = $session
+        }
+    }
+
+    if ($latestSession) {
+        $lastInputBase = (
+            $latestSession.LastInputTokens +
+            $latestSession.LastCachedTokens +
+            $latestSession.LastCacheWriteTokens
+        )
+        $result.LastTurnTokens = (
+            $lastInputBase + $latestSession.LastOutputTokens
+        )
+        $result.LastInputTokens = $lastInputBase
+        $result.LastOutputTokens = $latestSession.LastOutputTokens
+        $result.LastCachedTokens = $latestSession.LastCachedTokens
+        $result.CacheHitPercent = if ($lastInputBase -gt 0) {
+            [Math]::Round(
+                ($latestSession.LastCachedTokens / $lastInputBase) * 100,
+                1
+            )
+        }
+        else { 0 }
+        $result.Model = $latestSession.Model
+        $result.SampledAt = $latestSession.LastActivity
+    }
+
+    $usageResult = [pscustomobject]$result
+    $script:DshAggregateUsageCache = [pscustomobject]@{
+        Key = $inventoryKey
+        Value = $usageResult
+    }
+    return $usageResult
+}
+
+function Get-DeepSeekLocalUsage {
+    $claudeUsage = Get-DeepSeekClaudeLogUsage
+    $dshUsage = $null
+    try {
+        $dshUsage = Get-DshLocalUsage
+    }
+    catch {
+        $dshUsage = $null
+    }
+    if (-not $dshUsage) { return $claudeUsage }
+
+    $hasDshUsage = (
+        $dshUsage.TodayTokens -gt 0 -or
+        $dshUsage.MonthlyTokens -gt 0 -or
+        $dshUsage.LastTurnTokens -gt 0
+    )
+    if (-not $hasDshUsage) { return $claudeUsage }
+
+    $merged = [ordered]@{
+        TodayTokens = $claudeUsage.TodayTokens + $dshUsage.TodayTokens
+        TodayInputTokens = (
+            $claudeUsage.TodayInputTokens + $dshUsage.TodayInputTokens
+        )
+        TodayOutputTokens = (
+            $claudeUsage.TodayOutputTokens + $dshUsage.TodayOutputTokens
+        )
+        TodayCachedTokens = (
+            $claudeUsage.TodayCachedTokens + $dshUsage.TodayCachedTokens
+        )
+        MonthlyTokens = $claudeUsage.MonthlyTokens + $dshUsage.MonthlyTokens
+        MonthlyEstimatedCostCny = (
+            $claudeUsage.MonthlyEstimatedCostCny +
+            $dshUsage.MonthlyEstimatedCostCny
+        )
+        LastTurnTokens = $claudeUsage.LastTurnTokens
+        LastInputTokens = $claudeUsage.LastInputTokens
+        LastOutputTokens = $claudeUsage.LastOutputTokens
+        LastCachedTokens = $claudeUsage.LastCachedTokens
+        CacheHitPercent = $claudeUsage.CacheHitPercent
+        Model = $claudeUsage.Model
+        SampledAt = $claudeUsage.SampledAt
+    }
+
+    # The "last turn" card must reflect whichever tool ran most recently rather
+    # than always preferring Claude Code.
+    if (
+        $dshUsage.LastTurnTokens -gt 0 -and
+        (
+            $claudeUsage.LastTurnTokens -le 0 -or
+            $null -eq $claudeUsage.SampledAt -or
+            $dshUsage.SampledAt -gt $claudeUsage.SampledAt
+        )
+    ) {
+        $merged.LastTurnTokens = $dshUsage.LastTurnTokens
+        $merged.LastInputTokens = $dshUsage.LastInputTokens
+        $merged.LastOutputTokens = $dshUsage.LastOutputTokens
+        $merged.LastCachedTokens = $dshUsage.LastCachedTokens
+        $merged.CacheHitPercent = $dshUsage.CacheHitPercent
+        $merged.Model = $dshUsage.Model
+        $merged.SampledAt = $dshUsage.SampledAt
+    }
+    return [pscustomobject]$merged
+}
+
 function Format-CurrencyAmount {
     param(
         [double]$Amount,
@@ -462,7 +823,7 @@ function ConvertTo-DeepSeekSnapshot {
         Status = if (-not $isAvailable) { '余额不可用' }
             elseif ($Budget -gt 0 -and $budgetPercent -le 20) { '建议留意' }
             else { '状态舒适' }
-        Source = 'DeepSeek 官方余额 · Claude Code 本地日志'
+        Source = 'DeepSeek 官方余额'
         Currency = $currency
         TotalBalance = $totalBalance
         GrantedBalance = $grantedBalance

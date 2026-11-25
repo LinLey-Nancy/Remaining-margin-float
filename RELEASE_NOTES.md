@@ -1,3 +1,22 @@
+# Remaining Margin Float v1.15.0
+
+## 新增
+
+- DeepSeek 用量现在同时汇总 Claude Code 本地日志和 DeepSeek 官方 dsh 的会话用量，今日 Token、本月累计和最近一轮都包含 dsh
+- dsh 用量读取其本机会话缓存，支持通过 `DSH_HOME` 指定其他目录
+
+## 改进
+
+- Claude Code 日志只统计 `deepseek` 模型，并显式排除 Claude 官方模型，避免把其他模型的 Token 算进 DeepSeek
+
+## 调整
+
+- 今日花费和本月花费下方不再显示「含断档」，断档仍按原规则计入统计
+- 今日 Token 和本月累计 Token 下方的小字说明已移除
+- 来源行不再附加「· Claude Code 本地日志」
+
+---
+
 # Remaining Margin Float v1.14.3
 
 ## 修复
